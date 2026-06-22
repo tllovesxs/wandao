@@ -21,8 +21,6 @@ Author: `tllovesxs`
 - 支持飞书任意 Wiki 知识库导出。
 - 支持阿里云 Thoughts 任意工作区导出。
 
-说明：如果你口头说的是“阿里云云效/云霄”，请以实际链接为准。当前阿里云导出器支持的是 `thoughts.aliyun.com/workspaces/...` 这类 Thoughts 工作区链接，不支持通用 `devops.aliyun.com` 页面。
-
 工具会使用本机 Chrome/Edge 的调试协议打开页面，登录由用户自己完成，凭证文件只保存 Cookie，不保存账号密码。
 
 在新电脑上运行时，万能导会自动查找常见安装位置中的 Chrome、Edge 或 Chromium；也会读取 PATH 中的浏览器命令。如果浏览器安装在非常规位置，可以设置环境变量 `WANDAO_BROWSER` 指向浏览器可执行文件。

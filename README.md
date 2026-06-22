@@ -1,18 +1,44 @@
 # 万能导 Wandao
 
-万能导是一个多平台知识库导出工具，用浏览器自动化代替用户手动打开页面、复制正文、保存 Markdown 的重复劳动。(语雀,知识星球,飞书,阿里云云效里项目文档一键全部导出(或者按目录导出指定项目)))
+> 多平台知识库 Markdown 导出工具，用自动化脚本代替用户手动打开页面、复制正文、保存文件的重复劳动。
+
+[![License](https://img.shields.io/github/license/tllovesxs/wandao)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#系统要求)
+[![GitHub](https://img.shields.io/badge/GitHub-tllovesxs%2Fwandao-black)](https://github.com/tllovesxs/wandao)
+
+万能导适合把你有权限访问的项目教学资料、团队知识库、课程文档导出为本地 Markdown，既可以一键全部导出，也可以按目录选择指定内容。导出后可以和源码项目放在一起，再交给 AI 阅读，让 AI 同时理解“教学文档 + 真实代码 + 项目结构”，更适合系统学习大型项目。
 
 Author: `tllovesxs`
 
-## 界面预览
+## 功能特性
+
+| 功能 | 说明 |
+|------|------|
+| 多平台导出 | 支持知识星球任意项目、语雀任意知识库、飞书任意 Wiki、阿里云 Thoughts 任意工作区 |
+| 图形化界面 | 提供统一启动器和各平台导出界面，不熟悉命令行也能使用 |
+| 目录选择 | 先读取目录，再选择全部导出或只导出部分章节 |
+| 增量更新 | 已导出的文档会跳过，缺失或需要深入的链接可以继续补齐 |
+| Markdown 输出 | 按目录结构保存为 Markdown，并生成入口索引和导出报告 |
+| 图片本地化 | 尽量下载正文图片到本地 `assets/` 目录，减少后续失效风险 |
+| 浏览器自动查找 | 自动扫描 Chrome、Edge、Chromium，也支持用户手动指定浏览器 |
+| 请求节奏控制 | 内置固定延迟和随机浮动，尽量模拟正常阅读和复制粘贴节奏 |
+| 停止按钮 | 导出过程中可以随时停止，已完成的文件会保留 |
+| AI Skill 启动 | 内置 `run-wandao` Skill，可让 AI 根据链接推荐参数并调用脚本启动工具 |
+
+## 截图预览
 
 统一启动器：
 
-![万能导启动器](docs/images/wandao-launcher.png)
+<p align="left">
+  <img src="docs/images/wandao-launcher.png" alt="万能导启动器" width="520">
+</p>
 
 多平台导出界面：
 
-![万能导多平台导出界面](docs/images/wandao-exporter-guis.png)
+<p align="left">
+  <img src="docs/images/wandao-exporter-guis.png" alt="万能导多平台导出界面" width="900">
+</p>
 
 ## 支持范围
 
@@ -21,9 +47,17 @@ Author: `tllovesxs`
 - 支持飞书任意 Wiki 知识库导出。
 - 支持阿里云 Thoughts 任意工作区导出。
 
-工具会使用本机 Chrome/Edge 的调试协议打开页面，登录由用户自己完成，凭证文件只保存 Cookie，不保存账号密码。
+工具会使用本机 Chrome/Edge 的调试协议打开页面。登录由用户自己完成，凭证文件只保存 Cookie，不保存账号密码。
 
-在新电脑上运行时，万能导会自动查找常见安装位置中的 Chrome、Edge 或 Chromium；也会读取 PATH 中的浏览器命令。如果浏览器安装在非常规位置，可以设置环境变量 `WANDAO_BROWSER` 指向浏览器可执行文件。
+## 系统要求
+
+| 依赖 | 要求 |
+|------|------|
+| Python | 3.10 或更高版本 |
+| 浏览器 | Chrome、Edge 或 Chromium |
+| 权限 | 用户需要拥有目标知识库的正常访问权限 |
+
+在新电脑上运行时，万能导会自动查找常见安装位置中的 Chrome、Edge 或 Chromium，也会读取 `PATH` 中的浏览器命令。如果浏览器安装在非常规位置，可以设置环境变量 `WANDAO_BROWSER` 指向浏览器可执行文件。
 
 每个导出界面都有“浏览器程序路径”一栏：
 
@@ -31,25 +65,52 @@ Author: `tllovesxs`
 - 点击“选择”可以手动指定浏览器程序。
 - 如果没有找到浏览器，请先安装 Chrome、Edge 或 Chromium。
 
-## 适用场景
-
-- 你有权限访问某个知识库，希望备份到本地 Markdown。
-- 你不想一篇篇手动复制粘贴，希望自动化完成重复操作。
-- 你希望导出时保留目录结构、图片、本地索引和增量更新记录。
-
-请只导出你拥有访问权限和合理使用权的内容，并遵守对应平台的服务条款、版权要求和团队规范。
-
 ## 快速开始
 
-需要 Python 3.10+，无需安装第三方依赖。
-
 ```powershell
-git clone <your-repo-url> wandao
+git clone https://github.com/tllovesxs/wandao.git
 cd wandao
 python wandao.py
 ```
 
 启动后选择要导出的知识库类型，然后点击“打开导出界面”。
+
+查看支持的平台：
+
+```powershell
+python wandao.py --list
+```
+
+## 基本流程
+
+1. 填写知识库入口 URL。
+2. 点击“登录并保存凭证”，在浏览器中完成登录。
+3. 点击“读取目录”，工具会读取并展示目录树。
+4. 勾选要导出的目录或文档。
+5. 点击“增量导出选中/全部”或“全量导出选中/全部”。
+
+未读取目录时，默认导出该入口下可识别的全部内容。
+
+## 输出内容
+
+默认输出到项目目录下的 `exports/`：
+
+```text
+exports/
+  zsxq/
+  yuque/
+  feishu/
+  aliyun-thoughts/
+```
+
+每次导出通常会生成：
+
+| 文件或目录 | 说明 |
+|------------|------|
+| `00-知识库入口.md` | 本地目录索引 |
+| `00-导出报告.json` | 导出统计、失败项、图片下载情况 |
+| `assets/` | 正文图片资源 |
+| `*.md` | 按目录结构导出的 Markdown 文档 |
 
 ## AI Skill 一键运行
 
@@ -65,14 +126,16 @@ skills/run-wandao/scripts/launch_wandao.py
 
 它适合给不想阅读项目文档、也不熟悉参数的用户使用：用户把 Skill 导入 AI 工具后，只需要说 `Use $run-wandao`，AI 会先向用户索要要导出的知识库链接；拿到链接后再识别平台、推荐参数，并调用脚本启动导出。
 
-在 Windows PowerShell 中导入：
+### 导入 Skill
+
+Windows PowerShell：
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
 Copy-Item -Recurse -Force ".\skills\run-wandao" "$env:USERPROFILE\.codex\skills\run-wandao"
 ```
 
-在 macOS/Linux 中导入：
+macOS/Linux：
 
 ```bash
 mkdir -p ~/.codex/skills
@@ -107,7 +170,9 @@ python skills/run-wandao/scripts/launch_wandao.py --url "<你的链接>" --dry-r
 python skills/run-wandao/scripts/launch_wandao.py --url "<你的链接>" --export
 ```
 
-也可以直接打开某个平台：
+## 命令行示例
+
+直接打开某个平台：
 
 ```powershell
 python wandao.py --provider zsxq --gui
@@ -116,40 +181,35 @@ python wandao.py --provider feishu --gui
 python wandao.py --provider aliyun-thoughts --gui
 ```
 
-查看支持的平台：
+知识星球任意项目：
 
 ```powershell
-python wandao.py --list
+python wandao.py --provider zsxq -- --entry-url "https://wx.zsxq.com/columns/..." --output "./exports/zsxq" --incremental
 ```
 
-## 基本流程
+语雀任意知识库：
 
-1. 填写知识库入口 URL。
-2. 点击“登录并保存凭证”，在浏览器中完成登录。
-3. 点击“读取目录”，工具会读取并展示目录树。
-4. 勾选要导出的目录或文档。
-5. 点击“增量导出选中/全部”或“全量导出选中/全部”。
-
-未读取目录时，默认导出该入口下可识别的全部内容。
-
-## 输出内容
-
-默认输出到项目目录下的 `exports/`：
-
-```text
-exports/
-  zsxq/
-  yuque/
-  feishu/
-  aliyun-thoughts/
+```powershell
+python wandao.py --provider yuque -- --book-url "https://www.yuque.com/<namespace>/<book>" --output "./exports/yuque" --incremental
 ```
 
-每次导出通常会生成：
+飞书任意 Wiki：
 
-- `00-知识库入口.md`：本地目录索引
-- `00-导出报告.json`：导出统计、失败项、图片下载情况
-- `assets/`：图片资源
-- 若干 Markdown 文档
+```powershell
+python wandao.py --provider feishu -- --wiki-url "https://<tenant>.feishu.cn/wiki/<token>" --output "./exports/feishu" --incremental
+```
+
+阿里云 Thoughts 任意工作区：
+
+```powershell
+python wandao.py --provider aliyun-thoughts -- --workspace-url "https://thoughts.aliyun.com/workspaces/<id>/overview" --output "./exports/aliyun-thoughts" --incremental
+```
+
+浏览器安装在非常规位置时：
+
+```powershell
+python wandao.py --provider zsxq -- --browser-path "C:\Program Files\Google\Chrome\Application\chrome.exe" --entry-url "https://wx.zsxq.com/columns/..."
+```
 
 ## 配合 AI 学习项目
 
@@ -207,38 +267,31 @@ your-project/
 
 更多说明见 [docs/合规说明.md](docs/合规说明.md)。
 
-## 命令行示例
+## 项目结构
 
-知识星球任意项目：
-
-```powershell
-python wandao.py --provider zsxq -- --entry-url "https://wx.zsxq.com/columns/..." --output "./exports/zsxq" --incremental
+```text
+wandao/
+├── wandao.py                         # 统一启动器
+├── export_zsxq.py                    # 知识星球导出器
+├── export_yuque.py                   # 语雀导出器
+├── export_feishu.py                  # 飞书导出器
+├── export_aliyun_thoughts.py         # 阿里云 Thoughts 导出器
+├── skills/run-wandao/                # AI 一键运行 Skill
+├── prompts/项目学习导师提示词.md      # 项目学习提示词
+├── docs/                             # 使用教程、合规说明和截图
+└── exports/                          # 默认导出目录，本地生成，不提交仓库
 ```
 
-语雀任意知识库：
+## 友情链接
 
-```powershell
-python wandao.py --provider yuque -- --book-url "https://www.yuque.com/<namespace>/<book>" --output "./exports/yuque" --incremental
-```
-
-飞书任意 Wiki：
-
-```powershell
-python wandao.py --provider feishu -- --wiki-url "https://<tenant>.feishu.cn/wiki/<token>" --output "./exports/feishu" --incremental
-```
-
-阿里云 Thoughts 任意工作区：
-
-```powershell
-python wandao.py --provider aliyun-thoughts -- --workspace-url "https://thoughts.aliyun.com/workspaces/<id>/overview" --output "./exports/aliyun-thoughts" --incremental
-```
-
-浏览器安装在非常规位置时：
-
-```powershell
-python wandao.py --provider zsxq -- --browser-path "C:\Program Files\Google\Chrome\Application\chrome.exe" --entry-url "https://wx.zsxq.com/columns/..."
-```
+- [LINUX DO](https://linux.do) — 新的理想型社区
 
 ## License
 
-MIT
+本项目采用 [MIT License](LICENSE) 开源。
+
+---
+
+<p align="center">
+  如果这个项目对你有帮助，欢迎在 GitHub 给一个 Star。
+</p>

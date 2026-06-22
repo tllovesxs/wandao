@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+
+# Local browser/session state
+.aliyun-thoughts-chrome-profile/
+.yuque-chrome-profile/
+.feishu-chrome-profile/
+.zsxq-chrome-profile/
+.aliyun_thoughts_auth.json
+.yuque_auth.json
+.feishu_auth.json
+.zsxq_auth.json
+
+# Exported private content
+exports/
+*.log
+*.err.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

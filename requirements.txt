@@ -1,0 +1,2 @@
+# Wandao uses only Python standard library modules.
+# Python 3.10+ is recommended.

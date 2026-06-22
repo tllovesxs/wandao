@@ -1557,7 +1557,7 @@ def run_gui() -> int:
     port_var = tk.StringVar(value=str(DEFAULT_PORT))
     pattern_var = tk.StringVar(value="")
     limit_var = tk.StringVar(value="0")
-    depth_var = tk.StringVar(value="1")
+    depth_var = tk.StringVar(value="2")
     folder_threshold_var = tk.StringVar(value="9")
     request_delay_var = tk.StringVar(value="1.5")
     request_jitter_var = tk.StringVar(value="0.6")
@@ -1642,7 +1642,7 @@ def run_gui() -> int:
             toc_title_pattern=None,
             selected_toc_keys=selected_toc_keys,
             limit=int(limit_var.get().strip() or "0"),
-            max_depth=max(1, int(depth_var.get().strip() or "1")),
+            max_depth=max(1, int(depth_var.get().strip() or "2")),
             folder_link_threshold=max(0, int(folder_threshold_var.get().strip() or "9")),
             skip_video_topics=skip_video_var.get(),
             request_delay=max(0.0, float(request_delay_var.get().strip() or "1.5")),
@@ -1951,7 +1951,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--toc-title-pattern", help="Regex filter for ZSXQ directory article titles")
     parser.add_argument("--toc-key", action="append", dest="selected_toc_keys", help="Export one specific directory key, repeatable, for example toc:1:0")
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of source links to export. 0 means no limit")
-    parser.add_argument("--max-depth", type=int, default=1, help="Recursion depth for ZSXQ links inside exported pages")
+    parser.add_argument("--max-depth", type=int, default=2, help="Recursion depth for ZSXQ links inside exported pages")
     parser.add_argument(
         "--folder-link-threshold",
         type=int,

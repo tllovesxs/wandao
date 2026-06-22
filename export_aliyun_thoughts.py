@@ -261,16 +261,48 @@ def chrome_debug_available(port: int) -> bool:
 
 
 def find_chrome() -> str | None:
+    for env_name in ("WANDAO_BROWSER", "BROWSER"):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            expanded = str(Path(env_value).expanduser())
+            if Path(expanded).exists():
+                return expanded
+            found = shutil.which(env_value)
+            if found:
+                return found
     candidates = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        str(Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe"),
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        str(Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/microsoft-edge",
+        "/usr/bin/microsoft-edge-stable",
+        "/snap/bin/chromium",
     ]
     for candidate in candidates:
-        if Path(candidate).exists():
+        if candidate and Path(candidate).exists():
             return candidate
-    for name in ("chrome", "chrome.exe", "msedge", "msedge.exe"):
+    for name in (
+        "chrome",
+        "chrome.exe",
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "msedge",
+        "msedge.exe",
+        "microsoft-edge",
+        "microsoft-edge-stable",
+    ):
         found = shutil.which(name)
         if found:
             return found
@@ -280,7 +312,10 @@ def find_chrome() -> str | None:
 def start_chrome(port: int, profile_dir: Path, url: str) -> subprocess.Popen[Any]:
     chrome = find_chrome()
     if not chrome:
-        raise ExportError("Chrome/Edge executable was not found. Start Chrome manually with --remote-debugging-port.")
+        raise ExportError(
+            "Chrome/Edge executable was not found. Install Chrome/Edge, add it to PATH, "
+            "or set WANDAO_BROWSER to the browser executable path."
+        )
     profile_dir.mkdir(parents=True, exist_ok=True)
     args = [
         chrome,

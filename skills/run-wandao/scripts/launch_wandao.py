@@ -210,6 +210,8 @@ def build_export_args(args: argparse.Namespace, repo: Path, provider: str) -> li
             export_args.extend(["--request-jitter", str(jitter)])
         if args.skip_video_topics:
             export_args.append("--skip-video-topics")
+        if args.include_comments:
+            export_args.append("--include-comments")
     else:
         delay = args.request_delay if args.request_delay is not None else 0.8
         jitter = args.request_jitter if args.request_jitter is not None else 0.4
@@ -236,6 +238,7 @@ def print_recommendations(provider: str | None, args: argparse.Namespace, export
         print(f"- Folder link threshold: {threshold}")
         print(f"- Request delay: {delay}s + 0~{jitter}s jitter")
         print("- Video-only pages: included" if args.include_video_topics else "- Video-only pages: skipped")
+        print("- Comments: included" if args.include_comments else "- Comments: skipped")
     else:
         delay = args.request_delay if args.request_delay is not None else 0.8
         jitter = args.request_jitter if args.request_jitter is not None else 0.4
@@ -262,6 +265,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--update-existing", action="store_true", help="Refresh existing documents during incremental export.")
     parser.add_argument("--wait-login", action="store_true", help="Pause command-line export so the user can login manually.")
     parser.add_argument("--include-video-topics", action="store_true", help="Do not skip video-only ZSXQ pages.")
+    parser.add_argument("--include-comments", action="store_true", help="Append visible ZSXQ comments to exported Markdown.")
     parser.add_argument("--skip-install", action="store_true", help="Skip pip install -r requirements.txt.")
     parser.add_argument("--update-repo", action="store_true", help="Run git pull --ff-only when an existing repo is found.")
     parsed = parser.parse_args(argv)

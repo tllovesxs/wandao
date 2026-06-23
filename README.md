@@ -20,6 +20,7 @@ Author: `tllovesxs`
 | 目录选择 | 先读取目录，再选择全部导出或只导出部分章节 |
 | 增量更新 | 已导出的文档会跳过，缺失或需要深入的链接可以继续补齐 |
 | Markdown 输出 | 按目录结构保存为 Markdown，并生成入口索引和导出报告 |
+| 评论区可选 | 知识星球导出可选择是否同时保存页面可见评论区内容 |
 | 图片本地化 | 尽量下载正文图片到本地 `assets/` 目录，减少后续失效风险 |
 | 浏览器自动查找 | 自动扫描 Chrome、Edge、Chromium，也支持用户手动指定浏览器 |
 | 请求节奏控制 | 内置固定延迟和随机浮动，尽量模拟正常阅读和复制粘贴节奏 |
@@ -184,7 +185,7 @@ python wandao.py --provider aliyun-thoughts --gui
 知识星球任意项目：
 
 ```powershell
-python wandao.py --provider zsxq -- --entry-url "https://wx.zsxq.com/columns/..." --output "./exports/zsxq" --incremental
+python wandao.py --provider zsxq -- --entry-url "https://wx.zsxq.com/columns/..." --output "./exports/zsxq" --incremental --include-comments
 ```
 
 语雀任意知识库：
@@ -253,6 +254,8 @@ your-project/
 ## 知识星球链接深度
 
 知识星球导出默认 `--max-depth 2`，会导出目录文章本身，并继续进入正文里的下一层知识星球链接。GUI 中对应字段是“最多进入几层URL”。
+
+知识星球评论区默认不导出。需要保存评论时，可以在 GUI 勾选“同时导出评论区”，或在命令行增加 `--include-comments`。开启后工具会额外滚动页面并尝试展开可见评论，然后把评论追加到 Markdown 的“评论区”章节。
 
 ## 合规说明
 

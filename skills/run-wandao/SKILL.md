@@ -82,6 +82,7 @@ For `zsxq` project or column URLs:
 - Default depth: `--max-depth 2`
 - Folder threshold: `--folder-link-threshold 9`
 - Skip video-only pages unless requested: `--skip-video-topics`
+- Comments are skipped by default; add `--include-comments` only when the user asks to export page comments.
 - Safer request pace: `--request-delay 1.5 --request-jitter 0.6`
 - If nested links were missed in an earlier run, add `--update-existing`
 
@@ -105,6 +106,7 @@ Use these short explanations when the user is unsure:
 - Incremental export: only add missing documents by default.
 - Update existing: refresh documents that already exist locally.
 - Skip video pages: avoid creating empty Markdown for video-only pages.
+- Include comments: append the visible page comment area to the Markdown after the main content.
 
 The tool stores cookies only, not account passwords. If login is needed, tell the user to complete login in the opened browser and then save credentials in the GUI.
 

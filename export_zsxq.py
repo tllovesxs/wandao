@@ -15,8 +15,8 @@ Small test:
 
 The exporter controls Chrome/Edge through Chrome DevTools Protocol. It follows
 the left column directory, supports user-selected exports, follows ZSXQ short
-links, skips comments, and prefers articles.zsxq.com pages when a topic page
-points to a full article.
+links, optionally exports visible comments, and prefers articles.zsxq.com pages
+when a topic page points to a full article.
 """
 
 from __future__ import annotations
@@ -463,6 +463,122 @@ async () => {
 """
 
 
+ZSXQ_COMMENTS_JS = r"""
+async () => {
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const clean = s => (s || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u200b\u200c\u200d\ufeff]/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const visible = el => {
+    if (!el || el.nodeType !== 1 || el.hidden || el.getAttribute("aria-hidden") === "true") return false;
+    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    return !style || (style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") !== 0);
+  };
+  const activate = async el => {
+    try {
+      el.scrollIntoView({block: "center", inline: "nearest"});
+      for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+        el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+      }
+      await wait(800);
+    } catch (err) {}
+  };
+  for (let round = 0; round < 4; round += 1) {
+    window.scrollTo(0, document.body.scrollHeight);
+    await wait(700);
+    const buttons = [...document.querySelectorAll("button, a, span, div")]
+      .filter(visible)
+      .filter(el => /更多评论|查看全部评论|展开.*评论|加载更多|更多回复|查看.*回复|展开.*回复/.test(clean(el.innerText || el.textContent || "")));
+    if (!buttons.length) continue;
+    for (const el of buttons.slice(0, 5)) {
+      await activate(el);
+    }
+  }
+
+  const selectors = [
+    ".comment-item",
+    ".reply-item",
+    ".comment-list-item",
+    ".topic-comment-item",
+    "[class*='comment-item']",
+    "[class*='CommentItem']",
+    "[class*='reply-item']",
+    "[class*='ReplyItem']"
+  ];
+  const containerSelectors = [
+    ".comment-container",
+    ".comments-container",
+    ".comment-list",
+    "[class*='comment-container']",
+    "[class*='CommentContainer']",
+    "[class*='comment-list']",
+    "[class*='CommentList']"
+  ];
+  let nodes = [...document.querySelectorAll(selectors.join(","))].filter(visible);
+  if (!nodes.length) {
+    for (const container of [...document.querySelectorAll(containerSelectors.join(","))].filter(visible)) {
+      const children = [...container.children].filter(visible);
+      if (children.length) nodes.push(...children);
+    }
+  }
+  nodes = nodes.filter((node, index, arr) => arr.findIndex(other => other === node) === index);
+  nodes = nodes.filter(node => !(looksLikeContainer(node) && arrHasDescendant(node, nodes)));
+
+  function arrHasDescendant(node, arr) {
+    return arr.some(other => other !== node && node.contains(other));
+  }
+  function looksLikeContainer(node) {
+    const cls = String(node.className || "");
+    return /container|list/i.test(cls) && !/item/i.test(cls);
+  }
+  function lineLooksLikeUi(line) {
+    return /^(回复|点赞|赞|举报|删除|取消|发送|评论|写评论|发表|收起|展开|查看更多|加载更多|全部评论|暂无评论|[0-9]+\s*赞?|[·.])$/.test(line);
+  }
+  function extract(node) {
+    const lines = clean(node.innerText || node.textContent || "")
+      .split("\n")
+      .map(line => clean(line))
+      .filter(Boolean)
+      .filter(line => !lineLooksLikeUi(line));
+    if (!lines.length) return null;
+    const timeIndex = lines.findIndex(line => /20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}|昨天|今天|刚刚|\d{1,2}:\d{2}/.test(line));
+    const time = timeIndex >= 0 ? lines[timeIndex] : "";
+    let author = "";
+    const authorEl = node.querySelector(".name, .nickname, .user-name, [class*='nickname'], [class*='Nickname'], [class*='userName'], [class*='UserName'], [class*='author'], [class*='Author']");
+    if (authorEl && visible(authorEl)) author = clean(authorEl.innerText || authorEl.textContent || "").split("\n")[0] || "";
+    if (!author && lines.length > 1 && lines[0].length <= 32 && timeIndex !== 0) author = lines[0];
+    const textLines = lines.filter((line, index) => {
+      if (author && index === 0 && line === author) return false;
+      if (timeIndex >= 0 && index === timeIndex) return false;
+      return true;
+    });
+    const text = clean(textLines.join("\n"));
+    if (!text || text.length < 1 || text.length > 5000) return null;
+    return {author, time, text};
+  }
+
+  const comments = [];
+  const seen = new Set();
+  for (const node of nodes) {
+    const item = extract(node);
+    if (!item) continue;
+    const key = [item.author, item.time, item.text].join("\n").replace(/\s+/g, " ").slice(0, 800);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    comments.push(item);
+  }
+  return {
+    href: location.href,
+    count: comments.length,
+    comments,
+  };
+}
+"""
+
+
 ZSXQ_TOC_JS = r"""
 async () => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -597,6 +713,60 @@ def expand_current_content(cdp: CDPClient, args: argparse.Namespace | None = Non
         return {}
 
 
+def collect_current_comments(cdp: CDPClient, args: argparse.Namespace | None = None) -> list[dict[str, str]]:
+    if not getattr(args, "include_comments", False):
+        return []
+    check_stopped(args)
+    try:
+        result = cdp.evaluate(f"({ZSXQ_COMMENTS_JS})()", timeout=45) or {}
+    except Exception as exc:
+        emit(args, f"评论区读取失败，已跳过：{exc}")
+        return []
+    comments: list[dict[str, str]] = []
+    for item in result.get("comments") or []:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        comments.append(
+            {
+                "author": str(item.get("author") or "").strip(),
+                "time": str(item.get("time") or "").strip(),
+                "text": text,
+            }
+        )
+    return comments
+
+
+def append_comments_markdown(markdown: str, comments: list[dict[str, str]]) -> str:
+    if not comments:
+        return markdown
+    lines = ["", "## 评论区", "", "> 以下为导出时页面可见的评论区内容。", ""]
+    for index, comment in enumerate(comments, 1):
+        author = comment.get("author") or f"评论 {index}"
+        time_text = comment.get("time") or ""
+        header = f"{author}（{time_text}）" if time_text else author
+        lines.append(f"{index}. **{header}**")
+        for line in (comment.get("text") or "").splitlines():
+            line = line.strip()
+            if line:
+                lines.append(f"   {line}")
+        lines.append("")
+    return markdown.rstrip() + "\n\n" + "\n".join(lines).rstrip() + "\n"
+
+
+def attach_comments_to_content(
+    content: dict[str, Any],
+    comments: list[dict[str, str]],
+    include_comments: bool,
+) -> dict[str, Any]:
+    content["commentsIncluded"] = bool(include_comments)
+    content["comments"] = comments if include_comments else []
+    content["commentCount"] = len(comments) if include_comments else 0
+    if include_comments and comments:
+        content["markdown"] = append_comments_markdown(str(content.get("markdown") or ""), comments)
+    return content
+
+
 def collect_entry_links(
     cdp: CDPClient,
     entry_url: str,
@@ -631,6 +801,8 @@ def collect_entry_links(
         f"({ZSXQ_CONVERTER_JS})({js_string('知识星球专栏正文')}, {js_string('.column-topic-detail .talk-content-container, .column-topic-detail .answer-content-container, .talk-content-container, .answer-content-container')})",
         timeout=60,
     )
+    comments = collect_current_comments(cdp, args)
+    attach_comments_to_content(result, comments, bool(getattr(args, "include_comments", False)))
     links = result.get("zsxqLinks") or []
     filtered: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -731,6 +903,8 @@ def resolve_toc_item(cdp: CDPClient, source: dict[str, Any], args: argparse.Name
     )
     if content_is_rate_limited(content):
         raise ExportError(f"目录条目触发请求频率限制：{source.get('title') or source.get('key')}")
+    comments = collect_current_comments(cdp, args)
+    attach_comments_to_content(content, comments, bool(getattr(args, "include_comments", False)))
     content["sourceType"] = "column-topic"
     content["shortUrl"] = ""
     content["articleUrl"] = ""
@@ -870,6 +1044,7 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
             continue
         topic_url = info.get("href") or href
         article_url = info.get("article") or (topic_url if "articles.zsxq.com" in topic_url else "")
+        topic_comments = collect_current_comments(cdp, args) if article_url else []
         if article_url:
             navigate_with_retry(cdp, article_url, args)
             wait_eval(
@@ -889,6 +1064,7 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
             if content_is_rate_limited(content):
                 pause_for_rate_limit(args, article_url, attempt, retries)
                 continue
+            attach_comments_to_content(content, topic_comments, bool(getattr(args, "include_comments", False)))
             content["sourceType"] = "article"
             content["articleUrl"] = cdp.evaluate("location.href", timeout=10)
             content["topicUrl"] = topic_url
@@ -908,6 +1084,8 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
             if content_is_rate_limited(content):
                 pause_for_rate_limit(args, topic_url, attempt, retries)
                 continue
+            comments = collect_current_comments(cdp, args)
+            attach_comments_to_content(content, comments, bool(getattr(args, "include_comments", False)))
             content["sourceType"] = "topic"
             content["articleUrl"] = ""
             content["topicUrl"] = topic_url
@@ -1051,6 +1229,12 @@ def append_source_meta(markdown: str, item: dict[str, Any]) -> str:
         + f"知识星球帖子页: {item.get('topicUrl') or ''}\n"
         + f"知识星球文章页: {item.get('articleUrl') or ''}\n"
         + f"知识星球页面类型: {item.get('sourceType') or ''}\n"
+        + (
+            f"知识星球评论区导出: {'true' if item.get('commentsIncluded') else 'false'}\n"
+            if "commentsIncluded" in item
+            else ""
+        )
+        + (f"知识星球评论数: {item.get('commentCount')}\n" if "commentCount" in item else "")
     )
 
 
@@ -1082,6 +1266,18 @@ def source_meta_start(text: str) -> int:
     ]
     positions = [text.find(marker) for marker in markers if text.find(marker) >= 0]
     return min(positions) if positions else len(text)
+
+
+def markdown_comments_attempted(md_path: Path) -> bool:
+    try:
+        text = md_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+    return "知识星球评论区导出: true" in text or bool(re.search(r"^##\s+评论区\s*$", text, re.M))
+
+
+def should_update_existing_for_comments(args: argparse.Namespace, md_path: Path) -> bool:
+    return bool(getattr(args, "include_comments", False)) and not markdown_comments_attempted(md_path)
 
 
 def markdown_title_from_text(text: str, fallback: str = "") -> str:
@@ -1161,6 +1357,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     args.folder_link_threshold = max(0, int(getattr(args, "folder_link_threshold", 9) or 0))
     args.skip_video_topics = bool(getattr(args, "skip_video_topics", True))
+    args.include_comments = bool(getattr(args, "include_comments", False))
     args.request_delay = max(0.0, float(getattr(args, "request_delay", 1.5) or 0))
     args.request_jitter = max(0.0, float(getattr(args, "request_jitter", 0.6) or 0))
     args.rate_limit_pause = max(5.0, float(getattr(args, "rate_limit_pause", 90) or 90))
@@ -1223,6 +1420,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         exported = 0
         skipped = 0
         skipped_video = 0
+        total_comments = 0
+        comments_updated_existing = 0
         stopped = False
         folderized = 0
         deepened_existing = 0
@@ -1268,11 +1467,31 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             overview_path = output / "01-专栏正文.md"
             overview_key = str(entry.get("url") or entry_url)
             overview_existing = next((existing[key] for key in canonical_url_keys(overview_key) if key in existing), None)
-            if args.incremental and overview_existing and not args.update_existing:
+            overview_needs_comment_update = bool(
+                args.incremental
+                and overview_existing
+                and not args.update_existing
+                and should_update_existing_for_comments(args, overview_existing)
+            )
+            if args.incremental and overview_existing and not args.update_existing and not overview_needs_comment_update:
                 exported_rows.append({"title": entry.get("title") or "专栏正文", "path": str(overview_existing)})
             else:
+                if overview_needs_comment_update and overview_existing:
+                    overview_path = overview_existing
+                    comments_updated_existing += 1
                 markdown = entry.get("markdown") or "# 专栏正文\n"
-                markdown += f"\n---\n\n知识星球入口: {entry.get('url') or entry_url}\n知识星球页面类型: column\n"
+                if args.include_comments:
+                    total_comments += int(entry.get("commentCount") or 0)
+                markdown += (
+                    f"\n---\n\n知识星球入口: {entry.get('url') or entry_url}\n"
+                    "知识星球页面类型: column\n"
+                    + (
+                        f"知识星球评论区导出: {'true' if entry.get('commentsIncluded') else 'false'}\n"
+                        if "commentsIncluded" in entry
+                        else ""
+                    )
+                    + (f"知识星球评论数: {entry.get('commentCount')}\n" if "commentCount" in entry else "")
+                )
                 markdown, count, img_errors = localize_images(
                     markdown,
                     entry.get("images") or [],
@@ -1346,15 +1565,20 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             link, depth = queue_links.pop(0)
             href = link.get("href") or link.get("key") or ""
             href_existing = next((existing[key] for key in canonical_url_keys(href) if key in existing), None)
+            existing_update_path: Path | None = None
             if args.incremental and href_existing and not args.update_existing:
-                added = enqueue_children_from_existing(href_existing, link, depth)
-                if added:
-                    deepened_existing += 1
-                    queued_from_existing += added
-                skipped += 1
-                if depth == 1:
-                    exported_rows.append({"title": link.get("title") or link.get("text") or href, "path": str(href_existing)})
-                continue
+                if should_update_existing_for_comments(args, href_existing):
+                    existing_update_path = href_existing
+                    emit(args, f"补写评论区：{href_existing.name}")
+                else:
+                    added = enqueue_children_from_existing(href_existing, link, depth)
+                    if added:
+                        deepened_existing += 1
+                        queued_from_existing += added
+                    skipped += 1
+                    if depth == 1:
+                        exported_rows.append({"title": link.get("title") or link.get("text") or href, "path": str(href_existing)})
+                    continue
             try:
                 if link.get("kind") == "toc":
                     item = resolve_toc_item(cdp, link, args)
@@ -1384,14 +1608,20 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         None,
                     )
                 if args.incremental and key_existing and not args.update_existing:
-                    added = enqueue_children_from_existing(key_existing, dict(link, **item), depth)
-                    if added:
-                        deepened_existing += 1
-                        queued_from_existing += added
-                    skipped += 1
-                    if depth == 1:
-                        exported_rows.append({"title": item.get("title") or link.get("title") or link.get("text") or href, "path": str(key_existing)})
-                    continue
+                    if existing_update_path is not None:
+                        pass
+                    elif should_update_existing_for_comments(args, key_existing):
+                        existing_update_path = key_existing
+                        emit(args, f"补写评论区：{key_existing.name}")
+                    else:
+                        added = enqueue_children_from_existing(key_existing, dict(link, **item), depth)
+                        if added:
+                            deepened_existing += 1
+                            queued_from_existing += added
+                        skipped += 1
+                        if depth == 1:
+                            exported_rows.append({"title": item.get("title") or link.get("title") or link.get("text") or href, "path": str(key_existing)})
+                        continue
                 title = item.get("title") or link.get("text") or "知识星球文档"
                 current_output = Path(link.get("outputDir") or output)
                 children = unique_zsxq_links(item.get("zsxqLinks") or [])
@@ -1400,7 +1630,11 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     and args.folder_link_threshold > 0
                     and len(children) >= args.folder_link_threshold
                 )
-                if should_folderize:
+                if existing_update_path:
+                    md_path = existing_update_path
+                    child_output = child_output_dir_for_existing(md_path, len(children))
+                    comments_updated_existing += 1
+                elif should_folderize:
                     folder_path = next_folder_path(current_output, title)
                     md_path = unique_path(folder_path / f"00-{sanitize_filename(title)}.md")
                     child_output = folder_path
@@ -1408,6 +1642,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 else:
                     md_path = next_markdown_path(current_output, title)
                     child_output = current_output
+                total_comments += int(item.get("commentCount") or 0)
                 markdown = append_source_meta(item.get("markdown") or f"# {title}\n", item)
                 markdown, count, img_errors = localize_images(
                     markdown,
@@ -1475,6 +1710,9 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             "exportedDocs": exported,
             "skippedDocs": skipped,
             "skippedVideoDocs": skipped_video,
+            "includeComments": args.include_comments,
+            "exportedComments": total_comments,
+            "commentsUpdatedExistingDocs": comments_updated_existing,
             "deepenedExistingDocs": deepened_existing,
             "queuedFromExistingDocs": queued_from_existing,
             "folderizedDocs": folderized,
@@ -1570,6 +1808,7 @@ def run_gui() -> int:
     close_chrome_var = tk.BooleanVar(value=False)
     overview_var = tk.BooleanVar(value=False)
     skip_video_var = tk.BooleanVar(value=True)
+    include_comments_var = tk.BooleanVar(value=False)
     toc_status_var = tk.StringVar(value="目录：未读取")
     log_queue: queue.Queue[str] = queue.Queue()
     current_stop_event: dict[str, threading.Event | None] = {"event": None}
@@ -1660,6 +1899,7 @@ def run_gui() -> int:
             incremental=incremental,
             update_existing=update_existing,
             include_overview=overview_var.get(),
+            include_comments=include_comments_var.get(),
             link_pattern=pattern_var.get().strip() or None,
             toc_mode=toc_mode,
             toc_group_pattern=None,
@@ -1810,6 +2050,8 @@ def run_gui() -> int:
                         "exportedDocs",
                         "skippedDocs",
                         "skippedVideoDocs",
+                        "exportedComments",
+                        "commentsUpdatedExistingDocs",
                         "deepenedExistingDocs",
                         "queuedFromExistingDocs",
                         "folderizedDocs",
@@ -1908,7 +2150,8 @@ def run_gui() -> int:
     row("调试端口", port_var, 13)
     tk.Checkbutton(form, text="保存入口正文", variable=overview_var).grid(row=14, column=1, sticky="w", pady=5)
     tk.Checkbutton(form, text="跳过视频页/视频贴链接", variable=skip_video_var).grid(row=15, column=1, sticky="w", pady=5)
-    tk.Checkbutton(form, text="导出后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=16, column=1, sticky="w", pady=5)
+    tk.Checkbutton(form, text="同时导出评论区", variable=include_comments_var).grid(row=16, column=1, sticky="w", pady=5)
+    tk.Checkbutton(form, text="导出后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=17, column=1, sticky="w", pady=5)
 
     actions = tk.Frame(root, padx=14, pady=4)
     actions.pack(fill="x")
@@ -1947,7 +2190,7 @@ def run_gui() -> int:
 
     note = tk.Label(
         root,
-        text="说明：先读取目录可选择导出范围；未读取目录时默认导出全部可识别内容。日志会显示 eta；遇到 429 会暂停重试，并可按勾选项跳过视频贴。",
+        text="说明：先读取目录可选择导出范围；未读取目录时默认导出全部可识别内容。勾选评论区会额外滚动并展开页面可见评论；遇到 429 会暂停重试。",
         anchor="w",
         padx=14,
     )
@@ -1997,6 +2240,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--include-video-topics", dest="skip_video_topics", action="store_false", help="Export video-only ZSXQ topic pages instead of skipping them")
     parser.add_argument("--skip-video-topics", dest="skip_video_topics", action="store_true", help="Skip video-only ZSXQ topic pages")
     parser.set_defaults(skip_video_topics=True)
+    parser.add_argument("--include-comments", action="store_true", help="Append visible ZSXQ comments to exported Markdown")
+    parser.add_argument("--no-comments", dest="include_comments", action="store_false", help="Do not export ZSXQ comments")
+    parser.set_defaults(include_comments=False)
     parser.add_argument("--download-timeout", type=int, default=45, help="Seconds to wait for each image download")
     parser.add_argument("--progress-every", type=int, default=10, help="Print progress after N documents")
     parser.add_argument("--keep-remote-images", action="store_true", default=True, help="Keep remote image URLs when download fails")

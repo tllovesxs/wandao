@@ -9,22 +9,45 @@
 <body>
   <div class="app-container">
     <header class="app-header">
-      <h1>万能导 Wandao</h1>
-      <p class="subtitle">让知识没有壁垒，多平台文档互转</p>
+      <div>
+        <h1>万能导 Wandao</h1>
+        <p class="subtitle">让知识没有壁垒，多平台文档互转</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn-secondary header-button" id="btn-check-update" type="button">检查更新</button>
+        <button class="btn-secondary header-button" id="btn-theme-toggle" type="button">夜间模式</button>
+      </div>
     </header>
 
     <div class="workspace">
       <aside class="sidebar">
-        <button class="nav-item active" data-tool="zsxq">知识星球导出</button>
-        <button class="nav-item" data-tool="yuque">语雀导出</button>
-        <button class="nav-item" data-tool="yuque-import">语雀 Markdown 导入</button>
-        <button class="nav-item" data-tool="feishu-export">飞书导出</button>
-        <button class="nav-item" data-tool="aliyun">阿里 Thoughts 导出</button>
-        <button class="nav-item" data-tool="yinxiang">印象笔记导出</button>
-        <button class="nav-item" data-tool="feishu-import">飞书 Markdown 导入</button>
+        <details class="nav-group" open>
+          <summary>导出</summary>
+          <button class="nav-item active" data-tool="zsxq">知识星球导出</button>
+          <button class="nav-item" data-tool="yuque">语雀导出</button>
+          <button class="nav-item" data-tool="feishu-export">飞书导出</button>
+          <button class="nav-item" data-tool="aliyun">阿里 Thoughts 导出</button>
+          <button class="nav-item" data-tool="yinxiang">印象笔记导出</button>
+        </details>
+        <details class="nav-group" open>
+          <summary>导入</summary>
+          <button class="nav-item" data-tool="yuque-import">语雀 Markdown 导入</button>
+          <button class="nav-item" data-tool="feishu-import">飞书 Markdown 导入</button>
+        </details>
       </aside>
 
       <main class="app-main">
+        <section class="update-banner" id="update-banner" hidden>
+          <div>
+            <strong id="update-title">发现新版本</strong>
+            <p id="update-detail">可以前往 GitHub Releases 下载最新版。</p>
+          </div>
+          <div class="update-actions">
+            <button class="btn-secondary" id="btn-open-release" type="button">打开下载页</button>
+            <button class="btn-text" id="btn-dismiss-update" type="button">忽略</button>
+          </div>
+        </section>
+
         <section class="tool-heading">
           <h2 id="tool-title">知识星球任意项目/专栏导出</h2>
           <p id="tool-description">将知识星球内容导出为本地 Markdown 文件</p>

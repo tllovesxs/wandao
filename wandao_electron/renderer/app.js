@@ -80,6 +80,90 @@ let feishuImportConfig = {};
 let tocStates = {};
 let pythonProgressBuffer = '';
 let progressVisible = false;
+let latestReleaseUrl = 'https://github.com/tllovesxs/wandao/releases/latest';
+
+function applyTheme(theme) {
+  const normalized = theme === 'dark' ? 'dark' : 'light';
+  document.body.dataset.theme = normalized;
+  const button = document.getElementById('btn-theme-toggle');
+  if (button) {
+    button.textContent = normalized === 'dark' ? '日间模式' : '夜间模式';
+  }
+}
+
+function loadTheme() {
+  const saved = localStorage.getItem('wandao-theme');
+  if (saved === 'dark' || saved === 'light') return saved;
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  return prefersDark ? 'dark' : 'light';
+}
+
+function toggleTheme() {
+  const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('wandao-theme', next);
+  applyTheme(next);
+  log(next === 'dark' ? '已切换到夜间模式' : '已切换到日间模式', 'info');
+}
+
+function showUpdateBanner(info) {
+  const banner = document.getElementById('update-banner');
+  if (!banner || !info) return;
+  latestReleaseUrl = info.releaseUrl || latestReleaseUrl;
+  const latestLabel = info.latestTag || (info.latestVersion ? `v${info.latestVersion}` : '-');
+  document.getElementById('update-title').textContent = `发现新版本：${latestLabel}`;
+  document.getElementById('update-detail').textContent = `当前版本 v${info.currentVersion || '-'}，最新版本 ${latestLabel}。建议前往 Releases 下载新版。`;
+  banner.hidden = false;
+}
+
+function hideUpdateBanner() {
+  const banner = document.getElementById('update-banner');
+  if (banner) banner.hidden = true;
+}
+
+async function checkForUpdates(silent = false) {
+  if (!window.electronAPI.checkForUpdates) {
+    if (!silent) alert('当前版本暂不支持在线检查更新。');
+    return;
+  }
+  const button = document.getElementById('btn-check-update');
+  if (button && !silent) {
+    button.disabled = true;
+    button.textContent = '检查中...';
+  }
+  try {
+    const result = await window.electronAPI.checkForUpdates();
+    if (!result.success) {
+      if (!silent) {
+        log(`检查更新失败：${result.error}`, 'error');
+        alert(`检查更新失败：${result.error}`);
+      }
+      return;
+    }
+    const info = result.data || {};
+    latestReleaseUrl = info.releaseUrl || latestReleaseUrl;
+    if (info.hasUpdate) {
+      showUpdateBanner(info);
+      log(`发现新版本：v${info.latestVersion}，当前版本：v${info.currentVersion}`, 'success');
+      if (!silent) {
+        alert(`发现新版本 v${info.latestVersion}，可以点击顶部提示前往下载。`);
+      }
+    } else if (!silent) {
+      hideUpdateBanner();
+      log(`当前已是最新版本：v${info.currentVersion}`, 'success');
+      alert(`当前已是最新版本：v${info.currentVersion}`);
+    }
+  } catch (error) {
+    if (!silent) {
+      log(`检查更新失败：${formatError(error)}`, 'error');
+      alert(`检查更新失败：${formatError(error)}`);
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '检查更新';
+    }
+  }
+}
 
 // Log functions
 function log(message, type = 'info') {
@@ -1492,6 +1576,8 @@ function initializeFeishuImportHandlers() {
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
+  applyTheme(loadTheme());
+
   // Setup navigation
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
@@ -1503,6 +1589,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Setup footer buttons
   document.getElementById('btn-clear-log').addEventListener('click', clearLog);
+  document.getElementById('btn-theme-toggle')?.addEventListener('click', toggleTheme);
+  document.getElementById('btn-check-update')?.addEventListener('click', () => checkForUpdates(false));
+  document.getElementById('btn-open-release')?.addEventListener('click', () => {
+    window.electronAPI.openExternal(latestReleaseUrl);
+  });
+  document.getElementById('btn-dismiss-update')?.addEventListener('click', hideUpdateBanner);
 
   document.getElementById('btn-about').addEventListener('click', () => {
     window.electronAPI.showAbout();
@@ -1516,9 +1608,11 @@ document.addEventListener('DOMContentLoaded', () => {
     appPaths = paths;
     switchTool('zsxq');
     log('万能导已启动', 'success');
+    window.setTimeout(() => checkForUpdates(true), 1000);
   }).catch(() => {
     switchTool('zsxq');
     log('万能导已启动', 'success');
+    window.setTimeout(() => checkForUpdates(true), 1000);
   });
 
   if (window.electronAPI.onAppInfo) {

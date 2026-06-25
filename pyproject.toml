@@ -1,10 +1,10 @@
 [project]
 name = "wandao"
-version = "1.0.5"
+version = "1.0.7"
 description = "万能导：多平台知识库 Markdown 导出与互转工具"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "tllovesxs" }]
 dependencies = [
   "evernote-backup==1.13.1",
@@ -29,5 +29,6 @@ py-modules = [
   "export_zsxq",
   "export_yinxiang",
   "import_feishu",
+  "import_yuque",
   "gui_utils",
 ]

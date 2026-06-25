@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require(
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const https = require('https');
 
 let mainWindow;
 let pythonProcess = null;
@@ -14,6 +15,7 @@ const PROJECT_INFO = {
   github: 'https://github.com/tllovesxs/wandao',
   docs: 'https://github.com/tllovesxs/wandao/blob/main/docs/%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B.md',
   releases: 'https://github.com/tllovesxs/wandao/releases',
+  latestReleaseApi: 'https://api.github.com/repos/tllovesxs/wandao/releases/latest',
   issues: 'https://github.com/tllovesxs/wandao/issues',
   wechat: 'pressure_spring'
 };
@@ -140,6 +142,74 @@ function openProjectUrl(url) {
   });
 }
 
+function parseVersion(version) {
+  return String(version || '')
+    .replace(/^v/i, '')
+    .split('.')
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => (Number.isFinite(part) ? part : 0));
+}
+
+function compareVersions(a, b) {
+  const left = parseVersion(a);
+  const right = parseVersion(b);
+  const length = Math.max(left.length, right.length);
+  for (let i = 0; i < length; i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff > 0) return 1;
+    if (diff < 0) return -1;
+  }
+  return 0;
+}
+
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'wandao-update-checker'
+      },
+      timeout: 12000
+    }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`GitHub 返回 HTTP ${response.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(new Error(`解析更新信息失败：${error.message}`));
+        }
+      });
+    });
+    request.on('timeout', () => {
+      request.destroy(new Error('检查更新超时'));
+    });
+    request.on('error', reject);
+  });
+}
+
+async function checkForUpdates() {
+  const release = await fetchJson(PROJECT_INFO.latestReleaseApi);
+  const latestVersion = String(release.tag_name || '').replace(/^v/i, '') || '0.0.0';
+  const currentVersion = PROJECT_INFO.version;
+  return {
+    currentVersion,
+    latestVersion,
+    latestTag: release.tag_name || `v${latestVersion}`,
+    releaseUrl: release.html_url || PROJECT_INFO.releases,
+    releaseName: release.name || release.tag_name || latestVersion,
+    publishedAt: release.published_at || '',
+    hasUpdate: compareVersions(latestVersion, currentVersion) > 0
+  };
+}
+
 function buildApplicationMenu() {
   const template = [
     {
@@ -194,6 +264,23 @@ function buildApplicationMenu() {
         {
           label: '下载发行版',
           click: () => openProjectUrl(PROJECT_INFO.releases)
+        },
+        {
+          label: '检查更新',
+          click: async () => {
+            try {
+              const result = await checkForUpdates();
+              if (mainWindow) {
+                mainWindow.webContents.send('app-info', result.hasUpdate
+                  ? `发现新版本：v${result.latestVersion}`
+                  : `当前已是最新版本：v${result.currentVersion}`);
+              }
+            } catch (error) {
+              if (mainWindow) {
+                mainWindow.webContents.send('app-info', `检查更新失败：${error.message || String(error)}`);
+              }
+            }
+          }
         },
         {
           label: '问题反馈',
@@ -392,6 +479,15 @@ ipcMain.handle('open-external', async (event, url) => {
 ipcMain.handle('show-about', async () => {
   showAboutDialog();
   return { success: true };
+});
+
+ipcMain.handle('check-for-updates', async () => {
+  try {
+    const result = await checkForUpdates();
+    return { success: true, data: result };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
 });
 
 ipcMain.handle('copy-text', async (event, text) => {

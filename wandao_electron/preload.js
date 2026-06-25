@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
   showAbout: () => ipcRenderer.invoke('show-about'),
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
 
   // 应用路径
   getAppPath: () => ipcRenderer.invoke('get-app-path'),

@@ -24,6 +24,12 @@ Author: `tllovesxs`
 | 作者微信 | `pressure_spring` |
 | 联系邮箱 | `tl200599@163.com` |
 
+## 参与贡献
+
+欢迎提交 Issue 和 Pull Request。Bug 反馈、平台适配、导入导出效果优化、文档补充和界面体验改进都可以参与。
+
+提交前请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。请不要在 Issue、PR、截图或日志里提交 Cookie、账号密码、App Secret、Token 等敏感信息。
+
 ## 功能特性
 
 | 功能 | 说明 |

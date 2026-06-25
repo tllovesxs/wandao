@@ -1,0 +1,67 @@
+name: Bug 反馈
+description: 反馈导出、导入、界面或打包问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请不要上传 Cookie、账号密码、App Secret、Token 等敏感信息。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 发生了什么？预期应该是什么？
+      placeholder: 例如：语雀导出时图片没有保存到本地。
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: 涉及功能
+      options:
+        - 知识星球导出
+        - 语雀导出
+        - 语雀导入
+        - 飞书导出
+        - 飞书导入
+        - 阿里云知识库导出
+        - 印象笔记导出
+        - 桌面端界面
+        - 打包/安装
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请写清楚如何复现，方便定位。
+      placeholder: |
+        1. 打开 Wandao
+        2. 选择 ...
+        3. 点击 ...
+        4. 出现 ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: 运行日志
+      description: 粘贴工具里的错误日志。请先删掉敏感信息。
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      placeholder: 例如：v1.0.6 / main 分支
+  - type: input
+    id: os
+    attributes:
+      label: 系统环境
+      placeholder: 例如：Windows 11 / macOS 15 / Ubuntu 24.04
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他补充
+      description: 可以补充截图、样例文档结构、平台页面类型等。

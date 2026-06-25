@@ -1,0 +1,48 @@
+name: 功能建议
+description: 建议新增平台、导入导出能力或体验优化
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提出建议。请尽量描述真实使用场景，而不只是功能名。
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 你想解决什么问题？
+      placeholder: 例如：我想把某平台的项目文档导出为 Markdown，并保留图片和目录。
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望功能
+      description: 你希望万能导怎么支持？
+      placeholder: 例如：读取目录后可以勾选部分文档导出。
+    validations:
+      required: true
+  - type: dropdown
+    id: type
+    attributes:
+      label: 功能类型
+      options:
+        - 新平台导出
+        - 新平台导入
+        - 平台互转
+        - 图片/附件处理
+        - 目录选择
+        - 桌面端界面
+        - 打包/安装
+        - 文档教程
+        - 其他
+  - type: textarea
+    id: examples
+    attributes:
+      label: 示例或参考
+      description: 可以提供公开页面、截图、参考工具或你期望的输出结构。请不要提供敏感信息。
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他补充

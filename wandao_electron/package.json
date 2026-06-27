@@ -1,6 +1,6 @@
 {
   "name": "wandao",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {

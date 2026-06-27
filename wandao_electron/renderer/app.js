@@ -358,8 +358,9 @@ function initializeToolHandlers(toolId) {
       yinxiang: 'exports/yinxiang'
     };
     const suffix = defaults[toolId];
-    if (suffix && appPaths?.projectRoot) {
-      outputInput.value = `${appPaths.projectRoot}/${suffix}`;
+    const root = appPaths?.dataRoot || appPaths?.userData || appPaths?.projectRoot;
+    if (suffix && root) {
+      outputInput.value = `${root}/${suffix}`;
     }
   }
 

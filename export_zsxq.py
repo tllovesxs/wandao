@@ -22,6 +22,7 @@ when a topic page points to a full article.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import queue
@@ -72,6 +73,9 @@ class SkipDocument(Exception):
 
 
 def default_auth_path() -> Path:
+    data_dir = os.environ.get("WANDAO_DATA_DIR")
+    if data_dir:
+        return Path(data_dir).expanduser().resolve() / DEFAULT_AUTH_FILE
     return PROJECT_DIR / DEFAULT_AUTH_FILE
 
 
@@ -79,6 +83,9 @@ def default_profile_path() -> Path:
     env_profile = os.environ.get("ZSXQ_PROFILE_DIR")
     if env_profile:
         return Path(env_profile).expanduser().resolve()
+    data_dir = os.environ.get("WANDAO_DATA_DIR")
+    if data_dir:
+        return Path(data_dir).expanduser().resolve() / DEFAULT_PROFILE
     return PROJECT_DIR / DEFAULT_PROFILE
 
 
@@ -583,29 +590,107 @@ ZSXQ_TOC_JS = r"""
 async () => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const clean = s => (s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
-  const activate = el => {
+  const activate = async el => {
     if (!el) return;
     el.scrollIntoView({block: "center", inline: "nearest"});
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
       el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
     }
+    try { el.click(); } catch (err) {}
+    await wait(350);
   };
+  const groupId = (location.pathname.match(/\/columns\/(\d+)/) || [])[1] || "";
+  const apiGet = async (url, retries = 2) => {
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const r = await fetch(url, {credentials: "include", headers: {accept: "application/json, text/plain, */*"}});
+        const data = await r.json();
+        if (data && data.succeeded) return data.resp_data || {};
+      } catch (err) {}
+      if (attempt < retries) await wait(900 + attempt * 1200);
+    }
+    return null;
+  };
+  const sourceOfTopic = topic => topic && (topic.task || topic.talk || topic.question || topic.solution || topic.answer || {}) || {};
+  const titleOfTopic = topic => {
+    const source = sourceOfTopic(topic);
+    return clean(topic && (topic.title || topic.text) || source.title || source.text || "");
+  };
+  const previewOfTopic = topic => {
+    const source = sourceOfTopic(topic);
+    return clean(topic && (topic.text || topic.title) || source.text || "");
+  };
+  const topicIdOfTopic = topic => String(topic && (topic.topic_id || topic.topic_uid || "") || "");
+  const makeItem = (topic, gi, ti, groupTitle, columnId) => ({
+    key: `toc:${gi}:${ti}`,
+    groupIndex: gi,
+    topicIndex: ti,
+    groupTitle,
+    title: titleOfTopic(topic),
+    preview: previewOfTopic(topic),
+    topicId: topicIdOfTopic(topic),
+    topicUid: topicIdOfTopic(topic),
+    columnId: String(columnId || ""),
+  });
   const expectedCount = title => {
     const match = clean(title).match(/[（(]\s*(\d+)\s*[）)]/);
     return match ? parseInt(match[1], 10) : 0;
   };
   const lists = () => [...document.querySelectorAll(".list-container .list")];
   const topicItems = list => [...list.querySelectorAll(".topic-item")];
+  const apiGroups = async () => {
+    if (!groupId) return [];
+    const columnsData = await apiGet(`https://api.zsxq.com/v2/groups/${groupId}/columns`);
+    const columns = columnsData && columnsData.columns || [];
+    if (!columns.length) return [];
+    const fetchColumnTopics = async (columnId, expected) => {
+      const url = `https://api.zsxq.com/v2/groups/${groupId}/columns/${columnId}/topics?count=100&sort=default&direction=desc`;
+      let best = null;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        if (attempt > 0) await wait(1200 + attempt * 1200);
+        const data = await apiGet(url, 1);
+        const topics = data && data.topics || [];
+        if (!best || topics.length > ((best && best.topics) || []).length) best = data;
+        if (!expected || topics.length >= expected) return data;
+      }
+      return best;
+    };
+    const topicBatches = [];
+    for (const column of columns) {
+      const columnId = String(column.column_id || "");
+      const count = column.statistics && column.statistics.topics_count || 0;
+      await wait(900);
+      topicBatches.push(await fetchColumnTopics(columnId, count));
+    }
+    return columns.map((column, gi) => {
+      const count = column.statistics && column.statistics.topics_count || 0;
+      const name = clean(column.name || `目录 ${gi + 1}`);
+      const groupTitle = count ? `${name}（${count}）` : name;
+      const columnId = String(column.column_id || "");
+      const topics = ((topicBatches[gi] && topicBatches[gi].topics) || [])
+        .map((topic, ti) => makeItem(topic, gi, ti, groupTitle, columnId))
+        .filter(item => item.title);
+      return {
+        key: `group:${gi}`,
+        groupIndex: gi,
+        groupTitle,
+        expectedCount: count,
+        topicCount: topics.length,
+        topics,
+        columnId,
+      };
+    }).filter(group => group.groupTitle || group.topics.length);
+  };
+  const domGroups = async () => {
+    const groups = [];
   for (let gi = 0; gi < lists().length; gi += 1) {
     let list = lists()[gi];
-    const name = clean((list.querySelector(".info .name") || list.querySelector(".name") || {}).innerText || "");
-    const expected = expectedCount(name);
+    const groupTitle = clean((list.querySelector(".info .name") || list.querySelector(".name") || {}).innerText || `目录 ${gi + 1}`);
+    const expected = expectedCount(groupTitle);
+    const trigger = list.querySelector(".info .container") || list.querySelector(".info .name") || list.querySelector(".info") || list;
     if (expected && topicItems(list).length < expected) {
-      const trigger = list.querySelector(".info .container") || list.querySelector(".info .name") || list.querySelector(".info") || list;
-      try {
-        activate(trigger);
-      } catch (err) {}
-      const deadline = Date.now() + 8000;
+      await activate(trigger);
+      const deadline = Date.now() + 2500;
       while (Date.now() < deadline) {
         await wait(250);
         list = lists()[gi];
@@ -613,9 +698,6 @@ async () => {
         if (current >= expected || current > 0) break;
       }
     }
-  }
-  const groups = lists().map((list, gi) => {
-    const groupTitle = clean((list.querySelector(".info .name") || list.querySelector(".name") || {}).innerText || `目录 ${gi + 1}`);
     const topics = topicItems(list).map((topic, ti) => {
       const content = topic.querySelector(".content") || topic;
       const title = clean(content.innerText || content.textContent || "");
@@ -627,19 +709,26 @@ async () => {
         title,
       };
     }).filter(item => item.title);
-    return {
+    groups.push({
       key: `group:${gi}`,
       groupIndex: gi,
       groupTitle,
-      expectedCount: expectedCount(groupTitle),
+      expectedCount: expected,
       topicCount: topics.length,
       topics,
-    };
-  }).filter(group => group.groupTitle || group.topics.length);
+      columnId: "",
+    });
+  }
+    return groups.filter(group => group.groupTitle || group.topics.length);
+  };
+  let groups = await apiGroups();
+  if (!groups.length || !groups.some(group => group.topics.some(topic => topic.topicId))) {
+    groups = await domGroups();
+  }
   return {
     href: location.href,
     title: clean((document.querySelector(".group-name") || document.querySelector(".title") || {}).innerText || document.title || "知识星球目录"),
-    groups,
+    groups: groups.filter(group => group.groupTitle || group.topics.length),
     totalTopics: groups.reduce((sum, group) => sum + group.topics.length, 0),
   };
 }
@@ -650,15 +739,34 @@ ZSXQ_OPEN_TOC_ITEM_JS = r"""
 async (target) => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const clean = s => (s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
-  const activate = el => {
-    if (!el) return;
+  const visible = el => {
+    if (!el || el.nodeType !== 1 || el.hidden || el.getAttribute("aria-hidden") === "true") return false;
+    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    return !style || (style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") !== 0);
+  };
+  const activate = async el => {
+    if (!el) return false;
     el.scrollIntoView({block: "center", inline: "nearest"});
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
       el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
     }
+    try { el.click(); } catch (err) {}
+    await wait(450);
+    return true;
   };
   const lists = () => [...document.querySelectorAll(".list-container .list")];
   const topicItems = list => [...list.querySelectorAll(".topic-item")];
+  const detailRoot = () => [...document.querySelectorAll([
+    ".column-topic-detail .talk-content-container",
+    ".column-topic-detail .answer-content-container",
+    ".column-topic-detail",
+    "#topic-detail-container",
+    ".topic-detail",
+    "[class*='TopicDetail']",
+    "[class*='topic-detail']",
+    ".talk-content-container",
+    ".answer-content-container"
+  ].join(","))].find(visible);
   const expectedCount = title => {
     const match = clean(title).match(/[（(]\s*(\d+)\s*[）)]/);
     return match ? parseInt(match[1], 10) : 0;
@@ -669,7 +777,7 @@ async (target) => {
   const expected = expectedCount(groupTitle);
   if (expected && topicItems(list).length < expected) {
     const trigger = list.querySelector(".info .container") || list.querySelector(".info .name") || list.querySelector(".info") || list;
-    activate(trigger);
+    await activate(trigger);
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
       await wait(250);
@@ -682,15 +790,43 @@ async (target) => {
   if (!topic) return {ok: false, error: "目录条目不存在", href: location.href, groupTitle};
   const content = topic.querySelector(".content") || topic;
   const topicTitle = clean(content.innerText || content.textContent || target.title || "");
-  activate(topic);
+  const clickTargets = [
+    topic.querySelector(".content"),
+    topic.querySelector("a[href], button, [role='button']"),
+    topic
+  ].filter(Boolean);
   const deadline = Date.now() + 12000;
   let detailText = "";
+  let detailSelector = "";
+  let selected = "";
+  for (const candidate of clickTargets) {
+    await activate(candidate);
+    const clickDeadline = Date.now() + 5000;
+    while (Date.now() < clickDeadline) {
+      await wait(350);
+      const root = detailRoot();
+      detailText = clean(root && root.innerText || "");
+      detailSelector = root ? (root.id ? `#${root.id}` : root.className || root.tagName || "") : "";
+      selected = clean((document.querySelector(".topic-item .content.selected, .topic-item.selected .content, .topic-item.active .content, .topic-item .active") || {}).innerText || "");
+      if (detailText.length > 20 && (!target.title || detailText.includes(target.title.slice(0, 12)) || selected === topicTitle || selected.includes(topicTitle.slice(0, 12)))) {
+        return {
+          ok: true,
+          href: location.href,
+          groupTitle,
+          topicTitle,
+          detailTextLen: detailText.length,
+          detailSelector,
+        };
+      }
+    }
+  }
   while (Date.now() < deadline) {
     await wait(350);
-          const root = document.querySelector(".column-topic-detail .talk-content-container, .column-topic-detail .answer-content-container, .talk-content-container, .answer-content-container");
+    const root = detailRoot();
     detailText = clean(root && root.innerText || "");
-    const selected = clean((document.querySelector(".topic-item .content.selected") || {}).innerText || "");
-    if (detailText.length > 30 && (!target.title || detailText.includes(target.title.slice(0, 16)) || selected === topicTitle)) {
+    detailSelector = root ? (root.id ? `#${root.id}` : root.className || root.tagName || "") : "";
+    selected = clean((document.querySelector(".topic-item .content.selected, .topic-item.selected .content, .topic-item.active .content, .topic-item .active") || {}).innerText || "");
+    if (detailText.length > 20 && (!target.title || detailText.includes(target.title.slice(0, 12)) || selected === topicTitle || selected.includes(topicTitle.slice(0, 12)))) {
       break;
     }
   }
@@ -700,6 +836,8 @@ async (target) => {
     groupTitle,
     topicTitle,
     detailTextLen: detailText.length,
+    detailSelector,
+    selectedText: selected,
   };
 }
 """
@@ -885,6 +1023,13 @@ def select_toc_items(toc: dict[str, Any], args: argparse.Namespace) -> list[dict
 
 def resolve_toc_item(cdp: CDPClient, source: dict[str, Any], args: argparse.Namespace | None = None) -> dict[str, Any]:
     check_stopped(args)
+    if source.get("topicId") or source.get("topicUid"):
+        try:
+            return resolve_toc_item_api(cdp, source, args)
+        except (ExportStopped, SkipDocument):
+            raise
+        except Exception as exc:
+            emit(args, f"目录 API 读取失败，改用页面点击：{source.get('title') or source.get('key')} ({exc})")
     info = cdp.evaluate(f"({ZSXQ_OPEN_TOC_ITEM_JS})({json.dumps(source, ensure_ascii=False)})", timeout=60) or {}
     if not info.get("ok"):
         raise ExportError(f"无法打开目录条目：{source.get('groupTitle', '')} / {source.get('title', '')} ({info.get('error') or '未知错误'})")
@@ -898,7 +1043,7 @@ def resolve_toc_item(cdp: CDPClient, source: dict[str, Any], args: argparse.Name
             href=topic_url,
         )
     content = cdp.evaluate(
-        f"({ZSXQ_CONVERTER_JS})({js_string(source.get('title') or '知识星球文档')}, {js_string('.column-topic-detail .talk-content-container, .column-topic-detail .answer-content-container, .talk-content-container, .answer-content-container')})",
+        f"({ZSXQ_CONVERTER_JS})({js_string(source.get('title') or '知识星球文档')}, {js_string('.column-topic-detail .talk-content-container, .column-topic-detail .answer-content-container, .column-topic-detail, #topic-detail-container, .topic-detail, [class*=TopicDetail], [class*=topic-detail], .talk-content-container, .answer-content-container')})",
         timeout=90,
     )
     if content_is_rate_limited(content):
@@ -990,6 +1135,195 @@ def inspect_topic_api(cdp: CDPClient, topic_id: str, args: argparse.Namespace | 
     return result
 
 
+def fetch_topic_info_api(cdp: CDPClient, topic_id: str, args: argparse.Namespace | None = None) -> dict[str, Any]:
+    if not topic_id:
+        return {}
+    expression = f"""
+    (async () => {{
+      try {{
+        const r = await fetch('https://api.zsxq.com/v2/topics/{topic_id}/info', {{
+          credentials: 'include',
+          headers: {{accept: 'application/json, text/plain, */*'}}
+        }});
+        const text = await r.text();
+        const rateLimited = r.status === 429 || /Too Many Requests|请求过于频繁|请求太频繁|访问过于频繁/i.test(text);
+        let data = {{}};
+        try {{ data = JSON.parse(text); }} catch (err) {{}}
+        return {{
+          ok: !!data.succeeded,
+          rateLimited,
+          status: r.status,
+          text: text.slice(0, 300),
+          topic: data && data.resp_data && data.resp_data.topic || {{}}
+        }};
+      }} catch (err) {{
+        return {{ok: false, error: String(err)}};
+      }}
+    }})()
+    """
+    retries = max(0, int(getattr(args, "rate_limit_retries", 5) if args else 5))
+    result: dict[str, Any] = {}
+    for attempt in range(retries + 1):
+        check_stopped(args)
+        throttle_request(args)
+        result = cdp.evaluate(expression, timeout=45) or {}
+        if result.get("rateLimited"):
+            pause_for_rate_limit(args, f"topic API {topic_id}", attempt, retries)
+            continue
+        return result
+    return result
+
+
+def decode_zsxq_attr(value: str) -> str:
+    return urllib.parse.unquote(html.unescape(value or "")).strip()
+
+
+def zsxq_rich_text_to_markdown(text: str) -> str:
+    text = text or ""
+
+    def replace_entity(match: re.Match[str]) -> str:
+        raw = match.group(1) or ""
+        attrs = {name: decode_zsxq_attr(value) for name, value in re.findall(r'(\w+)="([^"]*)"', raw)}
+        typ = attrs.get("type", "")
+        title = attrs.get("title") or attrs.get("text") or ""
+        href = attrs.get("href") or attrs.get("url") or ""
+        if typ == "web" and href:
+            return f"[{title or href}]({href})"
+        if typ in {"text_bold", "bold"}:
+            return f"**{title}**" if title else ""
+        if typ in {"hashtag", "tag"}:
+            return title
+        if href:
+            return f"[{title or href}]({href})"
+        return title
+
+    text = re.sub(r"<e\b([^>]*)/>", replace_entity, text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def topic_source(topic: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    for key in ("task", "talk", "question", "solution", "answer"):
+        value = topic.get(key)
+        if isinstance(value, dict) and value:
+            return key, value
+    return str(topic.get("type") or "topic"), {}
+
+
+def image_urls_from_sources(*sources: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    for source in sources:
+        for image in source.get("images") or []:
+            if not isinstance(image, dict):
+                continue
+            for key in ("original", "large", "thumbnail"):
+                value = image.get(key) or {}
+                url = value.get("url") if isinstance(value, dict) else ""
+                if url:
+                    urls.append(url)
+                    break
+    return list(dict.fromkeys(urls))
+
+
+def markdown_links(markdown: str) -> list[dict[str, str]]:
+    links: list[dict[str, str]] = []
+    for match in re.finditer(r"\[([^\]]{0,200})\]\((https?://[^)\s]+)\)", markdown):
+        links.append({"text": match.group(1) or match.group(2), "href": match.group(2)})
+    for match in re.finditer(r"(?<!\()https?://(?:t\.zsxq\.com|wx\.zsxq\.com|articles\.zsxq\.com)/[^\s)>\]]+", markdown):
+        href = match.group(0).rstrip(".,;，。；")
+        links.append({"text": href, "href": href})
+    return unique_zsxq_links(links)
+
+
+def comments_from_topic_api(topic: dict[str, Any]) -> list[dict[str, str]]:
+    comments: list[dict[str, str]] = []
+    for item in topic.get("show_comments") or []:
+        if not isinstance(item, dict):
+            continue
+        text = zsxq_rich_text_to_markdown(str(item.get("text") or "")).strip()
+        if not text:
+            continue
+        owner = item.get("owner") if isinstance(item.get("owner"), dict) else {}
+        comments.append(
+            {
+                "author": str(owner.get("name") or ""),
+                "time": str(item.get("create_time") or ""),
+                "text": text,
+            }
+        )
+    return comments
+
+
+def content_from_topic_api(topic: dict[str, Any], source: dict[str, Any], args: argparse.Namespace | None = None) -> dict[str, Any]:
+    source_type, primary = topic_source(topic)
+    extra_sources: list[dict[str, Any]] = [primary]
+    if source_type == "question":
+        for key in ("answer", "solution"):
+            if isinstance(topic.get(key), dict):
+                extra_sources.append(topic[key])
+
+    raw_parts: list[str] = []
+    for part in extra_sources:
+        text = str(part.get("text") or "").strip()
+        if text:
+            raw_parts.append(text)
+    body = "\n\n".join(zsxq_rich_text_to_markdown(part) for part in raw_parts if part)
+    title = str(topic.get("title") or source.get("title") or "").strip()
+    if not title:
+        title = re.sub(r"\s+", " ", body).strip()[:80] or "知识星球文档"
+
+    image_urls = image_urls_from_sources(*extra_sources)
+    image_markdown = "\n".join(f"![]({url})" for url in image_urls)
+    markdown = f"# {title}\n\n{body.strip()}\n"
+    if image_markdown:
+        markdown += f"\n{image_markdown}\n"
+
+    article_url = ""
+    for part in extra_sources:
+        article = part.get("article") if isinstance(part.get("article"), dict) else {}
+        article_url = article.get("article_url") or article.get("inline_article_url") or article_url
+
+    topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or source.get("topicId") or "")
+    topic_url = f"https://wx.zsxq.com/topic/{topic_id}" if topic_id else ""
+    content: dict[str, Any] = {
+        "title": title,
+        "markdown": markdown,
+        "images": image_urls,
+        "zsxqLinks": markdown_links(markdown),
+        "sourceType": f"topic-api:{source_type}",
+        "shortUrl": "",
+        "articleUrl": article_url,
+        "topicUrl": topic_url,
+        "sourceText": source.get("title") or title,
+        "tocKey": source.get("key") or "",
+        "tocGroup": source.get("groupTitle") or "",
+        "tocTitle": source.get("title") or title,
+    }
+    if getattr(args, "include_comments", False):
+        attach_comments_to_content(content, comments_from_topic_api(topic), True)
+    return content
+
+
+def resolve_toc_item_api(cdp: CDPClient, source: dict[str, Any], args: argparse.Namespace | None = None) -> dict[str, Any]:
+    topic_id = str(source.get("topicId") or source.get("topicUid") or "").strip()
+    if not topic_id:
+        raise ExportError("目录条目缺少 topicId，无法走 API")
+    result = fetch_topic_info_api(cdp, topic_id, args)
+    if result.get("rateLimited"):
+        raise ExportError(f"目录条目触发请求频率限制：{source.get('title') or topic_id}")
+    if not result.get("ok"):
+        raise ExportError(result.get("error") or result.get("text") or f"topic API 读取失败：{topic_id}")
+    topic = result.get("topic") or {}
+    source_type, primary = topic_source(topic)
+    has_video = any(bool(part.get("video")) for part in [primary])
+    has_article = any(bool((part.get("article") or {}).get("article_url") or (part.get("article") or {}).get("inline_article_url")) for part in [primary])
+    if has_video and not has_article and getattr(args, "skip_video_topics", True):
+        raise SkipDocument("video-topic", title=source.get("title") or topic.get("title") or topic_id, href=f"https://wx.zsxq.com/topic/{topic_id}")
+    return content_from_topic_api(topic, source, args)
+
+
 def current_page_has_video(cdp: CDPClient) -> dict[str, Any]:
     return cdp.evaluate(
         r"""(() => {
@@ -1033,11 +1367,30 @@ def content_is_rate_limited(content: dict[str, Any]) -> bool:
     return len(plain) <= 300 and bool(re.search(r"Too Many Requests|请求过于频繁|请求太频繁|访问过于频繁", plain, re.I))
 
 
+def is_zsxq_page_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url or "")
+    host = parsed.netloc.lower()
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if host == "t.zsxq.com":
+        return True
+    if host == "articles.zsxq.com":
+        return parsed.path.endswith(".html") or bool(parsed.path.strip("/"))
+    if host == "wx.zsxq.com":
+        return True
+    return False
+
+
 def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace | None = None) -> dict[str, Any]:
     href = link["href"]
+    if not is_zsxq_page_url(href):
+        raise SkipDocument("non-zsxq-page-link", title=link.get("text") or href, href=href)
     retries = max(0, int(getattr(args, "rate_limit_retries", 5) if args else 5))
     for attempt in range(retries + 1):
         navigate_with_retry(cdp, href, args)
+        current_url = cdp.evaluate("location.href", timeout=10)
+        if not is_zsxq_page_url(current_url):
+            raise SkipDocument("non-zsxq-page-link", title=link.get("text") or href, href=current_url or href)
         info = find_article_url_on_topic(cdp, args)
         if detect_rate_limited_page(cdp).get("limited"):
             pause_for_rate_limit(args, href, attempt, retries)
@@ -1341,7 +1694,7 @@ def unique_zsxq_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     for link in links:
         href = str(link.get("href") or "").strip()
-        if not href:
+        if not href or not is_zsxq_page_url(href):
             continue
         keys = canonical_url_keys(href)
         if keys & seen:
@@ -2268,7 +2621,9 @@ def main(argv: list[str]) -> int:
     if not args.entry_url:
         raise ExportError("--entry-url is required")
     if not args.output:
-        args.output = str((PROJECT_DIR / "exports" / "zsxq").resolve())
+        data_dir = os.environ.get("WANDAO_DATA_DIR")
+        root = Path(data_dir).expanduser().resolve() if data_dir else PROJECT_DIR
+        args.output = str((root / "exports" / "zsxq").resolve())
     try:
         if args.login:
             result = login_and_save_auth(args)

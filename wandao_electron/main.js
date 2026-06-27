@@ -101,7 +101,8 @@ function pythonEnv() {
     ...process.env,
     PYTHONIOENCODING: 'utf-8',
     PYTHONUNBUFFERED: '1',
-    PYTHONUTF8: '1'
+    PYTHONUTF8: '1',
+    WANDAO_DATA_DIR: app.getPath('userData')
   };
   const bundledPython = bundledPythonInfo();
   if (bundledPython) {
@@ -544,9 +545,11 @@ ipcMain.handle('copy-text', async (event, text) => {
 });
 
 ipcMain.handle('get-app-path', async () => {
+  const userData = app.getPath('userData');
   return {
     appPath: app.getAppPath(),
-    userData: app.getPath('userData'),
+    userData,
+    dataRoot: userData,
     projectRoot: path.dirname(findPythonScript('import_feishu.py'))
   };
 });

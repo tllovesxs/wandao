@@ -97,7 +97,11 @@ Author: `tllovesxs`
 1. 打开项目的 [Releases](https://github.com/tllovesxs/wandao/releases) 页面。
 2. 下载对应系统的安装包，例如 Windows 的 `.exe`，或 macOS 的 `.zip` 压缩包。
 3. 安装后打开 `Wandao`。
-4. 在左侧展开“导出”或“导入”，选择目标平台。
+   > **macOS 用户注意**：从 GitHub 下载的应用会被 macOS 标记隔离属性，首次打开可能提示”已损坏，无法打开”。这不是应用本身的问题，而是系统为了防止未签名应用运行所做的拦截。请在终端执行以下命令（将路径替换为 `Wandao.app` 实际所在位置）后再打开：
+   > ```bash
+   > xattr -cr /Applications/Wandao.app
+   > ```
+4. 在左侧展开”导出”或”导入”，选择目标平台。
 5. 填写入口链接或本地目录，按界面提示登录、读取目录、选择范围并执行任务。
 
 顶部“夜间模式”可切换深色界面；“检查更新”会检测 GitHub Releases 是否有新版本，发现新版后会提示前往下载。

@@ -1,6 +1,6 @@
 {
   "name": "wandao",
-  "version": "1.0.10",
+  "version": "1.1.0",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
@@ -74,6 +74,10 @@
       {
         "from": "../import_yinxiang.py",
         "to": "python/import_yinxiang.py"
+      },
+      {
+        "from": "../ima_knowledge.py",
+        "to": "python/ima_knowledge.py"
       },
       {
         "from": "../gui_utils.py",

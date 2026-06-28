@@ -39,7 +39,8 @@ const ALLOWED_SCRIPTS = new Set([
   'export_yinxiang.py',
   'import_yinxiang.py',
   'import_yuque.py',
-  'import_feishu.py'
+  'import_feishu.py',
+  'ima_knowledge.py'
 ]);
 
 function findPythonScript(scriptName = 'import_feishu.py') {

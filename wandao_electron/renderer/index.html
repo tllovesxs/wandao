@@ -28,12 +28,14 @@
           <button class="nav-item" data-tool="feishu-export">飞书导出</button>
           <button class="nav-item" data-tool="aliyun">阿里 Thoughts 导出</button>
           <button class="nav-item" data-tool="yinxiang">印象笔记导出</button>
+          <button class="nav-item" data-tool="ima-export">ima 知识库导出</button>
         </details>
         <details class="nav-group" open>
           <summary>导入</summary>
           <button class="nav-item" data-tool="yuque-import">语雀 Markdown 导入</button>
           <button class="nav-item" data-tool="feishu-import">飞书 Markdown 导入</button>
           <button class="nav-item" data-tool="yinxiang-import">印象笔记 Markdown 导入</button>
+          <button class="nav-item" data-tool="ima-import">ima 知识库导入</button>
         </details>
       </aside>
 
@@ -413,6 +415,141 @@
         <button class="btn-primary" id="yinxiang-import-export">批量导入</button>
         <button class="btn-danger" id="yinxiang-import-stop" disabled>停止</button>
         <button class="btn-secondary" id="yinxiang-import-open-dir">打开目录</button>
+      </section>
+    </div>
+  </template>
+
+  <template id="template-ima-export">
+    <div class="tool-panel">
+      <section class="form-section">
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="ima-export-client-id">ima Client ID <span class="required">*</span></label>
+            <input type="text" id="ima-export-client-id" placeholder="从 ima API Key 页面获取">
+          </div>
+          <div class="form-group flex-1">
+            <label for="ima-export-api-key">ima API Key <span class="required">*</span></label>
+            <input type="password" id="ima-export-api-key" placeholder="只保存到本机配置">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="ima-export-output">输出目录</label>
+          <div class="input-with-button">
+            <input type="text" id="ima-export-output" placeholder="留空使用默认 exports/ima">
+            <button class="btn-secondary" id="ima-export-browse-output">浏览</button>
+          </div>
+        </div>
+        <details class="advanced-section">
+          <summary>导出选项</summary>
+          <div class="advanced-content">
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="ima-export-kb-id">指定知识库 ID（可选）</label>
+                <input type="text" id="ima-export-kb-id" placeholder="留空读取全部可访问知识库">
+              </div>
+              <div class="form-group flex-1">
+                <label for="ima-export-delay">请求延迟秒</label>
+                <input type="number" id="ima-export-delay" value="0.2" min="0" step="0.1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="ima-export-jitter">随机浮动秒</label>
+                <input type="number" id="ima-export-jitter" value="0.2" min="0" step="0.1">
+              </div>
+            </div>
+          </div>
+        </details>
+        <p class="helper-note">先读取目录后可按知识库、文件夹或单个文件勾选导出。普通文件会尽量按原文件保存；ima 笔记类内容受官方 API 限制，会尽量导出为 Markdown 文本。</p>
+      </section>
+      <section class="action-section">
+        <button class="btn-secondary" id="ima-export-save-config">保存 API 配置</button>
+        <button class="btn-primary" id="ima-export-export">开始导出</button>
+        <button class="btn-danger" id="ima-export-stop" disabled>停止</button>
+        <button class="btn-secondary" id="ima-export-open-dir">打开目录</button>
+      </section>
+    </div>
+  </template>
+
+  <template id="template-ima-import">
+    <div class="tool-panel">
+      <section class="form-section">
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="ima-import-client-id">ima Client ID <span class="required">*</span></label>
+            <input type="text" id="ima-import-client-id" placeholder="从 ima API Key 页面获取">
+          </div>
+          <div class="form-group flex-1">
+            <label for="ima-import-api-key">ima API Key <span class="required">*</span></label>
+            <input type="password" id="ima-import-api-key" placeholder="只保存到本机配置">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="ima-import-source">本地文件目录 <span class="required">*</span></label>
+          <div class="input-with-button">
+            <input type="text" id="ima-import-source" placeholder="选择要导入 ima 知识库的本地目录">
+            <button class="btn-secondary" id="ima-import-browse-source">浏览</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="ima-import-source-file">单文件测试（可选）</label>
+          <div class="input-with-button">
+            <input type="text" id="ima-import-source-file" placeholder="留空则使用目录内第一个支持文件">
+            <button class="btn-secondary" id="ima-import-browse-file">浏览</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="ima-import-kb-select">目标知识库 <span class="required">*</span></label>
+            <select id="ima-import-kb-select">
+              <option value="">先点击“读取知识库”</option>
+            </select>
+          </div>
+          <div class="form-group flex-1">
+            <label for="ima-import-folder-id">目标文件夹</label>
+            <div class="input-with-button">
+              <select id="ima-import-folder-id">
+                <option value="">知识库根目录</option>
+              </select>
+              <button class="btn-secondary" id="ima-import-list-folders" type="button">读取文件夹</button>
+            </div>
+          </div>
+        </div>
+        <details class="advanced-section">
+          <summary>导入选项</summary>
+          <div class="advanced-content">
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="ima-import-delay">请求延迟秒</label>
+                <input type="number" id="ima-import-delay" value="0.2" min="0" step="0.1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="ima-import-jitter">随机浮动秒</label>
+                <input type="number" id="ima-import-jitter" value="0.2" min="0" step="0.1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="ima-import-max">最多导入数量</label>
+                <input type="number" id="ima-import-max" value="0" min="0">
+              </div>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="ima-import-skip-existing" checked>
+              <span>目标已有同名文件时跳过</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="ima-import-include-assets">
+              <span>将 Markdown 引用的本地图片/附件也作为独立文件上传</span>
+            </label>
+          </div>
+        </details>
+        <p class="helper-note">第一版使用 ima 知识库 OpenAPI 上传文件，支持 Markdown、PDF、Word、PPT、Excel、图片、TXT、Xmind、音频等文件。默认不会把 Markdown 引用的本地配图重复作为独立图片导入。官方 API 暂未提供明确的创建知识库文件夹接口，所以目前可导入到根目录或已有文件夹。</p>
+      </section>
+      <section class="action-section">
+        <button class="btn-secondary" id="ima-import-save-config">保存 API 配置</button>
+        <button class="btn-primary" id="ima-import-list-kbs">读取知识库</button>
+        <button class="btn-primary" id="ima-import-plan">扫描目录</button>
+        <button class="btn-primary" id="ima-import-one">单文件导入测试</button>
+        <button class="btn-primary" id="ima-import-export">批量导入</button>
+        <button class="btn-danger" id="ima-import-stop" disabled>停止</button>
+        <button class="btn-secondary" id="ima-import-open-dir">打开目录</button>
       </section>
     </div>
   </template>

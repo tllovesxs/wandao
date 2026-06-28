@@ -58,6 +58,21 @@ const TOOLS = {
     script: 'export_yinxiang.py',
     outputParam: '--output',
     noUrl: true
+  },
+  'ima-export': {
+    title: 'ima 知识库导出',
+    description: '将 ima 知识库内容导出到本地',
+    script: 'ima_knowledge.py',
+    outputParam: '--output',
+    noUrl: true
+  },
+  'ima-import': {
+    title: 'ima 知识库导入',
+    description: '将本地文件批量导入 ima 知识库',
+    script: 'ima_knowledge.py',
+    outputParam: '--source-dir',
+    isImport: true,
+    noUrl: true
   }
 };
 
@@ -355,7 +370,9 @@ function initializeToolHandlers(toolId) {
       'yinxiang-import': 'exports/yinxiang',
       'feishu-export': 'exports/feishu',
       aliyun: 'exports/aliyun-thoughts',
-      yinxiang: 'exports/yinxiang'
+      yinxiang: 'exports/yinxiang',
+      'ima-export': 'exports/ima',
+      'ima-import': 'exports/ima'
     };
     const suffix = defaults[toolId];
     const root = appPaths?.dataRoot || appPaths?.userData || appPaths?.projectRoot;
@@ -381,6 +398,15 @@ function initializeToolHandlers(toolId) {
   if (toolId === 'yinxiang-import') {
     initializeYinxiangImportHandlers();
     return;
+  }
+
+  if (toolId === 'ima-import') {
+    initializeImaImportHandlers();
+    return;
+  }
+
+  if (toolId === 'ima-export') {
+    initializeImaExportHandlers();
   }
 
   // Login button
@@ -538,6 +564,322 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function imaConfigPath() {
+  if (appPaths?.userData) {
+    return `${appPaths.userData}/ima_config.json`;
+  }
+  if (appPaths?.projectRoot) {
+    return `${appPaths.projectRoot}/.ima_config.json`;
+  }
+  return '';
+}
+
+async function loadImaConfigIntoForm(prefix) {
+  const configPath = imaConfigPath();
+  const config = await readJsonFileIfExists(configPath);
+  if (!config || typeof config !== 'object') return;
+  setInputValueIfEmpty(`${prefix}-client-id`, config.client_id);
+  setInputValueIfEmpty(`${prefix}-api-key`, config.api_key);
+  setInputValueIfEmpty(`${prefix}-kb-id`, config.knowledge_base_id);
+  if (prefix === 'ima-import' && config.knowledge_base_id) {
+    const select = document.getElementById('ima-import-kb-select');
+    if (select && !select.value) {
+      const label = config.knowledge_base_name || config.knowledge_base_id;
+      select.innerHTML = `<option value="${escapeHtml(config.knowledge_base_id)}">${escapeHtml(label)}</option>`;
+    }
+    const folderSelect = document.getElementById('ima-import-folder-id');
+    if (folderSelect && config.folder_id) {
+      folderSelect.innerHTML = [
+        '<option value="">知识库根目录</option>',
+        `<option value="${escapeHtml(config.folder_id)}">${escapeHtml(config.folder_name || config.folder_id)}</option>`
+      ].join('');
+      folderSelect.value = config.folder_id;
+    }
+  } else {
+    setInputValueIfEmpty(`${prefix}-folder-id`, config.folder_id);
+  }
+  log('已读取本机 ima API 配置', 'info');
+}
+
+function buildImaCredentialArgs(prefix) {
+  const args = [];
+  const configPath = imaConfigPath();
+  const clientId = document.getElementById(`${prefix}-client-id`)?.value.trim();
+  const apiKey = document.getElementById(`${prefix}-api-key`)?.value.trim();
+  if (configPath) args.push('--config-file', configPath);
+  if (clientId) args.push('--client-id', clientId);
+  if (apiKey) args.push('--api-key', apiKey);
+  return args;
+}
+
+function requireImaCredentials(prefix) {
+  const clientId = document.getElementById(`${prefix}-client-id`)?.value.trim();
+  const apiKey = document.getElementById(`${prefix}-api-key`)?.value.trim();
+  if (!clientId || !apiKey) {
+    throw new Error('请先填写 ima Client ID 和 API Key，或保存过本机配置后再操作。');
+  }
+}
+
+function buildImaExportArgs(options = {}) {
+  const prefix = 'ima-export';
+  const forScan = Boolean(options.forScan);
+  const includeSelection = options.includeSelection !== false;
+  requireImaCredentials(prefix);
+  const args = buildImaCredentialArgs(prefix);
+  const kbId = document.getElementById('ima-export-kb-id')?.value.trim();
+  const output = document.getElementById('ima-export-output')?.value.trim();
+  if (kbId) args.push('--knowledge-base-id', kbId);
+  if (forScan) {
+    args.push('--scan-toc');
+  } else {
+    if (output) args.push('--output', output);
+    args.push('--progress-every', '1');
+    if (includeSelection) args.push(...selectedTocArgs(prefix));
+  }
+  const delay = document.getElementById('ima-export-delay')?.value;
+  const jitter = document.getElementById('ima-export-jitter')?.value;
+  if (delay) args.push('--request-delay', delay);
+  if (jitter) args.push('--request-jitter', jitter);
+  return args;
+}
+
+async function saveImaConfig(prefix) {
+  try {
+    requireImaCredentials(prefix);
+  } catch (error) {
+    alert(formatError(error));
+    return;
+  }
+  const args = buildImaCredentialArgs(prefix);
+  const kbId = document.getElementById(`${prefix}-kb-id`)?.value.trim()
+    || document.getElementById('ima-import-kb-select')?.value.trim()
+    || '';
+  const folderId = document.getElementById(`${prefix}-folder-id`)?.value.trim() || '';
+  if (kbId) args.push('--knowledge-base-id', kbId);
+  if (folderId) args.push('--folder-id', folderId);
+  args.push('--save-config');
+  const title = '保存 ima API 配置';
+  setRunning(true, prefix);
+  startProgress(title, '正在保存本机配置...');
+  log(`开始：${title}`, 'info');
+  try {
+    const result = await window.electronAPI.runPythonCommand('ima_knowledge.py', args);
+    if (result.success) {
+      log(`${title}完成`, 'success');
+      finishProgress(true, `${title}完成`);
+    } else {
+      log(`${title}失败：${result.error}`, 'error');
+      finishProgress(false, `${title}失败，请查看运行日志`);
+    }
+  } catch (error) {
+    log(`错误：${formatError(error)}`, 'error');
+    finishProgress(false, `${title}出错，请查看运行日志`);
+  } finally {
+    setRunning(false, prefix);
+  }
+}
+
+function initializeImaExportHandlers() {
+  loadImaConfigIntoForm('ima-export').catch((error) => {
+    log(`读取 ima 配置失败：${formatError(error)}`, 'error');
+  });
+  document.getElementById('ima-export-save-config')?.addEventListener('click', () => saveImaConfig('ima-export'));
+}
+
+function selectedImaKnowledgeBaseId() {
+  const select = document.getElementById('ima-import-kb-select');
+  return select?.value?.trim() || '';
+}
+
+function buildImaImportArgs(options = {}) {
+  const prefix = 'ima-import';
+  if (!options.plan) {
+    requireImaCredentials(prefix);
+  }
+  const args = options.plan ? [] : buildImaCredentialArgs(prefix);
+  const sourceDir = document.getElementById('ima-import-source')?.value.trim();
+  const sourceFile = document.getElementById('ima-import-source-file')?.value.trim();
+  const kbId = selectedImaKnowledgeBaseId();
+  const folderId = document.getElementById('ima-import-folder-id')?.value.trim();
+  const maxImport = document.getElementById('ima-import-max')?.value;
+  const delay = document.getElementById('ima-import-delay')?.value;
+  const jitter = document.getElementById('ima-import-jitter')?.value;
+
+  if (options.listKbs) {
+    args.push('--list-knowledge-bases', '--addable-only');
+    return args;
+  }
+
+  if (options.listFolders) {
+    if (!kbId) throw new Error('请先点击“读取知识库”并选择目标知识库');
+    args.push('--scan-toc', '--knowledge-base-id', kbId);
+    return args;
+  }
+
+  if (!sourceDir) throw new Error('请选择本地文件目录');
+  args.push('--source-dir', sourceDir);
+  if (sourceFile) args.push('--source-file', sourceFile);
+  if (kbId) args.push('--knowledge-base-id', kbId);
+  if (folderId) args.push('--folder-id', folderId);
+  if (delay) args.push('--request-delay', delay);
+  if (jitter) args.push('--request-jitter', jitter);
+  if (maxImport && parseInt(maxImport, 10) > 0) args.push('--max-import', maxImport);
+  const includeAssets = document.getElementById('ima-import-include-assets');
+  if (includeAssets && includeAssets.checked) args.push('--include-referenced-assets');
+  args.push('--progress-every', '1');
+
+  if (options.plan) {
+    args.push('--scan-source');
+  } else {
+    if (!kbId) throw new Error('请先点击“读取知识库”并选择目标知识库');
+    args.push(options.single ? '--import-one' : '--import-all', '--yes');
+    const skipExisting = document.getElementById('ima-import-skip-existing');
+    if (skipExisting && !skipExisting.checked) args.push('--overwrite-existing');
+  }
+  return args;
+}
+
+async function runImaImportCommand(args, title, detail = '正在处理 ima 知识库任务...') {
+  setRunning(true, 'ima-import');
+  startProgress(title, detail);
+  log(`开始：${title}`, 'info');
+  try {
+    const result = await window.electronAPI.runPythonCommand('ima_knowledge.py', args);
+    if (result.success) {
+      log(`${title}完成`, 'success');
+      if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
+      finishProgress(true, `${title}完成`);
+      return result.data || {};
+    }
+    log(`${title}失败：${result.error}`, 'error');
+    finishProgress(false, `${title}失败，请查看运行日志`);
+  } catch (error) {
+    log(`错误：${formatError(error)}`, 'error');
+    finishProgress(false, `${title}出错，请查看运行日志`);
+  } finally {
+    setRunning(false, 'ima-import');
+  }
+  return null;
+}
+
+function renderImaKnowledgeBaseOptions(kbs) {
+  const select = document.getElementById('ima-import-kb-select');
+  if (!select) return;
+  const options = (kbs || []).map((kb) => {
+    const id = String(kb.id || '');
+    const name = String(kb.name || id || '未命名知识库');
+    return `<option value="${escapeHtml(id)}">${escapeHtml(name)}</option>`;
+  }).join('');
+  select.innerHTML = options || '<option value="">没有读取到可写入的知识库</option>';
+  renderImaFolderOptions([]);
+}
+
+function renderImaFolderOptions(nodes) {
+  const select = document.getElementById('ima-import-folder-id');
+  if (!select) return;
+  const folders = (nodes || []).filter((node) => node.nodeType === 'folder' && node.folderId);
+  const byId = new Map((nodes || []).map((node) => [node.nodeId, node]));
+  const titlePath = (node) => {
+    const parts = [String(node.title || '未命名文件夹')];
+    let parentId = node.parentNodeId;
+    let guard = 0;
+    while (parentId && byId.has(parentId) && guard < 20) {
+      const parent = byId.get(parentId);
+      if (parent?.nodeType === 'folder') parts.unshift(String(parent.title || '未命名文件夹'));
+      parentId = parent?.parentNodeId;
+      guard += 1;
+    }
+    return parts.join(' / ');
+  };
+  const options = ['<option value="">知识库根目录</option>'];
+  folders.forEach((folder) => {
+    options.push(`<option value="${escapeHtml(folder.folderId)}">${escapeHtml(titlePath(folder))}</option>`);
+  });
+  select.innerHTML = options.join('');
+}
+
+function initializeImaImportHandlers() {
+  loadImaConfigIntoForm('ima-import').catch((error) => {
+    log(`读取 ima 配置失败：${formatError(error)}`, 'error');
+  });
+  document.getElementById('ima-import-save-config')?.addEventListener('click', () => saveImaConfig('ima-import'));
+  document.getElementById('ima-import-browse-source')?.addEventListener('click', async () => {
+    const current = document.getElementById('ima-import-source')?.value || '';
+    const dir = await window.electronAPI.selectDirectory({
+      title: '选择本地文件目录',
+      defaultPath: current
+    });
+    if (dir) document.getElementById('ima-import-source').value = dir;
+  });
+  document.getElementById('ima-import-browse-file')?.addEventListener('click', async () => {
+    const file = await window.electronAPI.selectFile({
+      title: '选择单文件测试',
+      filters: [
+        { name: 'ima 支持文件', extensions: ['md', 'markdown', 'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'csv', 'png', 'jpg', 'jpeg', 'webp', 'txt', 'xmind', 'mp3', 'm4a', 'wav', 'aac'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    });
+    if (file) document.getElementById('ima-import-source-file').value = file;
+  });
+  document.getElementById('ima-import-list-kbs')?.addEventListener('click', async () => {
+    try {
+      const data = await runImaImportCommand(buildImaImportArgs({ listKbs: true }), '读取 ima 可写知识库', '正在读取可导入的知识库列表...');
+      if (data) renderImaKnowledgeBaseOptions(data.knowledgeBases || []);
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+  document.getElementById('ima-import-kb-select')?.addEventListener('change', () => {
+    renderImaFolderOptions([]);
+  });
+  document.getElementById('ima-import-list-folders')?.addEventListener('click', async () => {
+    try {
+      const data = await runImaImportCommand(buildImaImportArgs({ listFolders: true }), '读取 ima 目标文件夹', '正在读取目标知识库里的已有文件夹...');
+      if (data) {
+        renderImaFolderOptions(data.nodes || []);
+        const folderCount = (data.nodes || []).filter((node) => node.nodeType === 'folder').length;
+        log(`目标文件夹读取完成：共 ${folderCount} 个文件夹。`, 'success');
+      }
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+  document.getElementById('ima-import-plan')?.addEventListener('click', async () => {
+    try {
+      await runImaImportCommand(buildImaImportArgs({ plan: true }), '扫描 ima 导入目录', '正在扫描本地可导入文件...');
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+  document.getElementById('ima-import-one')?.addEventListener('click', async () => {
+    try {
+      if (confirm('这会向 ima 知识库上传一个测试文件。确认继续吗？')) {
+        await runImaImportCommand(buildImaImportArgs({ single: true }), 'ima 单文件导入测试', '正在上传第一个文件...');
+      }
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+  document.getElementById('ima-import-export')?.addEventListener('click', async () => {
+    try {
+      if (confirm('这会向 ima 知识库批量上传本地文件。确认继续吗？')) {
+        await runImaImportCommand(buildImaImportArgs(), 'ima 批量导入', '正在批量上传文件...');
+      }
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+  document.getElementById('ima-import-stop')?.addEventListener('click', handleStop);
+  document.getElementById('ima-import-open-dir')?.addEventListener('click', async () => {
+    const dir = document.getElementById('ima-import-source')?.value.trim();
+    if (dir) {
+      await window.electronAPI.openPath(dir);
+    } else {
+      alert('请先选择本地文件目录');
+    }
+  });
 }
 
 function buildYuqueImportArgs(options = {}) {
@@ -839,6 +1181,10 @@ function buildExportArgs(toolId, options = {}) {
     return buildYuqueImportArgs(options);
   }
 
+  if (toolId === 'ima-export') {
+    return buildImaExportArgs(options);
+  }
+
   const args = config.noUrl ? [] : [config.urlParam, url];
   if (forScan) {
     args.push('--scan-toc');
@@ -994,6 +1340,18 @@ function normalizeTocNodes(toolId, data) {
           parentNodeId: notebookNodeId,
           selectable: true
         });
+      });
+    });
+  }
+  if (toolId === 'ima-export') {
+    (data.nodes || []).forEach((item, index) => {
+      const nodeId = String(item.nodeId || `ima-node:${index}`);
+      nodes.push({
+        nodeId,
+        exportId: String(item.exportId || ''),
+        title: item.title || '未命名',
+        parentNodeId: item.parentNodeId || '',
+        selectable: Boolean(item.selectable && item.exportId)
       });
     });
   }
@@ -1219,7 +1577,7 @@ function setRunning(running, toolId) {
   if (loginBtn) loginBtn.disabled = running;
   if (scanTocBtn) scanTocBtn.disabled = running;
   if (stopBtn) stopBtn.disabled = !running;
-  ['toc-all', 'toc-none', 'toc-invert', 'open-dir', 'plan', 'one', 'save-config', 'open-token'].forEach((suffix) => {
+  ['toc-all', 'toc-none', 'toc-invert', 'open-dir', 'plan', 'one', 'save-config', 'open-token', 'list-kbs', 'list-folders'].forEach((suffix) => {
     const button = document.getElementById(`${prefix}-${suffix}`);
     if (button) button.disabled = running;
   });

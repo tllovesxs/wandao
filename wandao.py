@@ -59,6 +59,12 @@ PROVIDERS: dict[str, dict[str, str]] = {
         "url_arg": "无需 URL",
         "url_hint": "选择本地 Markdown 目录后，可导入到印象笔记",
     },
+    "ima": {
+        "label": "ima 知识库导入导出",
+        "script": "ima_knowledge.py",
+        "url_arg": "无需 URL",
+        "url_hint": "填写 ima Client ID / API Key 后，可读取知识库目录、导出或导入文件",
+    },
 }
 
 

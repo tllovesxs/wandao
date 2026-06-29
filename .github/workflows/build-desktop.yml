@@ -47,6 +47,7 @@ jobs:
         working-directory: wandao_electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          GITHUB_TOKEN: ${{ github.token }}
         run: ${{ matrix.command }}
 
       - name: Upload artifacts

@@ -21,6 +21,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import urllib.error
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -58,10 +59,30 @@ def host_target() -> str:
     raise SystemExit(f"当前系统暂不支持自动准备运行时：{platform.system()} {platform.machine()}")
 
 
+def github_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "wandao-build",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def request_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "wandao-build"})
-    with urllib.request.urlopen(req, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8"))
+    req = urllib.request.Request(url, headers=github_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in {403, 429}:
+            raise SystemExit(
+                "GitHub API 请求被限流，无法获取 Python standalone release。"
+                "请在 GitHub Actions 中传入 GITHUB_TOKEN，或设置 WANDAO_PYTHON_RUNTIME_URL 指向运行时压缩包。"
+            ) from exc
+        raise
 
 
 def pick_asset(target: str) -> tuple[str, str]:

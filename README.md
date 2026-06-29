@@ -15,7 +15,7 @@
   <a href="https://github.com/tllovesxs/wandao"><img src="https://img.shields.io/badge/GitHub-tllovesxs%2Fwandao-black" alt="GitHub"></a>
 </p>
 
-万能导是一个多平台知识库 Markdown 导入导出工具。你可以把自己有权限访问的项目资料、团队知识库、课程文档导出为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台中。
+万能导是一个多平台(目前已支持飞书,语雀,阿里云,印象笔记,知识星球,本地md)知识库 Markdown 导入导出工具。你可以把自己有权限访问的项目资料、团队知识库、课程文档导出为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台中。
 
 它适合用来做知识备份、平台迁移、项目学习资料整理，以及把“教学文档 + 源码项目”放在一起交给 AI 阅读。
 

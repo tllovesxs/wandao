@@ -2,7 +2,7 @@
   <img src="docs/images/wandao-logo.png" alt="万能导 Wandao Logo" width="96">
 </p>
 
-<h1 align="center">万能导 Wandao</h1>
+<h1 align="center">万能导 Wandao ✨</h1>
 
 <p align="center">
   让知识没有壁垒，多平台文档互转。用自动化脚本代替手动复制、整理目录、搬运文档的重复劳动。
@@ -31,62 +31,62 @@
 
 Author: `tllovesxs`
 
-## 项目信息
+## 📌 项目信息
 
 | 项目 | 内容 |
 |------|------|
 | <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/github.svg" alt="GitHub" width="16"> GitHub | [tllovesxs/wandao](https://github.com/tllovesxs/wandao) |
 | Gitee | [shi-xiansong/wandao](https://gitee.com/shi-xiansong/wandao) |
-| 发行版下载 | [GitHub Releases](https://github.com/tllovesxs/wandao/releases) |
-| 问题反馈 | [GitHub Issues](https://github.com/tllovesxs/wandao/issues) / [Gitee Issues](https://gitee.com/shi-xiansong/wandao/issues) |
-| 使用教程 | [docs/使用教程.md](docs/使用教程.md) |
-| 项目学习提示词 | [prompts/项目学习导师提示词.md](prompts/项目学习导师提示词.md) |
-| 作者微信 | `pressure_spring` |
-| 联系邮箱 | `tl200599@163.com` |
+| 📦 发行版下载 | [GitHub Releases](https://github.com/tllovesxs/wandao/releases) |
+| 🐛 问题反馈 | [GitHub Issues](https://github.com/tllovesxs/wandao/issues) / [Gitee Issues](https://gitee.com/shi-xiansong/wandao/issues) |
+| 📖 使用教程 | [docs/使用教程.md](docs/使用教程.md) |
+| 🧠 项目学习提示词 | [prompts/项目学习导师提示词.md](prompts/项目学习导师提示词.md) |
+| 💬 作者微信 | `pressure_spring` |
+| 📮 联系邮箱 | `tl200599@163.com` |
 
-## 截图预览
+## 🖼️ 截图预览
 
 <p align="left">
   <img src="docs/images/wandao-exporter-guis.png" alt="万能导桌面端主界面" width="900">
 </p>
 
-## 支持能力
+## 🚀 支持能力
 
-### 导出到本地
+### 📤 导出到本地
 
 | 平台 | 能力 |
 |------|------|
-| 知识星球 | 支持项目、专栏、帖子、文章页导出，可选导出可见评论区 |
-| 语雀 | 支持任意知识库导出，并尽量本地化正文图片和附件 |
-| 飞书 Wiki | 支持 Wiki 知识库导出为 Markdown |
-| 阿里云 Thoughts | 支持工作区文档导出为 Markdown |
+| 🌟 知识星球 | 支持项目、专栏、帖子、文章页导出，可选导出可见评论区 |
+| 🪶 语雀 | 支持任意知识库导出，并尽量本地化正文图片和附件 |
+| 🪽 飞书 Wiki | 支持 Wiki 知识库导出为 Markdown |
+| ☁️ 阿里云 Thoughts | 支持工作区文档导出为 Markdown |
 | <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/evernote.svg" alt="Evernote" width="16"> 印象笔记 | 支持同步后按笔记本导出 Markdown |
-| ima 知识库 | 支持读取知识库目录树，按知识库、文件夹或文件勾选导出 |
+| 🤖 ima 知识库 | 支持读取知识库目录树，按知识库、文件夹或文件勾选导出 |
 
-### 导入到平台
+### 📥 导入到平台
 
 | 平台 | 能力 |
 |------|------|
-| 飞书 Wiki | 支持本地 Markdown 批量导入，并恢复多层目录结构 |
-| 语雀 | 支持本地 Markdown 创建或更新到语雀知识库，上传图片和附件 |
+| 🪽 飞书 Wiki | 支持本地 Markdown 批量导入，并恢复多层目录结构 |
+| 🪶 语雀 | 支持本地 Markdown 创建或更新到语雀知识库，上传图片和附件 |
 | <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/evernote.svg" alt="Evernote" width="16"> 印象笔记 | 支持本地 Markdown 批量导入，并上传本地图片和附件 |
-| ima 知识库 | 支持本地文件上传到知识库根目录或已有文件夹 |
+| 🤖 ima 知识库 | 支持本地文件上传到知识库根目录或已有文件夹 |
 
-## 主要特性
+## ✨ 主要特性
 
-- 统一桌面端：左侧按“导出 / 导入”分类展示平台入口。
-- 目录选择：先读取目录，再选择全部或部分内容。
-- 进度反馈：读取目录、导入、导出都有进度条和实时日志。
-- 增量更新：已导出的文档可以跳过，只补缺失内容。
-- 图片和附件处理：尽量把正文图片、附件下载或上传到目标平台。
-- 浏览器自动查找：自动扫描 Chrome、Edge、Chromium，也支持手动指定。
-- 请求节奏控制：内置固定延迟和随机浮动，尽量接近正常手动浏览节奏。
-- 停止按钮：任务执行中可以随时停止，已完成文件会保留。
-- 夜间模式和更新检查：桌面端支持主题切换和新版本提示。
+- 🧭 统一桌面端：左侧按“导出 / 导入”分类展示平台入口。
+- ✅ 目录选择：先读取目录，再选择全部或部分内容。
+- 📊 进度反馈：读取目录、导入、导出都有进度条和实时日志。
+- 🔁 增量更新：已导出的文档可以跳过，只补缺失内容。
+- 🖼️ 图片和附件处理：尽量把正文图片、附件下载或上传到目标平台。
+- 🔎 浏览器自动查找：自动扫描 Chrome、Edge、Chromium，也支持手动指定。
+- ⏱️ 请求节奏控制：内置固定延迟和随机浮动，尽量接近正常手动浏览节奏。
+- ⏹️ 停止按钮：任务执行中可以随时停止，已完成文件会保留。
+- 🌙 夜间模式和更新检查：桌面端支持主题切换和新版本提示。
 
-## 快速开始
+## ⚡ 快速开始
 
-### 普通用户
+### 👤 普通用户
 
 1. 打开 [GitHub Releases](https://github.com/tllovesxs/wandao/releases)。
 2. 下载对应系统的发行版。
@@ -102,7 +102,7 @@ Author: `tllovesxs`
 
 发行版已内置 Python 运行时，普通用户不需要额外安装 Python。
 
-### 开发者
+### 🧑‍💻 开发者
 
 ```powershell
 git clone https://github.com/tllovesxs/wandao.git
@@ -128,9 +128,9 @@ macOS/Linux 将虚拟环境激活命令换成：
 source .venv/bin/activate
 ```
 
-## 常用流程
+## 🧩 常用流程
 
-### 导出知识库
+### 📤 导出知识库
 
 1. 选择左侧“导出”里的目标平台。
 2. 填写入口链接，或填写平台账号/API 配置。
@@ -139,7 +139,7 @@ source .venv/bin/activate
 5. 勾选要导出的目录或文档。
 6. 点击“开始导出”。
 
-### 导入 Markdown
+### 📥 导入 Markdown
 
 1. 选择左侧“导入”里的目标平台。
 2. 选择本地 Markdown 目录。
@@ -150,7 +150,7 @@ source .venv/bin/activate
 
 飞书导入、语雀导入、印象笔记导入、ima 导入的详细步骤见 [使用教程](docs/使用教程.md)。
 
-## 配合 AI 学习项目
+## 🧠 配合 AI 学习项目
 
 万能导适合和 AI 编程/阅读工具一起使用：
 
@@ -160,16 +160,16 @@ source .venv/bin/activate
 4. 把 [项目学习导师提示词](prompts/项目学习导师提示词.md) 发给 AI。
 5. 之后可以按章节、功能或技术点提问，让 AI 结合“教学文档 + 真实源码”讲解。
 
-## 系统要求
+## 🛠️ 系统要求
 
 | 依赖 | 要求 |
 |------|------|
 | <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/python.svg" alt="Python" width="16"> Python | 发行版已内置；源码运行需要 Python 3.10+ |
-| Node.js | 仅源码运行桌面端、参与开发或本地打包时需要 |
-| 浏览器 | Chrome、Edge 或 Chromium，浏览器类平台登录时使用 |
-| 权限 | 需要拥有目标内容的正常访问权限 |
+| 🟩 Node.js | 仅源码运行桌面端、参与开发或本地打包时需要 |
+| 🌐 浏览器 | Chrome、Edge 或 Chromium，浏览器类平台登录时使用 |
+| 🔐 权限 | 需要拥有目标内容的正常访问权限 |
 
-## 打包说明
+## 📦 打包说明
 
 ```powershell
 cd wandao_electron
@@ -184,7 +184,7 @@ npm run build:mac:x64
 npm run build:mac:arm64
 ```
 
-## 合规说明
+## ⚖️ 合规说明
 
 本项目用于减少用户手动复制、整理、迁移文档的机械劳动。它不会破解登录、不绕过权限控制，也不提供未授权内容访问能力。
 
@@ -197,13 +197,13 @@ npm run build:mac:arm64
 
 更多说明见 [docs/合规说明.md](docs/合规说明.md)。
 
-## 参与贡献
+## 🤝 参与贡献
 
 欢迎提交 Issue 和 Pull Request。Bug 反馈、平台适配、导入导出效果优化、文档补充和界面体验改进都可以参与。
 
 提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。请不要在 Issue、PR、截图或日志里提交 Cookie、账号密码、App Secret、Token、API Key 等敏感信息。
 
-## 友情链接
+## 🔗 友情链接
 
 - [LINUX DO](https://linux.do)
 

@@ -20,24 +20,7 @@
     </header>
 
     <div class="workspace">
-      <aside class="sidebar">
-        <details class="nav-group" open>
-          <summary>导出</summary>
-          <button class="nav-item active" data-tool="zsxq">知识星球导出</button>
-          <button class="nav-item" data-tool="yuque">语雀导出</button>
-          <button class="nav-item" data-tool="feishu-export">飞书导出</button>
-          <button class="nav-item" data-tool="aliyun">阿里 Thoughts 导出</button>
-          <button class="nav-item" data-tool="yinxiang">印象笔记导出</button>
-          <button class="nav-item" data-tool="ima-export">ima 知识库导出</button>
-        </details>
-        <details class="nav-group" open>
-          <summary>导入</summary>
-          <button class="nav-item" data-tool="yuque-import">语雀 Markdown 导入</button>
-          <button class="nav-item" data-tool="feishu-import">飞书 Markdown 导入</button>
-          <button class="nav-item" data-tool="yinxiang-import">印象笔记 Markdown 导入</button>
-          <button class="nav-item" data-tool="ima-import">ima 知识库导入</button>
-        </details>
-      </aside>
+      <aside class="sidebar" id="provider-sidebar"></aside>
 
       <main class="app-main">
         <section class="update-banner" id="update-banner" hidden>
@@ -71,10 +54,11 @@
 
         <section class="log-section">
           <div class="log-header">
-            <h3>运行日志</h3>
-            <div>
+            <h3>用户日志</h3>
+            <div class="log-actions">
               <button class="btn-text" id="btn-settings">设置</button>
               <button class="btn-text" id="btn-about">关于</button>
+              <button class="btn-text" id="btn-copy-error-report">提交错误报告给开发者</button>
               <button class="btn-text" id="btn-clear-log">清空</button>
             </div>
           </div>
@@ -554,6 +538,7 @@
     </div>
   </template>
 
+  <script src="providers.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

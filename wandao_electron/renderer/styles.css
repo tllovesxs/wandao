@@ -23,6 +23,7 @@
   --danger-hover: #c12a39;
   --warning-bg: #fff8e1;
   --warning-border: #ffe082;
+  --warning-text: #8a5a00;
   --setup-bg: #f3f7f6;
   --setup-border: #d6e3df;
   --log-bg: #f9f9f9;
@@ -50,6 +51,7 @@ body[data-theme="dark"] {
   --danger-hover: #f0808a;
   --warning-bg: #2b2717;
   --warning-border: #7a6425;
+  --warning-text: #f2c76f;
   --setup-bg: #172831;
   --setup-border: #294452;
   --log-bg: #10161d;
@@ -672,6 +674,14 @@ button:disabled {
   font-weight: 600;
 }
 
+.log-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .log-content {
   flex: 1;
   overflow-y: auto;
@@ -699,6 +709,10 @@ button:disabled {
 
 .log-entry.info {
   color: var(--primary);
+}
+
+.log-entry.warn {
+  color: var(--warning-text);
 }
 
 /* Scrollbar styling */

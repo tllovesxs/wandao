@@ -304,12 +304,13 @@ function buildApplicationMenu() {
       label: '帮助',
       submenu: [
         {
+          label: '新手模式 / 使用教程',
+          click: () => openProjectUrl(PROJECT_INFO.docs)
+        },
+        { type: 'separator' },
+        {
           label: '项目主页 GitHub',
           click: () => openProjectUrl(PROJECT_INFO.github)
-        },
-        {
-          label: '使用教程',
-          click: () => openProjectUrl(PROJECT_INFO.docs)
         },
         {
           label: '下载发行版',

@@ -40,6 +40,7 @@ Author: `tllovesxs`
 | 📦 发行版下载 | [GitHub Releases](https://github.com/tllovesxs/wandao/releases) |
 | 🐛 问题反馈 | [GitHub Issues](https://github.com/tllovesxs/wandao/issues) / [Gitee Issues](https://gitee.com/shi-xiansong/wandao/issues) |
 | 📖 使用教程 | [docs/使用教程.md](docs/使用教程.md) |
+| 🔌 Provider 接入 | [docs/Provider接入说明.md](docs/Provider接入说明.md) |
 | 🧠 项目学习提示词 | [prompts/项目学习导师提示词.md](prompts/项目学习导师提示词.md) |
 | 💬 作者微信 | `pressure_spring` |
 | 📮 联系邮箱 | `tl200599@163.com` |

@@ -106,54 +106,48 @@ Author: `tllovesxs`
 
 发行版已内置 Python 运行时，普通用户不需要额外安装 Python。
 
-### 🧑‍💻 开发调试
+### 🧑‍💻 源码一键启动
 
-如果你是win系统使用软件，请下载发行版；如果你想改代码或本地调试又或者是mac用户，推荐直接用源码启动。
+如果你想改代码、本地调试，或者当前系统暂时没有合适的发行版，可以直接用源码启动。
 
-> 源码启动如下指令(很简单)
+一键启动脚本会自动完成三件事：
 
-Windows PowerShell：
+1. 检查本机有没有 Node.js/npm。
+2. 如果没有，会下载一个本地便携 Node.js 到 `.dev-runtime`，不污染系统环境。
+3. 自动检测官方 npm 源和国内 npmmirror，选择更适合当前网络的方式安装依赖并启动。
+
+Windows：
 
 ```powershell
 git clone https://github.com/tllovesxs/wandao.git
 cd wandao
-python -m pip install -r requirements.txt
-cd wandao_electron
-npm install
-npm start
+.\start-wandao.cmd
 ```
 
-如果看到 `npm verbose audit error ... unable to get local issuer certificate`，一般只是 npm 安全审计接口的证书问题，不代表依赖安装失败。项目已默认关闭 `audit` 和 `fund`，重新执行 `npm install` 即可。
+也可以直接双击：
 
-<details>
-<summary>可选：网络慢、虚拟环境、Gitee 镜像或 macOS/Linux</summary>
-
-如果 `npm install` 长时间不动，通常是 Electron 下载地址访问慢。可以按 `Ctrl + C` 停止后，在 `wandao_electron` 目录执行：
-
-```powershell
-npm run install:cn
+```text
+start-wandao.cmd
 ```
 
-如果你希望 Python 依赖不污染系统环境，可以先创建虚拟环境：
+macOS/Linux：
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
+```bash
+git clone https://github.com/tllovesxs/wandao.git
+cd wandao
+chmod +x ./start-wandao.sh
+./start-wandao.sh
 ```
 
 国内网络环境也可以把 clone 地址换成 Gitee：
 
 ```powershell
 git clone https://gitee.com/shi-xiansong/wandao.git
+cd wandao
+.\start-wandao.cmd
 ```
 
-macOS/Linux 激活虚拟环境使用：
-
-```bash
-source .venv/bin/activate
-```
-
-</details>
+> 如果只想安装依赖、不启动软件，可以运行 `.\start-wandao.cmd -InstallOnly` 或 `./start-wandao.sh --install-only`。
 
 ## 🧩 常用流程
 

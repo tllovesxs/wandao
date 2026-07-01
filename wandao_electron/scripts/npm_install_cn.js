@@ -1,6 +1,12 @@
 const { spawnSync } = require('child_process');
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const installArgs = [
+  'install',
+  '--registry=https://registry.npmmirror.com/',
+  '--no-audit',
+  '--no-fund',
+  '--verbose'
+];
 const env = {
   ...process.env,
   ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/',
@@ -9,15 +15,18 @@ const env = {
   npm_config_electron_builder_binaries_mirror: 'https://npmmirror.com/mirrors/electron-builder-binaries/'
 };
 
-const result = spawnSync(npmCommand, [
-  'install',
-  '--registry=https://registry.npmmirror.com/',
-  '--no-audit',
-  '--no-fund',
-  '--verbose'
-], {
+const npmExecPath = process.env.npm_execpath;
+const command = npmExecPath ? process.execPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+const args = npmExecPath ? [npmExecPath, ...installArgs] : installArgs;
+
+const result = spawnSync(command, args, {
   stdio: 'inherit',
-  env
+  env,
+  shell: !npmExecPath && process.platform === 'win32'
 });
+
+if (result.error) {
+  console.error(result.error.message || result.error);
+}
 
 process.exit(result.status ?? 1);

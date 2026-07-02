@@ -233,5 +233,14 @@ npm run build:mac:arm64
 本项目采用 [Apache License 2.0](LICENSE) 开源。
 
 ---
+## Star History
+
+<a href="https://www.star-history.com/?repos=tllovesxs%2Fwandao&type=timeline&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tllovesxs/wandao&type=timeline&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tllovesxs/wandao&type=timeline&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tllovesxs/wandao&type=timeline&legend=top-left" />
+ </picture>
+</a>
 
 如果这个项目对你有帮助，欢迎在 GitHub 给一个 Star。

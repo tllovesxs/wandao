@@ -3,8 +3,8 @@
 """
 Standalone exporter for ZSXQ (知识星球) column/topic/article pages.
 
-GUI:
-  python export_zsxq.py --gui
+Desktop UI:
+  Use start-wandao.cmd or ./start-wandao.sh. The old Python GUI is deprecated.
 
 Small test:
   python export_zsxq.py \
@@ -2756,7 +2756,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.gui:
-        return run_gui()
+        print("旧版 Python GUI 已废弃，请使用 Electron 桌面端：start-wandao.cmd 或 ./start-wandao.sh", file=sys.stderr)
+        return 2
     if not args.entry_url:
         raise ExportError("--entry-url is required")
     if not args.output:

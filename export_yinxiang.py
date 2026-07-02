@@ -692,7 +692,8 @@ def main(argv: list[str]) -> int:
             args.enex_dir = args.enex_dir.expanduser().resolve()
 
         if args.gui:
-            return run_gui()
+            print("旧版 Python GUI 已废弃，请使用 Electron 桌面端：start-wandao.cmd 或 ./start-wandao.sh", file=sys.stderr)
+            return 2
         if args.init_auth:
             init_auth(args)
             emit_json({"provider": "yinxiang", "database": str(args.database), "status": "authenticated"})

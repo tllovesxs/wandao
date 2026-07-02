@@ -80,7 +80,7 @@
       script: 'export_aliyun_thoughts.py',
       urlParam: '--workspace-url',
       outputParam: '--output',
-      defaults: { output: 'exports/aliyun-thoughts' },
+      defaults: { output: 'exports/aliyun-thoughts', delay: '0.1', jitter: '0' },
       capabilities: { login: true, scanToc: true }
     },
     {
@@ -93,6 +93,18 @@
       outputParam: '--output',
       noUrl: true,
       defaults: { output: 'exports/yinxiang' },
+      capabilities: { login: true, scanToc: true }
+    },
+    {
+      id: 'youdao',
+      platform: 'youdao',
+      navLabel: '有道云笔记导出',
+      title: '有道云笔记导出',
+      description: '将有道云笔记导出为本地 Markdown 文件',
+      script: 'export_youdao.py',
+      outputParam: '--output',
+      noUrl: true,
+      defaults: { output: 'exports/youdao' },
       capabilities: { login: true, scanToc: true }
     },
     {

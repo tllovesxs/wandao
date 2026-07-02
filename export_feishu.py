@@ -3,8 +3,8 @@
 """
 Standalone Feishu Wiki exporter.
 
-GUI:
-  python export_feishu.py --gui
+Desktop UI:
+  Use start-wandao.cmd or ./start-wandao.sh. The old Python GUI is deprecated.
 
 First login:
   python export_feishu.py --login \
@@ -1626,7 +1626,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.gui:
-        return run_gui()
+        print("旧版 Python GUI 已废弃，请使用 Electron 桌面端：start-wandao.cmd 或 ./start-wandao.sh", file=sys.stderr)
+        return 2
     if not args.wiki_url:
         raise ExportError("--wiki-url is required")
     if not args.output:

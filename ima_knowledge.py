@@ -980,17 +980,8 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
         if args.gui:
-            try:
-                import tkinter as tk
-                from tkinter import messagebox
-
-                root = tk.Tk()
-                root.withdraw()
-                messagebox.showinfo("ima 知识库导入导出", "请在万能导桌面端左侧选择“ima 知识库导出”或“ima 知识库导入”。")
-                root.destroy()
-            except Exception:
-                emit("请在万能导桌面端左侧选择“ima 知识库导出”或“ima 知识库导入”。")
-            return 0
+            print("旧版 Python GUI 已废弃，请使用 Electron 桌面端：start-wandao.cmd 或 ./start-wandao.sh", file=sys.stderr)
+            return 2
         if args.scan_source:
             emit_json(scan_source(args))
             return 0

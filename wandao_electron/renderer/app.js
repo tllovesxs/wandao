@@ -933,16 +933,18 @@ function renderGenericProviderForm(provider) {
   const actionName = provider.isImport ? '导入' : '导出';
   const sourceLabel = provider.isImport ? '本地目录' : '输出目录';
   const sourcePlaceholder = provider.isImport ? '选择要导入的本地 Markdown 目录' : '留空使用默认输出目录';
+  const delayDefault = provider.defaults?.delay ?? '1.0';
+  const jitterDefault = provider.defaults?.jitter ?? '0.5';
   const urlField = provider.noUrl ? '' : `
     <div class="form-group">
       <label for="${provider.id}-url">入口 URL <span class="required">*</span></label>
       <input type="text" id="${provider.id}-url" placeholder="粘贴目标平台页面 URL">
     </div>
   `;
-  const loginButton = provider.noUrl ? '' : `
+  const loginButton = provider.capabilities?.login ? `
         <button class="btn-secondary" id="${provider.id}-login">登录并保存凭证</button>
         <button class="btn-secondary" id="${provider.id}-login-done" hidden disabled>我已完成登录，保存凭证</button>
-  `;
+  ` : '';
   contentArea.innerHTML = `
     <div class="tool-panel">
       <section class="form-section">
@@ -960,11 +962,11 @@ function renderGenericProviderForm(provider) {
             <div class="form-row">
               <div class="form-group flex-1">
                 <label for="${provider.id}-delay">请求延迟秒</label>
-                <input type="number" id="${provider.id}-delay" value="1.0" min="0" step="0.1">
+                <input type="number" id="${provider.id}-delay" value="${delayDefault}" min="0" step="0.1">
               </div>
               <div class="form-group flex-1">
                 <label for="${provider.id}-jitter">随机浮动秒</label>
-                <input type="number" id="${provider.id}-jitter" value="0.5" min="0" step="0.1">
+                <input type="number" id="${provider.id}-jitter" value="${jitterDefault}" min="0" step="0.1">
               </div>
             </div>
             <label class="checkbox-label">
@@ -1118,13 +1120,13 @@ async function handleLogin(toolId) {
   const config = TOOLS[toolId];
   const prefix = toolId;
 
-  const url = document.getElementById(`${prefix}-url`).value.trim();
-  if (!url) {
+  const url = document.getElementById(`${prefix}-url`)?.value.trim() || '';
+  if (!config.noUrl && !url) {
     alert('请先填写 URL');
     return;
   }
 
-  const args = [config.urlParam, url, '--login'];
+  const args = config.noUrl ? ['--login'] : [config.urlParam, url, '--login'];
 
   setRunning(true, toolId);
   startProgress(`登录：${config.title}`, '请在浏览器中完成登录，然后回到工具点击“我已完成登录，保存凭证”。');
@@ -2014,6 +2016,18 @@ function normalizeTocNodes(toolId, data) {
   if (toolId === 'ima-export') {
     (data.nodes || []).forEach((item, index) => {
       const nodeId = String(item.nodeId || `ima-node:${index}`);
+      nodes.push({
+        nodeId,
+        exportId: String(item.exportId || ''),
+        title: item.title || '未命名',
+        parentNodeId: item.parentNodeId || '',
+        selectable: Boolean(item.selectable && item.exportId)
+      });
+    });
+  }
+  if (toolId === 'youdao') {
+    (data.nodes || []).forEach((item, index) => {
+      const nodeId = String(item.nodeId || `youdao-node:${index}`);
       nodes.push({
         nodeId,
         exportId: String(item.exportId || ''),

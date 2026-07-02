@@ -84,6 +84,10 @@
         "to": "python/export_yinxiang.py"
       },
       {
+        "from": "../export_youdao.py",
+        "to": "python/export_youdao.py"
+      },
+      {
         "from": "../import_yinxiang.py",
         "to": "python/import_yinxiang.py"
       },

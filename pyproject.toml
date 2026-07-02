@@ -28,6 +28,7 @@ py-modules = [
   "export_feishu",
   "export_zsxq",
   "export_yinxiang",
+  "export_youdao",
   "import_feishu",
   "import_yuque",
   "import_yinxiang",

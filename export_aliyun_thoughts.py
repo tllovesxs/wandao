@@ -8,7 +8,7 @@ It can:
   - restore saved auth without Codex or browser extensions;
   - export all workspace documents to Markdown;
   - incrementally add documents that do not exist locally yet;
-  - run from CLI or a small Tkinter GUI.
+  - run from CLI as the Electron desktop backend.
 
 Usage:
   # 1. First-time login. This saves cookies, not your password.
@@ -23,8 +23,8 @@ Usage:
     --auth-file .aliyun_thoughts_auth.json \
     --incremental
 
-GUI:
-  python export_aliyun_thoughts.py --gui
+Desktop UI:
+  Use start-wandao.cmd or ./start-wandao.sh. The old Python GUI is deprecated.
 
 The exporter controls Chrome through Chrome DevTools Protocol. It does not need
 Codex. Saved auth files contain session cookies, so keep them private.
@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import hashlib
+import http.cookiejar
 import json
 import os
 import queue
@@ -50,6 +52,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -61,6 +64,7 @@ DEFAULT_PORT = 9222
 DEFAULT_PROFILE = ".aliyun-thoughts-chrome-profile"
 DEFAULT_AUTH_FILE = ".aliyun_thoughts_auth.json"
 FORBIDDEN_FILENAME_CHARS = r'<>:"/\|?*'
+ALIYUN_EDIT_AUTH_SALT = "<8si5gtaoi$w$i$k115"
 
 
 class ExportError(RuntimeError):
@@ -91,8 +95,8 @@ def wait_with_stop(args: argparse.Namespace | None, seconds: float) -> None:
 def throttle_request(args: argparse.Namespace | None) -> None:
     if not args:
         return
-    delay = max(0.0, float(getattr(args, "request_delay", 0.8) or 0))
-    jitter = max(0.0, float(getattr(args, "request_jitter", 0.4) or 0))
+    delay = max(0.0, float(getattr(args, "request_delay", 0.1) or 0))
+    jitter = max(0.0, float(getattr(args, "request_jitter", 0.0) or 0))
     pause = delay + (random.uniform(0, jitter) if jitter else 0)
     if pause > 0:
         wait_with_stop(args, pause)
@@ -569,6 +573,600 @@ def load_tree(cdp: CDPClient, workspace_id: str, args: argparse.Namespace | None
     return nodes
 
 
+def fetch_current_user_id(cdp: CDPClient, args: argparse.Namespace | None = None) -> str:
+    data = page_fetch_json(cdp, "/api/users/me?pageSize=1000", args)
+    if not isinstance(data, dict) or not data.get("_id"):
+        raise ExportError("Could not fetch current Aliyun Thoughts user id")
+    return str(data["_id"])
+
+
+def cookie_jar_from_auth_file(auth_file: Path) -> http.cookiejar.CookieJar:
+    if not auth_file.exists():
+        raise ExportError(f"Auth file does not exist: {auth_file}")
+    payload = json.loads(auth_file.read_text(encoding="utf-8"))
+    jar = http.cookiejar.CookieJar()
+    for item in payload.get("cookies", []):
+        name = item.get("name")
+        value = item.get("value")
+        domain = item.get("domain")
+        if not name or value is None or not domain:
+            continue
+        expires = item.get("expires")
+        cookie = http.cookiejar.Cookie(
+            version=0,
+            name=str(name),
+            value=str(value),
+            port=None,
+            port_specified=False,
+            domain=str(domain),
+            domain_specified=True,
+            domain_initial_dot=str(domain).startswith("."),
+            path=str(item.get("path") or "/"),
+            path_specified=True,
+            secure=bool(item.get("secure")),
+            expires=None if expires in (None, -1, 0) else int(expires),
+            discard=expires in (None, -1, 0),
+            comment=None,
+            comment_url=None,
+            rest={"HttpOnly": item.get("httpOnly")},
+            rfc2109=False,
+        )
+        jar.set_cookie(cookie)
+    return jar
+
+
+class AliyunThoughtsRestClient:
+    """Cookie-authenticated HTTP client for stable Thoughts metadata APIs."""
+
+    def __init__(self, auth_file: Path) -> None:
+        self.jar = cookie_jar_from_auth_file(auth_file)
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
+
+    def get_json(self, url: str, *, timeout: int = 60) -> Any:
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                return self._get_json_once(url, timeout=min(max(timeout, 10), 20))
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                if exc.code not in (408, 429, 500, 502, 503, 504):
+                    detail = exc.read().decode("utf-8", errors="replace")[:300]
+                    raise ExportError(f"Aliyun Thoughts API HTTP {exc.code}: {detail}") from exc
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+                last_error = exc
+            if attempt < 3:
+                time.sleep(0.8 * attempt)
+        raise ExportError(f"Aliyun Thoughts API failed after retries: {last_error}") from last_error
+
+    def _get_json_once(self, url: str, *, timeout: int = 20) -> Any:
+        full_url = urllib.parse.urljoin("https://thoughts.aliyun.com", url)
+        request = urllib.request.Request(full_url, headers=self._headers(full_url), method="GET")
+        with self.opener.open(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise ExportError(f"Aliyun Thoughts API returned invalid JSON: {body[:200]}") from exc
+
+    def _headers(self, url: str) -> dict[str, str]:
+        return {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://thoughts.aliyun.com/",
+            "Origin": "https://thoughts.aliyun.com",
+        }
+
+
+def fetch_children_rest(
+    client: AliyunThoughtsRestClient,
+    workspace_id: str,
+    parent_id: str | None,
+    args: argparse.Namespace | None = None,
+) -> list[dict[str, Any]]:
+    throttle_request(args)
+    suffix = f"&_parentId={urllib.parse.quote(parent_id)}&withDetail=false" if parent_id else ""
+    data = client.get_json(f"/api/workspaces/{workspace_id}/nodes?pageSize=1000{suffix}")
+    return data.get("result", []) if isinstance(data, dict) else []
+
+
+def load_tree_rest(
+    client: AliyunThoughtsRestClient,
+    workspace_id: str,
+    args: argparse.Namespace | None = None,
+) -> list[Node]:
+    nodes: list[Node] = []
+    seen: set[str] = set()
+
+    def visit(parent_id: str | None) -> None:
+        for raw in fetch_children_rest(client, workspace_id, parent_id, args):
+            node_id = raw["_id"]
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            node = Node(
+                id=node_id,
+                title=raw.get("title") or "未命名",
+                type=raw.get("type") or "",
+                parent_id=raw.get("_parentId"),
+                pos=float(raw.get("pos") or 0),
+                raw=raw,
+            )
+            nodes.append(node)
+            if node.type == "folder" or raw.get("withChild") or raw.get("extra", {}).get("withChild"):
+                visit(node.id)
+
+    visit(None)
+    return nodes
+
+
+def fetch_current_user_id_rest(client: AliyunThoughtsRestClient, args: argparse.Namespace | None = None) -> str:
+    throttle_request(args)
+    data = client.get_json("/api/users/me?pageSize=1000")
+    if not isinstance(data, dict) or not data.get("_id"):
+        raise ExportError("Could not fetch current Aliyun Thoughts user id")
+    return str(data["_id"])
+
+
+def parse_engineio_packets(body: str) -> list[str]:
+    packets: list[str] = []
+    index = 0
+    while index < len(body):
+        cursor = index
+        while cursor < len(body) and body[cursor].isdigit():
+            cursor += 1
+        if cursor > index and cursor < len(body) and body[cursor] == ":":
+            length = int(body[index:cursor])
+            start = cursor + 1
+            packets.append(body[start : start + length])
+            index = start + length
+        else:
+            packets.append(body[index:])
+            break
+    return packets
+
+
+def parse_socketio_events(body: str) -> list[list[Any]]:
+    events: list[list[Any]] = []
+    for packet in parse_engineio_packets(body):
+        if not packet.startswith("42"):
+            continue
+        try:
+            parsed = json.loads(packet[2:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, list):
+            events.append(parsed)
+    return events
+
+
+class AliyunThoughtsEditClient:
+    """Minimal Engine.IO polling client for Thoughts document snapshots."""
+
+    def __init__(self, auth_file: Path) -> None:
+        self.jar = cookie_jar_from_auth_file(auth_file)
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
+        self.request_index = 0
+
+    def fetch_document_value(
+        self,
+        workspace_id: str,
+        doc_id: str,
+        user_id: str,
+        *,
+        timeout: int = 60,
+    ) -> dict[str, Any]:
+        timeout = max(60, int(timeout or 60))
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            self._clear_edit_session_cookies()
+            try:
+                return self._fetch_document_value_once(workspace_id, doc_id, user_id, timeout=timeout)
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                if exc.code not in (400, 408, 429, 500, 502, 503, 504):
+                    raise
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+                last_error = exc
+            except ExportError as exc:
+                last_error = exc
+                retryable = ("Timed out", "socket session id", "sync time")
+                if not any(token in str(exc) for token in retryable):
+                    raise
+            if attempt < 3:
+                time.sleep(0.8 * attempt)
+        raise ExportError(f"Aliyun Thoughts edit API failed after retries: {last_error}")
+
+    def _fetch_document_value_once(
+        self,
+        workspace_id: str,
+        doc_id: str,
+        user_id: str,
+        *,
+        timeout: int,
+    ) -> dict[str, Any]:
+        client_id = str(uuid.uuid1())
+        base_url = "https://thoughts.aliyun.com/edit/?" + urllib.parse.urlencode(
+            {
+                "clientId": client_id,
+                "source": "thoughts",
+                "_userId": user_id,
+                "_documentId": doc_id,
+                "_workspaceId": workspace_id,
+                "EIO": "3",
+                "transport": "polling",
+            }
+        )
+        headers = self._headers(workspace_id, doc_id)
+
+        body = self._get(base_url, headers, timeout=timeout)
+        sid = self._extract_sid(body)
+        sync_time = self._poll_sync_time(base_url, headers, sid, timeout=timeout)
+
+        auth_uuid = str(uuid.uuid1())
+        signature_payload = json.dumps(
+            {"time": sync_time, "uuid": auth_uuid},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        signature = hashlib.sha1((signature_payload + ALIYUN_EDIT_AUTH_SALT).encode("utf-8")).hexdigest()
+        auth_seq = self._post_event(
+            base_url,
+            headers,
+            sid,
+            "auth",
+            {"s": signature, "time": sync_time, "uuid": auth_uuid},
+            timeout=timeout,
+        )
+        self._wait_process_success(base_url, headers, sid, auth_seq, "auth", timeout=timeout)
+
+        init_seq = self._post_event(base_url, headers, sid, "init", None, include_data=False, timeout=timeout)
+        result = self._wait_process_success(base_url, headers, sid, init_seq, "init", timeout=timeout)
+        response = result.get("response")
+        if not isinstance(response, dict):
+            raise ExportError("Aliyun Thoughts edit API did not return a document value")
+        return response
+
+    def _clear_edit_session_cookies(self) -> None:
+        for cookie in list(self.jar):
+            if cookie.name not in {"io", "THOUGHTS_EDIT_ROUTER"}:
+                continue
+            try:
+                self.jar.clear(cookie.domain, cookie.path, cookie.name)
+            except KeyError:
+                pass
+
+    def _headers(self, workspace_id: str, doc_id: str) -> dict[str, str]:
+        return {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+            ),
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Origin": "https://thoughts.aliyun.com",
+            "Referer": f"https://thoughts.aliyun.com/workspaces/{workspace_id}/docs/{doc_id}",
+        }
+
+    def _next_t(self) -> str:
+        self.request_index += 1
+        return f"PyApi{int(time.time() * 1000)}_{self.request_index}"
+
+    def _socket_url(self, base_url: str, sid: str | None = None) -> str:
+        url = f"{base_url}&t={urllib.parse.quote(self._next_t())}"
+        if sid:
+            url += f"&sid={urllib.parse.quote(sid)}"
+        return url
+
+    def _get(self, base_url: str, headers: dict[str, str], sid: str | None = None, timeout: int = 60) -> str:
+        request = urllib.request.Request(self._socket_url(base_url, sid), headers=headers, method="GET")
+        with self.opener.open(request, timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+
+    def _post_event(
+        self,
+        base_url: str,
+        headers: dict[str, str],
+        sid: str,
+        event: str,
+        data: Any,
+        *,
+        include_data: bool = True,
+        timeout: int = 60,
+    ) -> str:
+        seq = str(uuid.uuid1())
+        payload: dict[str, Any] = {"seq": seq}
+        if include_data:
+            payload["data"] = data
+        packet = "42" + json.dumps([event, payload], ensure_ascii=False, separators=(",", ":"))
+        body = f"{len(packet)}:{packet}".encode("utf-8")
+        request_headers = dict(headers)
+        request_headers["Content-Type"] = "text/plain;charset=UTF-8"
+        request = urllib.request.Request(
+            self._socket_url(base_url, sid),
+            data=body,
+            headers=request_headers,
+            method="POST",
+        )
+        with self.opener.open(request, timeout=timeout) as response:
+            response.read()
+        return seq
+
+    def _extract_sid(self, body: str) -> str:
+        for packet in parse_engineio_packets(body):
+            if packet.startswith("0"):
+                data = json.loads(packet[1:])
+                sid = data.get("sid")
+                if sid:
+                    return str(sid)
+        raise ExportError("Aliyun Thoughts edit API did not return a socket session id")
+
+    def _poll_sync_time(self, base_url: str, headers: dict[str, str], sid: str, timeout: int) -> int:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                body = self._get(base_url, headers, sid, timeout=min(20, max(5, int(deadline - time.time()))))
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+                if "timed out" in str(exc).lower() and time.time() < deadline:
+                    continue
+                raise
+            for event in parse_socketio_events(body):
+                if event and event[0] == "syncTime":
+                    data = event[1].get("data", {}) if isinstance(event[1], dict) else {}
+                    if data.get("time"):
+                        return int(data["time"])
+        raise ExportError("Aliyun Thoughts edit API did not return sync time")
+
+    def _wait_process_success(
+        self,
+        base_url: str,
+        headers: dict[str, str],
+        sid: str,
+        seq: str,
+        event_name: str,
+        timeout: int,
+    ) -> dict[str, Any]:
+        deadline = time.time() + timeout
+        last_error = ""
+        while time.time() < deadline:
+            try:
+                body = self._get(base_url, headers, sid, timeout=min(20, max(5, int(deadline - time.time()))))
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+                if "timed out" in str(exc).lower() and time.time() < deadline:
+                    continue
+                raise
+            for event in parse_socketio_events(body):
+                if not event or event[0] != "processStatus" or not isinstance(event[1], dict):
+                    continue
+                payload = event[1]
+                if payload.get("seq") != seq or payload.get("eventName") != event_name:
+                    continue
+                data = payload.get("data", {})
+                if data.get("status") == "success":
+                    return data
+                last_error = json.dumps(data.get("error") or data, ensure_ascii=False)
+                raise ExportError(f"Aliyun Thoughts edit API {event_name} failed: {last_error}")
+        raise ExportError(f"Timed out waiting for Aliyun Thoughts edit API {event_name}: {last_error}")
+
+
+def slate_text(node: dict[str, Any]) -> str:
+    if node.get("object") == "text":
+        return "".join(str(leaf.get("text") or "") for leaf in node.get("leaves") or [])
+    return "".join(slate_text(child) for child in node.get("nodes") or [])
+
+
+def apply_slate_marks(text: str, marks: list[dict[str, Any]]) -> str:
+    if not text or not text.strip():
+        return text
+    mark_types = {str(mark.get("type") or "").upper() for mark in marks if isinstance(mark, dict)}
+    if "CODE" in mark_types:
+        escaped_text = text.replace("`", "\\`")
+        text = f"`{escaped_text}`"
+    if "BOLD" in mark_types:
+        text = f"**{text}**"
+    if "ITALIC" in mark_types or "EM" in mark_types:
+        text = f"*{text}*"
+    if "STRIKETHROUGH" in mark_types or "STRIKE" in mark_types:
+        text = f"~~{text}~~"
+    return text
+
+
+def first_url(data: dict[str, Any], keys: tuple[str, ...] = ("url", "src", "downloadUrl", "originUrl", "previewUrl")) -> str:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+    for value in data.values():
+        if isinstance(value, dict):
+            nested = first_url(value, keys)
+            if nested:
+                return nested
+    return ""
+
+
+def slate_inline_markdown(node: dict[str, Any], images: list[str]) -> str:
+    obj = node.get("object")
+    if obj == "text":
+        parts = []
+        for leaf in node.get("leaves") or []:
+            if isinstance(leaf, dict):
+                parts.append(apply_slate_marks(str(leaf.get("text") or ""), leaf.get("marks") or []))
+        return "".join(parts)
+
+    node_type = str(node.get("type") or "").lower()
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    if "image" in node_type:
+        url = first_url(data)
+        if url:
+            images.append(url)
+            alt = data.get("fileName") or data.get("name") or data.get("title") or ""
+            return f"![{alt}]({url})"
+
+    inner = "".join(slate_inline_markdown(child, images) for child in node.get("nodes") or [])
+    if node_type in {"link", "a"}:
+        url = first_url(data, ("url", "href", "link"))
+        return f"[{inner or url}]({url})" if url else inner
+    return inner
+
+
+def slate_cell_text(node: dict[str, Any], images: list[str]) -> str:
+    if node.get("object") == "text" or node.get("object") == "inline":
+        return slate_inline_markdown(node, images)
+    parts: list[str] = []
+    for child in node.get("nodes") or []:
+        child_type = str(child.get("type") or "").lower()
+        if child_type in {"paragraph", "title"} or child.get("object") in {"text", "inline"}:
+            parts.append(slate_inline_markdown(child, images))
+        else:
+            parts.append(slate_cell_text(child, images))
+    return "<br>".join(part.strip() for part in parts if part.strip())
+
+
+def heading_level(node_type: str) -> int | None:
+    normalized = node_type.replace("_", "-")
+    named = {
+        "heading-one": 1,
+        "heading-two": 2,
+        "heading-three": 3,
+        "heading-four": 4,
+        "heading-five": 5,
+        "heading-six": 6,
+    }
+    if normalized in named:
+        return named[normalized]
+    match = re.search(r"(?:heading|header|h)-?([1-6])", normalized)
+    return int(match.group(1)) if match else None
+
+
+def slate_table_markdown(node: dict[str, Any], images: list[str]) -> str:
+    rows: list[list[str]] = []
+    for row in node.get("nodes") or []:
+        if "row" not in str(row.get("type") or "").lower():
+            continue
+        cells = []
+        for cell in row.get("nodes") or []:
+            text = slate_cell_text(cell, images).replace("|", "\\|").strip()
+            cells.append(text)
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows)
+    for row in rows:
+        row.extend([""] * (width - len(row)))
+    header = rows[0]
+    separator = ["---"] * width
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(separator) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in rows[1:])
+    return "\n".join(lines) + "\n\n"
+
+
+def slate_block_markdown(node: dict[str, Any], images: list[str], depth: int = 0, ordered_index: int | None = None) -> str:
+    node_type = str(node.get("type") or "").lower()
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    children = [child for child in node.get("nodes") or [] if isinstance(child, dict)]
+
+    if node_type == "title":
+        return ""
+    if "image" in node_type:
+        url = first_url(data)
+        if url:
+            images.append(url)
+            alt = data.get("fileName") or data.get("name") or data.get("title") or ""
+            return f"![{alt}]({url})\n\n"
+    if node_type in {"file", "attachment"} or "embed" in node_type:
+        url = first_url(data)
+        title = data.get("fileName") or data.get("name") or data.get("title") or url
+        return f"[{title}]({url})\n\n" if url else ""
+    if node_type == "table":
+        return slate_table_markdown(node, images)
+    if node_type in {"divider", "hr", "thematic-break"}:
+        return "---\n\n"
+    if "code" in node_type and node_type != "code":
+        language = data.get("language") or data.get("lang") or ""
+        return f"```{language}\n{slate_text(node).rstrip()}\n```\n\n"
+
+    level = heading_level(node_type)
+    inline = "".join(slate_inline_markdown(child, images) for child in children).strip()
+    if level:
+        return f"{'#' * level} {inline}\n\n" if inline else ""
+    if node_type in {"blockquote", "quote"}:
+        text = inline or slate_text(node)
+        return "\n".join(f"> {line}" for line in text.splitlines()) + "\n\n" if text else ""
+    if "bulleted-list" in node_type or "unordered-list" in node_type:
+        lines = []
+        for child in children:
+            item = slate_cell_text(child, images).replace("\n", " ").strip()
+            if item:
+                lines.append(f"{'  ' * depth}- {item}")
+        return "\n".join(lines) + ("\n\n" if lines else "")
+    if "numbered-list" in node_type or "ordered-list" in node_type:
+        lines = []
+        for index, child in enumerate(children, start=1):
+            item = slate_cell_text(child, images).replace("\n", " ").strip()
+            if item:
+                lines.append(f"{'  ' * depth}{index}. {item}")
+        return "\n".join(lines) + ("\n\n" if lines else "")
+    if "list-item" in node_type:
+        prefix = f"{ordered_index}. " if ordered_index is not None else "- "
+        text = inline or slate_cell_text(node, images)
+        return f"{'  ' * depth}{prefix}{text.strip()}\n" if text.strip() else ""
+    if node_type in {"paragraph", ""} or node.get("object") in {"block", "inline"}:
+        if inline:
+            return inline + "\n\n"
+        nested = "".join(slate_block_markdown(child, images, depth) for child in children)
+        if nested.strip():
+            return nested
+        text = slate_text(node).strip()
+        return text + "\n\n" if text else ""
+    return "".join(slate_block_markdown(child, images, depth) for child in children)
+
+
+def slate_value_to_markdown(value: dict[str, Any], fallback_title: str) -> dict[str, Any]:
+    document = value.get("document") if isinstance(value.get("document"), dict) else value
+    nodes = document.get("nodes") if isinstance(document, dict) else []
+    if not isinstance(nodes, list):
+        raise ExportError("Aliyun Thoughts edit API returned an unsupported document shape")
+    images: list[str] = []
+    markdown = "".join(
+        slate_block_markdown(node, images)
+        for node in nodes
+        if isinstance(node, dict)
+    )
+    markdown = re.sub(r"\n{3,}", "\n\n", markdown).strip()
+    return {
+        "ok": True,
+        "title": fallback_title,
+        "markdown": markdown + ("\n" if markdown else ""),
+        "images": images,
+        "source": "api",
+    }
+
+
+def extract_document_api(
+    api_client: AliyunThoughtsEditClient,
+    workspace_id: str,
+    node: Node,
+    user_id: str,
+    timeout: int,
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    check_stopped(args)
+    throttle_request(args)
+    value = api_client.fetch_document_value(workspace_id, node.id, user_id, timeout=timeout)
+    return slate_value_to_markdown(value, node.title)
+
+
 EXTRACTOR_JS = r"""
 (() => {
   function esc(s) {
@@ -691,12 +1289,26 @@ def guess_extension(url: str, content_type: str | None) -> str:
     return "png"
 
 
+def existing_image_path(url: str, dest_dir: Path) -> Path | None:
+    prefix = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
+    if not dest_dir.exists():
+        return None
+    for candidate in dest_dir.glob(f"{prefix}.*"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def download_image(url: str, dest_dir: Path, timeout: int) -> Path:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    existing = existing_image_path(url, dest_dir)
+    if existing:
+        return existing
+
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data = response.read()
         ext = guess_extension(url, response.headers.get("Content-Type"))
-    dest_dir.mkdir(parents=True, exist_ok=True)
     name = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12] + "." + ext
     target = dest_dir / name
     if not target.exists():
@@ -713,19 +1325,55 @@ def localize_images(
     args: argparse.Namespace | None = None,
 ) -> tuple[str, int, list[dict[str, str]]]:
     failures: list[dict[str, str]] = []
+    replacements: dict[str, str] = {}
     success = 0
-    for url in sorted(set(images)):
+    urls = sorted({url for url in images if url.startswith(("http://", "https://"))})
+    if not urls:
+        return markdown, success, failures
+
+    dest_dir = md_path.parent / "assets"
+    workers = max(1, int(getattr(args, "image_workers", 6) or 1))
+
+    def fetch_one(url: str) -> tuple[str, Path]:
         check_stopped(args)
-        if not url.startswith(("http://", "https://")):
-            continue
-        try:
-            target = download_image(url, md_path.parent / "assets", download_timeout)
-            markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
-            success += 1
-        except Exception as exc:
-            failures.append({"url": url, "error": str(exc)})
-            if not keep_remote_images:
-                markdown = markdown.replace(url, "")
+        return url, download_image(url, dest_dir, download_timeout)
+
+    def record_result(url: str, target: Path) -> None:
+        nonlocal success
+        replacements[url] = os.path.relpath(target, md_path.parent).replace("\\", "/")
+        success += 1
+
+    if workers == 1 or len(urls) == 1:
+        iterator = ((url, None) for url in urls)
+        for url, _ in iterator:
+            check_stopped(args)
+            try:
+                _, target = fetch_one(url)
+                record_result(url, target)
+            except ExportStopped:
+                raise
+            except Exception as exc:
+                failures.append({"url": url, "error": str(exc)})
+    else:
+        max_workers = min(workers, len(urls))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_url = {executor.submit(fetch_one, url): url for url in urls}
+            for future in concurrent.futures.as_completed(future_to_url):
+                check_stopped(args)
+                url = future_to_url[future]
+                try:
+                    _, target = future.result()
+                    record_result(url, target)
+                except ExportStopped:
+                    raise
+                except Exception as exc:
+                    failures.append({"url": url, "error": str(exc)})
+
+    for url, rel_path in replacements.items():
+        markdown = markdown.replace(url, rel_path)
+    if not keep_remote_images:
+        for item in failures:
+            markdown = markdown.replace(item["url"], "")
     return markdown, success, failures
 
 
@@ -878,9 +1526,22 @@ def node_to_dict(node: Node) -> dict[str, Any]:
 def scan_workspace_tree(args: argparse.Namespace) -> dict[str, Any]:
     workspace_url = args.workspace_url
     workspace_id = args.workspace_id or extract_workspace_id(workspace_url)
+    auth_file = auth_path_from_args(args)
+    if auth_file.exists() and not args.skip_auth_load:
+        try:
+            emit(args, "开始通过接口读取阿里云 Thoughts 目录。")
+            nodes = load_tree_rest(AliyunThoughtsRestClient(auth_file), workspace_id, args)
+            return {
+                "workspaceId": workspace_id,
+                "workspaceUrl": workspace_url,
+                "nodes": [node_to_dict(node) for node in nodes],
+                "totalDocs": sum(1 for node in nodes if node.type == "document"),
+            }
+        except Exception as exc:
+            emit(args, f"接口读取目录失败，回退浏览器读取：{exc}")
+
     cdp, chrome_proc = connect_workspace_browser(args, workspace_url, workspace_id, workspace_url)
     try:
-        auth_file = auth_path_from_args(args)
         if auth_file.exists() and not args.skip_auth_load:
             cookie_count = load_auth_state(cdp, auth_file)
             emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
@@ -906,24 +1567,64 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
 
-    cdp, chrome_proc = connect_workspace_browser(args, workspace_url, workspace_id, workspace_url)
-    try:
-        auth_file = auth_path_from_args(args)
+    auth_file = auth_path_from_args(args)
+    cdp: CDPClient | None = None
+    chrome_proc: subprocess.Popen[Any] | None = None
+    rest_client: AliyunThoughtsRestClient | None = None
+
+    def ensure_cdp() -> CDPClient:
+        nonlocal cdp, chrome_proc
+        if cdp is not None:
+            return cdp
+        cdp, chrome_proc = connect_workspace_browser(args, workspace_url, workspace_id, workspace_url)
         if auth_file.exists() and not args.skip_auth_load:
             cookie_count = load_auth_state(cdp, auth_file)
             emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
             cdp.navigate(workspace_url)
             time.sleep(2)
-
         emit(args, "Chrome page is ready. If login is required, finish login in Chrome.")
         if args.wait_login:
             input("Press Enter after the workspace page is logged in and visible...")
+        return cdp
 
-        nodes = load_tree(cdp, workspace_id, args)
+    try:
+        nodes: list[Node] = []
+        if auth_file.exists() and not args.skip_auth_load:
+            try:
+                rest_client = AliyunThoughtsRestClient(auth_file)
+                emit(args, "开始通过接口读取阿里云 Thoughts 目录。")
+                nodes = load_tree_rest(rest_client, workspace_id, args)
+            except Exception as exc:
+                emit(args, f"接口读取目录失败，回退浏览器读取：{exc}")
+
+        if not nodes:
+            nodes = load_tree(ensure_cdp(), workspace_id, args)
+        elif args.wait_login:
+            ensure_cdp()
+
         by_id = {node.id: node for node in nodes}
         folder_paths, planned_doc_paths, children, root_items = build_paths(nodes, output)
         for path in folder_paths.values():
             path.mkdir(parents=True, exist_ok=True)
+
+        api_client: AliyunThoughtsEditClient | None = None
+        api_user_id = ""
+        if getattr(args, "api_export", True):
+            try:
+                if auth_file.exists() and not args.skip_auth_load:
+                    if rest_client is None:
+                        rest_client = AliyunThoughtsRestClient(auth_file)
+                    try:
+                        api_user_id = fetch_current_user_id_rest(rest_client, args)
+                    except Exception as exc:
+                        emit(args, f"接口读取用户信息失败，回退浏览器读取：{exc}")
+                        api_user_id = fetch_current_user_id(ensure_cdp(), args)
+                    api_client = AliyunThoughtsEditClient(auth_file)
+                    emit(args, "已启用阿里云 Thoughts 接口导出，文档正文将优先通过 edit 接口获取。")
+                else:
+                    emit(args, "未找到可复用凭证文件，正文导出将使用浏览器渲染方式。")
+            except Exception as exc:
+                emit(args, f"接口导出初始化失败，将回退浏览器渲染方式：{exc}")
 
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
         docs = [node for node in nodes if node.type == "document" and (not selected_doc_ids or node.id in selected_doc_ids)]
@@ -932,6 +1633,8 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
         failures: list[dict[str, str]] = []
         image_failures: list[dict[str, Any]] = []
         image_success = 0
+        api_exported = 0
+        dom_fallback = 0
         exported = 0
         skipped = 0
         stopped = False
@@ -950,7 +1653,18 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                 continue
 
             try:
-                result = extract_document(cdp, workspace_id, doc, args.render_timeout, args)
+                if api_client and api_user_id:
+                    try:
+                        result = extract_document_api(api_client, workspace_id, doc, api_user_id, args.render_timeout, args)
+                        if not (result.get("markdown") or "").strip():
+                            raise ExportError("Aliyun Thoughts edit API returned empty markdown")
+                        api_exported += 1
+                    except Exception as api_exc:
+                        dom_fallback += 1
+                        emit(args, f"接口导出失败，回退浏览器渲染：{doc.title}：{api_exc}")
+                        result = extract_document(ensure_cdp(), workspace_id, doc, args.render_timeout, args)
+                else:
+                    result = extract_document(ensure_cdp(), workspace_id, doc, args.render_timeout, args)
                 markdown = result.get("markdown") or ""
                 if not markdown.startswith("#"):
                     markdown = f"# {doc.title}\n\n{markdown}"
@@ -997,11 +1711,14 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
             "exportedDocs": exported,
             "skippedDocs": skipped,
             "stopped": stopped,
+            "apiExportedDocs": api_exported,
+            "domFallbackDocs": dom_fallback,
             "imageSuccess": image_success,
             "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
+            "imageWorkers": int(getattr(args, "image_workers", 6) or 1),
             "requestCount": int(getattr(args, "_request_count", 0) or 0),
-            "requestDelaySeconds": float(getattr(args, "request_delay", 0.8) or 0),
-            "requestJitterSeconds": float(getattr(args, "request_jitter", 0.4) or 0),
+            "requestDelaySeconds": float(getattr(args, "request_delay", 0.1) or 0),
+            "requestJitterSeconds": float(getattr(args, "request_jitter", 0.0) or 0),
             "failures": failures,
             "imageFailures": image_failures,
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -1009,7 +1726,8 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
         (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         return report
     finally:
-        cdp.close()
+        if cdp is not None:
+            cdp.close()
         if chrome_proc and args.close_started_chrome:
             chrome_proc.terminate()
 
@@ -1161,6 +1879,7 @@ def run_gui() -> int:
             request_delay=max(0.0, float(request_delay_var.get().strip() or "0.8")),
             request_jitter=max(0.0, float(request_jitter_var.get().strip() or "0.4")),
             keep_remote_images=True,
+            api_export=True,
             close_started_chrome=close_chrome_var.get(),
             auth_file=auth_file or str(default_auth_path()),
             skip_auth_load=False,
@@ -1314,7 +2033,17 @@ def run_gui() -> int:
                 result = fn()
                 summary = {
                     k: result.get(k)
-                    for k in ("totalDocs", "exportedDocs", "skippedDocs", "requestCount", "stopped", "imageSuccess", "imageFailureCount")
+                    for k in (
+                        "totalDocs",
+                        "exportedDocs",
+                        "skippedDocs",
+                        "apiExportedDocs",
+                        "domFallbackDocs",
+                        "requestCount",
+                        "stopped",
+                        "imageSuccess",
+                        "imageFailureCount",
+                    )
                     if k in result
                 }
                 log(f"{'已停止' if result.get('stopped') else '完成'}：{name}")
@@ -1466,10 +2195,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--update-existing", action="store_true", help="With --incremental, update existing documents too")
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", help="Export one specific document id, repeatable")
     parser.add_argument("--render-timeout", type=int, default=20, help="Seconds to wait for each document render")
+    parser.add_argument("--no-api-export", dest="api_export", action="store_false", help="Disable fast edit API export and use browser-rendered DOM extraction")
     parser.add_argument("--download-timeout", type=int, default=30, help="Seconds to wait for each image download")
+    parser.add_argument("--image-workers", type=int, default=6, help="Parallel image downloads per document")
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress after N documents")
-    parser.add_argument("--request-delay", type=float, default=0.8, help="Fixed seconds to wait before each document/API request")
-    parser.add_argument("--request-jitter", type=float, default=0.4, help="Extra random seconds added before each document/API request")
+    parser.add_argument("--request-delay", type=float, default=0.1, help="Fixed seconds to wait before each document/API request")
+    parser.add_argument("--request-jitter", type=float, default=0.0, help="Extra random seconds added before each document/API request")
     parser.add_argument("--keep-remote-images", action="store_true", default=True, help="Keep remote image URLs when download fails")
     parser.add_argument("--drop-failed-images", dest="keep_remote_images", action="store_false", help="Remove image URL when download fails")
     parser.add_argument("--close-started-chrome", action="store_true", help="Close Chrome started by this script after export")
@@ -1478,7 +2209,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     if not argv or "--gui" in argv:
-        return run_gui()
+        print("旧版 Python GUI 已废弃，请使用 Electron 桌面端：start-wandao.cmd 或 ./start-wandao.sh", file=sys.stderr)
+        return 2
 
     args = parse_args(argv)
     try:
@@ -1501,7 +2233,19 @@ def main(argv: list[str]) -> int:
     if args.scan_toc:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
-        keys = ("cookieCount", "authFile", "totalDocs", "exportedDocs", "skippedDocs", "requestCount", "stopped", "imageSuccess", "imageFailureCount")
+        keys = (
+            "cookieCount",
+            "authFile",
+            "totalDocs",
+            "exportedDocs",
+            "skippedDocs",
+            "apiExportedDocs",
+            "domFallbackDocs",
+            "requestCount",
+            "stopped",
+            "imageSuccess",
+            "imageFailureCount",
+        )
         print(json.dumps({k: report[k] for k in keys if k in report}, ensure_ascii=False, indent=2))
     return 0
 

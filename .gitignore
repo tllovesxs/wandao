@@ -10,9 +10,11 @@ __pycache__/
 .feishu-import-chrome-profile/
 .feishu-openapi-profile/
 .zsxq-chrome-profile/
+.youdao-chrome-profile/
 .tmp-*/
 .aliyun_thoughts_auth.json
 .yuque_auth.json
+.youdao_auth.json
 .feishu_auth.json
 .zsxq_auth.json
 .feishu_import_config.json

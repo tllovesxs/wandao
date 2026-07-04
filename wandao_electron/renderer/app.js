@@ -48,7 +48,7 @@ const ERROR_RULES = [
   },
   {
     category: '未登录或登录失效',
-    pattern: /(未登录|登录失效|重新登录|login required|please login|auth file|cookie|cookies|401|unauthorized|会话|凭证.*失效)/i,
+    pattern: /(未登录|登录失效|登录已失效|重新登录|登录凭证|没有可用.*凭证|没有可用.*cookie|cookie 中缺少|login required|please login|auth file|cookie|cookies|401|unauthorized|会话|凭证.*失效)/i,
     title: '登录状态可能已失效',
     suggestion: '请重新点击“登录并保存凭证”，确认浏览器中能正常打开目标页面后再继续。'
   },

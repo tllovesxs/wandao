@@ -30,7 +30,16 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable
 
-from export_aliyun_thoughts import ExportError, ExportStopped, check_stopped, emit, sanitize_filename, stop_requested
+from export_aliyun_thoughts import (
+    ExportError,
+    ExportStopped,
+    check_stopped,
+    default_data_dir,
+    default_state_path,
+    emit,
+    sanitize_filename,
+    stop_requested,
+)
 from export_yuque import (
     DEFAULT_PORT,
     auth_path_from_args,
@@ -46,8 +55,8 @@ from export_yuque import (
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR
-DEFAULT_SOURCE_DIR = PROJECT_DIR / "exports" / "yuque"
-DEFAULT_CONFIG_FILE = PROJECT_DIR / ".yuque_import_config.json"
+DEFAULT_SOURCE_DIR = default_data_dir() / "exports" / "yuque"
+DEFAULT_CONFIG_FILE = default_state_path(".yuque_import_config.json")
 YUQUE_HOME_URL = "https://www.yuque.com"
 MARKDOWN_LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\n]+)\)")
 EXPORT_FOOTER_RE = re.compile(r"\n---\n\n来源:[\s\S]*$", re.M)
@@ -130,6 +139,8 @@ def request_json(
             raw = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 401:
+            raise ExportError(f"语雀登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{raw[:800]}") from exc
         raise ExportError(f"语雀接口 HTTP {exc.code}：{raw[:1200]}") from exc
     except urllib.error.URLError as exc:
         raise ExportError(f"请求语雀接口失败：{exc}") from exc
@@ -157,6 +168,8 @@ def request_text(host: str, cookies: list[dict[str, Any]], path_or_url: str, *, 
             return response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 401:
+            raise ExportError(f"语雀登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{raw[:800]}") from exc
         raise ExportError(f"读取语雀页面 HTTP {exc.code}：{raw[:800]}") from exc
     except urllib.error.URLError as exc:
         raise ExportError(f"读取语雀页面失败：{exc}") from exc
@@ -334,6 +347,8 @@ def upload_resource(
             raw = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 401:
+            raise ExportError(f"语雀登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{raw[:800]}") from exc
         raise ExportError(f"上传资源失败 HTTP {exc.code}：{raw[:1000]}") from exc
     data = json.loads(raw or "{}")
     item = data.get("data") or {}

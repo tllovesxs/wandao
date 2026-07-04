@@ -35,6 +35,8 @@ from export_aliyun_thoughts import (
     DEFAULT_PORT,
     ExportError,
     chrome_debug_available,
+    default_data_dir,
+    default_state_path,
     find_chrome,
     http_json,
     js_string,
@@ -123,20 +125,14 @@ def emit(message: str) -> None:
 
 
 def default_auth_path() -> Path:
-    data_dir = os.environ.get("WANDAO_DATA_DIR")
-    if data_dir:
-        return Path(data_dir).expanduser().resolve() / DEFAULT_AUTH_FILE
-    return PROJECT_DIR / DEFAULT_AUTH_FILE
+    return default_state_path(DEFAULT_AUTH_FILE)
 
 
 def default_profile_path() -> Path:
     env_profile = os.environ.get("YOUDAO_PROFILE_DIR")
     if env_profile:
         return Path(env_profile).expanduser().resolve()
-    data_dir = os.environ.get("WANDAO_DATA_DIR")
-    if data_dir:
-        return Path(data_dir).expanduser().resolve() / DEFAULT_PROFILE
-    return PROJECT_DIR / DEFAULT_PROFILE
+    return default_data_dir() / DEFAULT_PROFILE
 
 
 def auth_path_from_args(args: argparse.Namespace) -> Path:
@@ -375,6 +371,8 @@ class YoudaoClient:
                     )
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
+                if exc.code == 401:
+                    raise YoudaoError(f"有道云登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{detail[:500]}") from exc
                 if exc.code not in {429, 500, 502, 503, 504} or attempt >= attempts:
                     raise YoudaoError(f"有道云接口 HTTP {exc.code}：{detail[:500]}") from exc
                 last_error = exc

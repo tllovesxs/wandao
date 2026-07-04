@@ -37,6 +37,9 @@ def emit_json(data: dict[str, Any]) -> None:
 
 
 def default_state_dir() -> Path:
+    data_dir = os.environ.get("WANDAO_DATA_DIR")
+    if data_dir:
+        return Path(data_dir).expanduser().resolve() / "yinxiang"
     if os.name == "nt":
         base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
     elif sys.platform == "darwin":

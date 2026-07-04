@@ -47,6 +47,8 @@ from export_aliyun_thoughts import (
     ExportStopped,
     check_stopped,
     chrome_debug_available,
+    default_data_dir,
+    default_state_path,
     emit,
     find_chrome,
     http_json,
@@ -68,14 +70,14 @@ DEFAULT_WIKI_URL = ""
 
 
 def default_auth_path() -> Path:
-    return PROJECT_DIR / DEFAULT_AUTH_FILE
+    return default_state_path(DEFAULT_AUTH_FILE)
 
 
 def default_profile_path() -> Path:
     env_profile = os.environ.get("FEISHU_PROFILE_DIR")
     if env_profile:
         return Path(env_profile).expanduser().resolve()
-    return PROJECT_DIR / DEFAULT_PROFILE
+    return default_data_dir() / DEFAULT_PROFILE
 
 
 def auth_path_from_args(args: argparse.Namespace) -> Path:
@@ -261,12 +263,12 @@ def save_auth_state(cdp: CDPClient, auth_file: Path, wiki_url: str, host: str) -
 
 def load_auth_state(cdp: CDPClient, auth_file: Path) -> int:
     if not auth_file.exists():
-        raise ExportError(f"Auth file does not exist: {auth_file}")
+        raise ExportError(f"飞书登录凭证不存在：{auth_file}。请先点击“登录并保存凭证”。")
     payload = json.loads(auth_file.read_text(encoding="utf-8"))
     cookies = [prepare_cookie_for_set(cookie) for cookie in payload.get("cookies", [])]
     cookies = [cookie for cookie in cookies if cookie.get("name") and cookie.get("value")]
     if not cookies:
-        raise ExportError(f"No cookies found in auth file: {auth_file}")
+        raise ExportError(f"飞书登录凭证里没有可用 Cookie：{auth_file}。请重新登录并保存凭证。")
     cdp.send("Network.enable")
     cdp.send("Network.setCookies", {"cookies": cookies}, timeout=30)
     return len(cookies)

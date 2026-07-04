@@ -42,6 +42,8 @@ from export_aliyun_thoughts import (
     ExportError,
     ExportStopped,
     check_stopped,
+    default_data_dir,
+    default_state_path,
     emit,
     find_chrome,
     http_json,
@@ -89,8 +91,8 @@ FEISHU_SCOPE_FALLBACK_PRIORITY = (
 )
 FEISHU_PERMISSION_URL_RE = re.compile(r"https://open\.feishu\.cn/app/[^\s\"'<>，。]+")
 DEFAULT_WIKI_URL = ""
-DEFAULT_SOURCE_DIR = PROJECT_DIR / "exports" / "feishu"
-DEFAULT_CONFIG_FILE = PROJECT_DIR / ".feishu_import_config.json"
+DEFAULT_SOURCE_DIR = default_data_dir() / "exports" / "feishu"
+DEFAULT_CONFIG_FILE = default_state_path(".feishu_import_config.json")
 DEFAULT_OPENAPI_PROFILE = ".feishu-openapi-profile"
 DEFAULT_IMAGE_MAX_WIDTH = 1460
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^\n)]*)\)")
@@ -331,7 +333,7 @@ def config_path_from_args(args: argparse.Namespace | None = None) -> Path:
 
 
 def default_openapi_profile_path() -> Path:
-    return PROJECT_DIR / DEFAULT_OPENAPI_PROFILE
+    return default_data_dir() / DEFAULT_OPENAPI_PROFILE
 
 
 def load_import_config(config_file: str | Path | None = None) -> dict[str, Any]:

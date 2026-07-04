@@ -75,6 +75,25 @@ class ExportStopped(ExportError):
     pass
 
 
+def default_data_dir() -> Path:
+    data_dir = os.environ.get("WANDAO_DATA_DIR")
+    if data_dir:
+        return Path(data_dir).expanduser().resolve()
+    return PROJECT_DIR
+
+
+def default_state_path(filename: str, *, migrate_legacy_file: bool = True) -> Path:
+    target = default_data_dir() / filename
+    legacy = PROJECT_DIR / filename
+    if os.environ.get("WANDAO_DATA_DIR") and migrate_legacy_file and not target.exists() and legacy.is_file():
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy, target)
+        except OSError:
+            pass
+    return target
+
+
 def stop_requested(args: argparse.Namespace | None) -> bool:
     event = getattr(args, "stop_event", None) if args is not None else None
     return bool(event and event.is_set())
@@ -406,14 +425,14 @@ def emit(args: argparse.Namespace | None, message: str) -> None:
 
 
 def default_auth_path() -> Path:
-    return PROJECT_DIR / DEFAULT_AUTH_FILE
+    return default_state_path(DEFAULT_AUTH_FILE)
 
 
 def default_profile_path() -> Path:
     env_profile = os.environ.get("ALIYUN_THOUGHTS_PROFILE_DIR")
     if env_profile:
         return Path(env_profile).expanduser().resolve()
-    return PROJECT_DIR / DEFAULT_PROFILE
+    return default_data_dir() / DEFAULT_PROFILE
 
 
 def auth_path_from_args(args: argparse.Namespace) -> Path:
@@ -467,12 +486,12 @@ def save_auth_state(cdp: CDPClient, auth_file: Path, workspace_url: str) -> dict
 
 def load_auth_state(cdp: CDPClient, auth_file: Path) -> int:
     if not auth_file.exists():
-        raise ExportError(f"Auth file does not exist: {auth_file}")
+        raise ExportError(f"阿里云 Thoughts 登录凭证不存在：{auth_file}。请先点击“登录并保存凭证”。")
     payload = json.loads(auth_file.read_text(encoding="utf-8"))
     cookies = [prepare_cookie_for_set(cookie) for cookie in payload.get("cookies", [])]
     cookies = [cookie for cookie in cookies if cookie.get("name") and cookie.get("value")]
     if not cookies:
-        raise ExportError(f"No cookies found in auth file: {auth_file}")
+        raise ExportError(f"阿里云 Thoughts 登录凭证里没有可用 Cookie：{auth_file}。请重新登录并保存凭证。")
     cdp.send("Network.enable")
     cdp.send("Network.setCookies", {"cookies": cookies}, timeout=30)
     return len(cookies)
@@ -582,7 +601,7 @@ def fetch_current_user_id(cdp: CDPClient, args: argparse.Namespace | None = None
 
 def cookie_jar_from_auth_file(auth_file: Path) -> http.cookiejar.CookieJar:
     if not auth_file.exists():
-        raise ExportError(f"Auth file does not exist: {auth_file}")
+        raise ExportError(f"阿里云 Thoughts 登录凭证不存在：{auth_file}。请先点击“登录并保存凭证”。")
     payload = json.loads(auth_file.read_text(encoding="utf-8"))
     jar = http.cookiejar.CookieJar()
     for item in payload.get("cookies", []):
@@ -629,6 +648,9 @@ class AliyunThoughtsRestClient:
                 return self._get_json_once(url, timeout=min(max(timeout, 10), 20))
             except urllib.error.HTTPError as exc:
                 last_error = exc
+                if exc.code == 401:
+                    detail = exc.read().decode("utf-8", errors="replace")[:300]
+                    raise ExportError(f"阿里云 Thoughts 登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{detail}") from exc
                 if exc.code not in (408, 429, 500, 502, 503, 504):
                     detail = exc.read().decode("utf-8", errors="replace")[:300]
                     raise ExportError(f"Aliyun Thoughts API HTTP {exc.code}: {detail}") from exc
@@ -769,6 +791,8 @@ class AliyunThoughtsEditClient:
                 return self._fetch_document_value_once(workspace_id, doc_id, user_id, timeout=timeout)
             except urllib.error.HTTPError as exc:
                 last_error = exc
+                if exc.code == 401:
+                    raise ExportError("阿里云 Thoughts 登录已失效，请重新点击“登录并保存凭证”后重试。") from exc
                 if exc.code not in (400, 408, 429, 500, 502, 503, 504):
                     raise
             except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:

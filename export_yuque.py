@@ -35,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -47,6 +48,8 @@ from export_aliyun_thoughts import (
     ExportStopped,
     check_stopped,
     chrome_debug_available,
+    default_data_dir,
+    default_state_path,
     emit,
     find_chrome,
     http_json,
@@ -68,14 +71,14 @@ DEFAULT_BOOK_URL = ""
 
 
 def default_auth_path() -> Path:
-    return PROJECT_DIR / DEFAULT_AUTH_FILE
+    return default_state_path(DEFAULT_AUTH_FILE)
 
 
 def default_profile_path() -> Path:
     env_profile = os.environ.get("YUQUE_PROFILE_DIR")
     if env_profile:
         return Path(env_profile).expanduser().resolve()
-    return PROJECT_DIR / DEFAULT_PROFILE
+    return default_data_dir() / DEFAULT_PROFILE
 
 
 def auth_path_from_args(args: argparse.Namespace) -> Path:
@@ -214,12 +217,12 @@ def save_auth_state(cdp: CDPClient, auth_file: Path, book_url: str) -> dict[str,
 
 def load_auth_state(cdp: CDPClient, auth_file: Path) -> int:
     if not auth_file.exists():
-        raise ExportError(f"Auth file does not exist: {auth_file}")
+        raise ExportError(f"语雀登录凭证不存在：{auth_file}。请先点击“登录并保存凭证”。")
     payload = json.loads(auth_file.read_text(encoding="utf-8"))
     cookies = [prepare_cookie_for_set(cookie) for cookie in payload.get("cookies", [])]
     cookies = [cookie for cookie in cookies if cookie.get("name") and cookie.get("value")]
     if not cookies:
-        raise ExportError(f"No cookies found in auth file: {auth_file}")
+        raise ExportError(f"语雀登录凭证里没有可用 Cookie：{auth_file}。请重新登录并保存凭证。")
     cdp.send("Network.enable")
     cdp.send("Network.setCookies", {"cookies": cookies}, timeout=30)
     return len(cookies)
@@ -488,10 +491,15 @@ def download_resource(
         headers["Referer"] = referer
 
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = response.read()
-        content_type = response.headers.get("Content-Type")
-        filename = safe_resource_filename(url, content_type, title, response.headers.get("Content-Disposition"))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = response.read()
+            content_type = response.headers.get("Content-Type")
+            filename = safe_resource_filename(url, content_type, title, response.headers.get("Content-Disposition"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise ExportError("语雀登录已失效，请重新点击“登录并保存凭证”后重试。") from exc
+        raise
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / filename
     if not target.exists():

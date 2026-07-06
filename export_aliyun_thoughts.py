@@ -1118,7 +1118,14 @@ def slate_block_markdown(node: dict[str, Any], images: list[str], depth: int = 0
         return "---\n\n"
     if "code" in node_type and node_type != "code":
         language = data.get("language") or data.get("lang") or ""
-        return f"```{language}\n{slate_text(node).rstrip()}\n```\n\n"
+        # 云效 code blocks store each line as a separate child node (e.g. code-line);
+        # join them with newlines so multi-line code isn't flattened onto one line.
+        child_nodes = node.get("nodes") or []
+        if child_nodes:
+            code_body = "\n".join(slate_text(child) for child in child_nodes)
+        else:
+            code_body = slate_text(node)
+        return f"```{language}\n{code_body.rstrip()}\n```\n\n"
 
     level = heading_level(node_type)
     inline = "".join(slate_inline_markdown(child, images) for child in children).strip()

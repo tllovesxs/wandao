@@ -1,5 +1,14 @@
 # Wandao Release Notes
 
+## 1.2.3
+
+本次版本补齐正式发版流水线，并同步版本号。
+
+- 桌面端和 Python 项目版本升级到 `1.2.3`。
+- GitHub Actions 支持推送 `v*` tag 后自动构建 Windows/macOS 安装包。
+- 构建完成后自动创建 GitHub Release 并上传安装包产物。
+- 普通 `main` 分支推送仍只跑质量检查，不自动发布。
+
 ## 1.2.2
 
 本次版本重点补强稳定性和共创质量底座。

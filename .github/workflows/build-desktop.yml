@@ -9,6 +9,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     name: Quality Gate
@@ -84,4 +87,31 @@ jobs:
             wandao_electron/dist/*.exe
             wandao_electron/dist/*.zip
             wandao_electron/dist/*.blockmap
-          if-no-files-found: ignore
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List release files
+        run: find release-artifacts -type f
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Wandao ${{ github.ref_name }}
+          generate_release_notes: true
+          make_latest: true
+          files: release-artifacts/*

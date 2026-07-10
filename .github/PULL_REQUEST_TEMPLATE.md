@@ -29,7 +29,8 @@
 ## 测试方式
 
 - [ ] 我已运行 `python scripts/quality_check.py`
-- [ ] 如果涉及 `providers/` 或公告索引，我已运行 `python scripts/validate_providers.py`
+- [ ] 如果涉及 `plugins/`，我已运行 `node scripts/validate_plugins.js` 和 `node --test tests_js/plugin_manager.test.js`
+- [ ] 如果涉及旧 `providers/` 兼容目录或公告索引，我已运行 `python scripts/validate_providers.py`
 - [ ] 我已运行相关 Python 编译检查
 - [ ] 我已运行 Electron JS 语法检查
 - [ ] 我已在桌面端手动测试
@@ -69,15 +70,19 @@
 - [ ] 文档
 - [ ] 打包/发布
 
-## 新增或修改 Provider 检查
+## 新增或修改在线插件检查
 
 - [ ] 如果这是在线插件，改动集中在一个 `plugins/<id>` 目录
 - [ ] 已提升 `plugin.json.version`，并确认 `core.minVersion`
 - [ ] 已按最小权限填写 `permissions`
 - [ ] 没有导入其他平台的业务脚本
-- [ ] 已运行 `node scripts/validate_plugins.js`
+- [ ] 已运行 `node scripts/validate_plugins.js` 和 `node --test tests_js/plugin_manager.test.js`
 
-如果本 PR 涉及 `providers/`，请确认：
+如果这是批量插件迁移，我已和维护者确认，并需要维护者添加 `plugin-batch` 标签。
+
+## Provider v1 兼容检查
+
+如果本 PR 涉及旧 `providers/` 兼容目录，请确认：
 
 - [ ] 已提供 `provider.json`
 - [ ] 已提供 `README.md` 使用说明

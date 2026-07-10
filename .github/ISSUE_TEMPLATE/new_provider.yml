@@ -1,12 +1,12 @@
-name: 新平台共创 / 认领
+name: 新平台插件共创 / 认领
 description: 新增某个平台的导入、导出或教程能力
-title: "[Provider] "
-labels: ["enhancement", "help wanted", "provider", "status:needs-triage"]
+title: "[Plugin] "
+labels: ["enhancement", "help wanted", "plugin", "status:needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        这个模板用于新增平台、认领平台适配、提交平台调研。
+        这个模板用于新增平台插件、认领平台适配、提交平台调研。新平台默认使用 Plugin v1，放在 `plugins/<plugin-id>/`；旧 `providers/` 仅用于兼容维护。
 
         请先搜索已有 Issue 和 PR，避免多人重复做同一个平台。认领后建议 7 天内提交 Draft PR 或同步进展。
   - type: checkboxes
@@ -66,10 +66,10 @@ body:
       label: 预计接入方式
       description: 不确定可以选“不确定”。
       options:
-        - 标准 UI Provider
-        - 复杂流程 Provider
-        - 教程型 Provider
-        - 可能需要内置专属 UI
+        - 标准 UI 插件
+        - 复杂流程插件（可包含多个 Provider）
+        - 教程型插件
+        - 旧 Provider v1 兼容维护
         - 不确定
   - type: textarea
     id: current_workflow

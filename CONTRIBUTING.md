@@ -94,27 +94,28 @@ PR 描述必须说明：
 
 ## 新平台共创规范
 
-新增平台优先使用文件型 Provider：
+新增平台统一优先使用在线 Plugin v1：
 
-- 标准平台：复制 `providers/_template_standard/`。
-- 复杂平台：复制 `providers/_template_custom/`，先提交核心脚本和流程说明。
-- 教程型平台：只提供 `provider.json + README.md`，适合平台本身已经有稳定导入导出能力的情况。
-- 示例参考：`providers/_demo_local_export/`。
+- 平台插件放在 `plugins/<plugin-id>/`，一个插件可以包含导出、导入、教程和多个 Provider。
+- 标准平台优先使用插件内 Provider v1 的标准 UI：`fields`、`actions`、`toc`、`capabilities`。
+- 复杂平台可以在同一个插件里拆成多个 Provider；标准 UI 不够时，再声明沙箱自定义 UI。
+- 教程型平台也建议做成插件，插件内可以只有教程 Provider 和 README。
+- 旧 `providers/` 文件型 Provider 只作为兼容维护、迁移参考或已有功能修复路径，不再作为新增平台首选入口。
 
 详细规范见：
 
+- [docs/在线插件开发与发布.md](docs/在线插件开发与发布.md)
 - [docs/共创流程.md](docs/共创流程.md)
-- [docs/插件开发指南.md](docs/插件开发指南.md)
 - [docs/Provider接入说明.md](docs/Provider接入说明.md)
 
 新增平台建议按这个顺序推进：
 
-1. 先写清楚平台限制、登录方式和使用教程。
-2. 跑通最小导入或导出能力。
+1. 先写清楚平台限制、登录方式、权限边界和使用教程。
+2. 在 `plugins/<plugin-id>/` 跑通最小导入或导出能力。
 3. 补目录结构。
 4. 补图片和附件。
 5. 补失败报告、重试和断点续跑。
-6. 补充真实测试结果和已知限制。
+6. 提升 `plugin.json.version`，补充真实测试结果和已知限制。
 
 不要把尚未实现的能力写成已支持。
 
@@ -164,7 +165,14 @@ npm start
 python scripts\quality_check.py
 ```
 
-这会检查 Provider 配置、Python 语法、单元测试和 Electron JS 语法。只改 Provider 配置或公告索引时，也可以单独运行：
+这会检查在线插件、Provider 配置、Python 语法、单元测试和 Electron JS 语法。只改在线插件时，也可以单独运行：
+
+```powershell
+node scripts\validate_plugins.js
+node --test tests_js/plugin_manager.test.js
+```
+
+只维护旧 `providers/` 文件型 Provider 或公告索引时，可以单独运行：
 
 ```powershell
 python scripts\validate_providers.py
@@ -172,18 +180,21 @@ python scripts\validate_providers.py
 
 如果只改文档，可以在 PR 中说明没有运行代码检查。
 
-## Provider PR 检查
+## Plugin PR 检查
 
 新平台优先使用可独立发布的 Plugin v1。完整目录、权限、签名、版本和发布流程见 [在线插件开发与发布](docs/在线插件开发与发布.md)。一个插件可以包含多个 Provider，复杂平台不需要把导入和导出拆成两个安装包。
 
 插件 PR 还必须满足：
 
-- 一个 PR 只负责一个 `plugins/<id>`。
+- 一个 PR 只负责一个 `plugins/<id>`；批量迁移必须由维护者确认并添加 `plugin-batch` 标签。
 - 修改插件业务代码时同步提升 `plugin.json.version`。
 - 插件不能导入其他平台的业务脚本；公共逻辑应进入稳定 SDK。
-- PR 预览包使用临时密钥，只有合并后流水线生成的正式签名包能被普通用户安装。
+- PR 预览包使用临时密钥，只用于流水线验证；只有合并后流水线生成的正式签名包能被普通用户安装。
+- 已运行 `node scripts\validate_plugins.js` 和 `node --test tests_js/plugin_manager.test.js`，或说明无法运行原因。
 
-如果 PR 涉及 `providers/`，请确认：
+## Provider v1 兼容 PR 检查
+
+如果 PR 涉及旧 `providers/` 兼容目录，请确认：
 
 - 已提供 `provider.json`。
 - 已提供 `README.md` 使用说明。

@@ -45,9 +45,9 @@ Author: `tllovesxs`
 | 🐛 问题反馈 | [GitHub Issues](https://github.com/tllovesxs/wandao/issues) / [Gitee Issues](https://gitee.com/shi-xiansong/wandao/issues) |
 | 📖 使用教程 | [docs/使用教程.md](docs/使用教程.md) |
 | 🤝 共创流程 | [docs/共创流程.md](docs/共创流程.md) |
-| 🔌 Provider 接入 | [docs/Provider接入说明.md](docs/Provider接入说明.md) |
-| 🧩 在线插件开发 | [docs/在线插件开发与发布.md](docs/在线插件开发与发布.md) |
-| 🔌 Provider v1 兼容开发 | [docs/插件开发指南.md](docs/插件开发指南.md) |
+| 🧩 新平台插件开发 | [docs/在线插件开发与发布.md](docs/在线插件开发与发布.md) |
+| 🔌 Provider v1 兼容说明 | [docs/Provider接入说明.md](docs/Provider接入说明.md) |
+| 🧰 旧文件型 Provider 维护 | [docs/插件开发指南.md](docs/插件开发指南.md) |
 | 🧠 项目学习提示词 | [prompts/项目学习导师提示词.md](prompts/项目学习导师提示词.md) |
 | 💬 作者微信 | `pressure_spring` |
 | 📮 联系邮箱 | `tl200599@163.com` |
@@ -199,7 +199,7 @@ cd wandao
 
 如果平台本身已经支持导入导出，或者暂时不适合稳定自动化，可以在“平台中心”查看对应平台的 Markdown 教程。
 
-社区贡献者也可以先提交教程型 provider，后续再逐步升级为自动化脚本。
+社区贡献者也可以先提交教程型插件，后续再逐步升级为自动化脚本。
 
 ## 🧠 配合 AI 学习项目
 
@@ -228,7 +228,14 @@ cd wandao
 python scripts\quality_check.py
 ```
 
-如果只修改 `providers/` 或公告索引，可以先跑更轻量的配置校验：
+如果只修改在线插件，可以先跑插件校验：
+
+```powershell
+node scripts\validate_plugins.js
+node --test tests_js/plugin_manager.test.js
+```
+
+如果只维护旧 `providers/` 兼容目录或公告索引，可以先跑更轻量的配置校验：
 
 ```powershell
 python scripts\validate_providers.py
@@ -239,7 +246,6 @@ cd wandao_electron
 npm ci
 npm run build:win
 ```
-
 macOS 包建议使用 GitHub Actions 或 macOS 本机打包：
 
 ```bash

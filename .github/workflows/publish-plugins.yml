@@ -7,6 +7,9 @@ on:
       - "wandao_electron/plugin_*.js"
       - "scripts/build_plugin*.js"
       - "scripts/validate_plugins.js"
+      - "scripts/check_plugin_versions.js"
+      - "tests_js/plugin_manager.test.js"
+      - "wandao_electron/assets/plugin-trust.json"
       - ".github/workflows/publish-plugins.yml"
   push:
     branches: [main]
@@ -15,6 +18,9 @@ on:
       - "wandao_electron/plugin_*.js"
       - "scripts/build_plugin*.js"
       - "scripts/validate_plugins.js"
+      - "scripts/check_plugin_versions.js"
+      - "tests_js/plugin_manager.test.js"
+      - "wandao_electron/assets/plugin-trust.json"
       - ".github/workflows/publish-plugins.yml"
   workflow_dispatch:
 

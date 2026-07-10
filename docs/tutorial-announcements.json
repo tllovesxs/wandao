@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-08",
+  "updatedAt": "2026-07-10",
   "repository": "https://github.com/tllovesxs/wandao",
   "items": [
     {
@@ -8,10 +8,14 @@
       "type": "announcement",
       "pinned": true,
       "title": "万能导共创邀请：一起接入更多平台",
-      "summary": "万能导正在开放 Provider v1 共创机制，欢迎从教程、脚本、失败排查或新平台接入开始参与。",
+      "summary": "万能导正在开放 Plugin v1 在线插件共创机制，欢迎从教程、脚本、失败排查或新平台接入开始参与。",
       "date": "2026-07-08",
       "badge": "置顶",
-      "tags": ["公告", "共创", "Provider v1"],
+      "tags": [
+        "公告",
+        "共创",
+        "Plugin v1"
+      ],
       "path": "docs/announcements/provider-co-creation-invite.md"
     },
     {
@@ -20,7 +24,12 @@
       "title": "AI 辅助学习：项目学习导师提示词",
       "summary": "把导出的教学文档和源码放在一起，让 AI 像项目学习导师一样带你理解业务流程、核心代码和技术取舍。",
       "date": "2026-07-08",
-      "tags": ["教程", "AI", "项目学习", "提示词"],
+      "tags": [
+        "教程",
+        "AI",
+        "项目学习",
+        "提示词"
+      ],
       "path": "prompts/项目学习导师提示词.md"
     }
   ]

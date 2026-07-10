@@ -3,6 +3,6 @@ contact_links:
   - name: 共创流程说明
     url: https://github.com/tllovesxs/wandao/blob/main/docs/%E5%85%B1%E5%88%9B%E6%B5%81%E7%A8%8B.md
     about: 新平台、大功能和复杂 Bug 请先阅读共创流程，避免重复开发。
-  - name: Provider 开发指南
-    url: https://github.com/tllovesxs/wandao/blob/main/docs/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%E6%8C%87%E5%8D%97.md
-    about: 想新增平台或 Provider，请先看这里。
+  - name: 在线插件开发与发布
+    url: https://github.com/tllovesxs/wandao/blob/main/docs/%E5%9C%A8%E7%BA%BF%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%E4%B8%8E%E5%8F%91%E5%B8%83.md
+    about: 想新增平台插件，请先看这里。

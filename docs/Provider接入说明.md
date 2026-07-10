@@ -1,23 +1,36 @@
-# Provider 接入说明
+# Provider v1 兼容接入说明
 
-> Provider v1 仍然向后兼容，但新平台建议放入 `plugins/<id>`，通过在线插件库独立安装和更新。完整流程见 [在线插件开发与发布](在线插件开发与发布.md)。
+> 新平台默认使用 `plugins/<plugin-id>` 在线插件结构，完整流程见 [在线插件开发与发布](在线插件开发与发布.md)。本文说明的是 Provider v1 协议：它仍然是插件内部描述平台页面、字段、动作、目录和能力的稳定契约，也兼容旧 `providers/<id>` 文件型 Provider。
 
-万能导支持两类平台接入方式：
+## 当前推荐结构
 
-- 内置 provider：由主程序维护专属 UI 和专属逻辑，适合飞书导入、语雀导入这类复杂长期功能。
-- 文件型 provider：放在 `providers/<provider-id>/provider.json`，适合社区共创、教程型平台、实验平台和大多数标准导入导出流程。
+万能导现在采用两层结构：
 
-详细开发规范见：
+- Plugin v1：负责安装、签名、版本、权限、更新、回滚和卸载。
+- Provider v1：负责描述平台能力、字段、按钮、目录树、教程和脚本动作。
+
+新增平台建议放在：
 
 ```text
-docs/共创流程.md
-docs/插件开发指南.md
-providers/provider.schema.json
+plugins/<plugin-id>/
+  plugin.json
+  backend/
+  providers/
+    <provider-id>/provider.json
+    <provider-id>/README.md
 ```
+
+旧文件型 Provider 目录仍可被加载：
+
+```text
+providers/<provider-id>/provider.json
+```
+
+但它主要用于历史功能维护、迁移参考和小范围修复，不再作为新平台首选入口。新平台使用插件结构后，用户可以在插件中心按需安装、更新、停用和回滚。
 
 ## Provider v1 稳定契约
 
-从当前版本开始，文件型 Provider 使用 `schemaVersion: 1`，也就是 Provider v1 契约。贡献者按 v1 编写的 provider，后续小版本会保持向后兼容。
+Provider v1 使用 `schemaVersion: 1`。贡献者按 v1 编写的 provider，后续小版本会保持向后兼容。
 
 稳定承诺：
 
@@ -25,7 +38,7 @@ providers/provider.schema.json
 - 新增能力优先增加可选字段，不删除或改变已有字段含义。
 - 主程序会忽略未知扩展字段，方便社区先声明平台特有信息。
 - 如果未来必须做破坏性调整，会新增 `schemaVersion: 2`，不会让 v1 provider 静默失效。
-- 贡献者不需要修改 Electron 主程序，也不需要注入前端代码，就可以接入大多数新平台。
+- 标准 UI Provider 不需要修改 Electron 主程序，也不需要注入前端代码。
 
 机器可读 Schema 位于：
 
@@ -33,42 +46,35 @@ providers/provider.schema.json
 providers/provider.schema.json
 ```
 
-模板里的 `"$schema": "../provider.schema.json"` 可以让编辑器更容易提示字段，也方便维护者检查协议是否漂移。
+插件内 Provider 也遵守同一份 schema。模板里的 `"$schema"` 可以让编辑器更容易提示字段，也方便维护者检查协议是否漂移。
 
-## 目录约定
+## Provider 三件套
 
-```text
-providers/
-  _template_standard/
-  _template_import/
-  _template_custom/
-  _demo_local_export/
-  notion/
-  your-provider/
-```
-
-以下划线开头的目录不会自动加载，用来放模板、示例和草稿。真正要展示给用户的平台目录不要以下划线开头。
-
-## 文件型 provider 三件套
+插件内 Provider 通常包含：
 
 ```text
-providers/your-provider/
+plugins/<plugin-id>/providers/<provider-id>/
   provider.json
   README.md
-  actions.py
+```
+
+如果需要执行脚本，脚本建议放到插件的 `backend/` 目录，并在 `provider.json` 的 `actions` 中引用：
+
+```text
+plugins/<plugin-id>/backend/actions.py
 ```
 
 - `provider.json`：声明平台信息、能力、字段、按钮、目录树协议和脚本入口。
 - `README.md`：展示教程、限制、登录方式、权限要求和测试结果。
-- `actions.py`：可选，执行读取目录、导出、导入、失败重试等动作。
+- `backend/*.py`：可选，执行读取目录、导出、导入、失败重试等动作。
 
 如果平台只需要教程，可以只有 `provider.json` 和 `README.md`，并把 `type` 设置为 `guide`。
 
 ## 标准 UI 和复杂 UI
 
-标准 UI provider 不需要改 Electron 主程序。贡献者只要声明 `fields` 和 `actions`，主程序会自动生成表单和按钮。
+标准 UI Provider 不需要改 Electron 主程序。贡献者只要声明 `fields` 和 `actions`，主程序会自动生成表单和按钮。
 
-复杂平台可以先用 `providers/_template_custom/` 把流程拆成多个动作。当前文件型 provider 不直接注入任意 HTML；如果确实需要专属 UI，请在 PR 中说明 UI 需求，由维护者评估是否升级为内置 provider 或后续沙箱自定义 UI。
+复杂平台可以在同一个插件中拆成多个 Provider，例如 `example-export`、`example-import`、`example-setup`。如果标准 UI 仍然不够，可以在 Plugin v1 中声明沙箱自定义 UI。自定义 UI 没有 Node 权限，不能直接读写本地文件，只能通过宿主允许的 `postMessage` 能力执行已声明动作。
 
 这个设计不是要求所有平台长得一样，而是让每个平台只声明自己支持的能力。飞书可以有权限检测和 Wiki 导入，OneNote 可以只有本地读取和 Markdown 导出，教程型平台也可以只展示文档。
 
@@ -84,24 +90,32 @@ providers/your-provider/
 
 ## 贡献建议
 
-新增平台优先走文件型 provider：
+新增平台优先走在线插件：
 
 1. 先搜索已有 Issue/PR，避免重复共创。
-2. 没有重复时，使用“新平台共创/认领”Issue 模板提交需求或认领。
-3. 平台本身有导出导入能力：先做教程型 provider。
-4. 标准导出平台：用 `_template_standard`。
-5. 标准导入平台：用 `_template_import`。
-6. 平台流程很复杂：用 `_template_custom` 提交核心脚本和流程说明。
-7. 标准 UI 不够：在 PR 中说明需要的专属 UI，不要直接把复杂逻辑散落到主程序里。
+2. 没有重复时，使用“新平台插件共创/认领”Issue 模板提交需求或认领。
+3. 创建 `plugins/<plugin-id>/plugin.json`，声明入口、权限和版本。
+4. 在插件内创建一个或多个 Provider v1。
+5. 平台本身有导出导入能力：先做教程型插件。
+6. 标准 UI 足够：用 `fields`、`actions` 和 `toc` 自动生成界面。
+7. 标准 UI 不够：在插件内声明沙箱自定义 UI，不要把复杂逻辑散落到主程序里。
 
-这样平台能力会集中在自己的目录中，后续维护、审查、回滚和共创都会更清楚。
+这样平台能力会集中在自己的插件目录中，后续维护、审查、回滚和共创都会更清楚。
 
 ## 提交前校验
 
-新增或修改文件型 provider 后，请在项目根目录运行：
+新增或修改在线插件后，请运行：
+
+```powershell
+node scripts\validate_plugins.js
+node --test tests_js/plugin_manager.test.js
+python scripts\quality_check.py
+```
+
+只维护旧 `providers/` 兼容目录时，可以运行：
 
 ```powershell
 python scripts\validate_providers.py
 ```
 
-这个校验会检查 `provider.json`、脚本路径、教程路径、字段、动作、目录树协议和公告索引。它只约束安全边界和基本结构，不会限制平台必须使用固定流程。
+Provider 校验会检查 `provider.json`、脚本路径、教程路径、字段、动作、目录树协议和公告索引。它只约束安全边界和基本结构，不会限制平台必须使用固定流程。

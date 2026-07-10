@@ -273,7 +273,7 @@ class ElectronHealthTests(unittest.TestCase):
 
     def test_checkpoint_is_declared_for_adapted_export_providers_only(self) -> None:
         providers_js = read_text("wandao_electron/renderer/providers.js")
-        adapted_ids = ["yuque", "feishu-export", "aliyun", "yinxiang", "youdao", "wiz", "onenote", "ima-export"]
+        adapted_ids = ["yuque", "aliyun", "yinxiang", "youdao", "onenote", "ima-export"]
 
         for provider_id in adapted_ids:
             pattern = rf"id: '{provider_id}'[\s\S]+?checkpoint: {{ supported: true, strategy: 'items', resourceTracking: false }}"
@@ -287,6 +287,12 @@ class ElectronHealthTests(unittest.TestCase):
             providers_js,
             r"id: 'zsxq-column'[\s\S]+?checkpoint: { supported: true, strategy: 'items', resourceTracking: true }",
         )
+        feishu_provider = json.loads(read_text("plugins/feishu/providers/feishu-export/provider.json"))
+        wiz_provider = json.loads(read_text("plugins/wiz/providers/wiz/provider.json"))
+        self.assertTrue(feishu_provider["checkpoint"]["supported"])
+        self.assertTrue(feishu_provider["checkpoint"]["resourceTracking"])
+        self.assertTrue(wiz_provider["checkpoint"]["supported"])
+        self.assertTrue(wiz_provider["checkpoint"]["resourceTracking"])
         ima_import_block = re.search(r"id: 'ima-import'[\s\S]+?\n    }", providers_js)
         self.assertIsNotNone(ima_import_block)
         self.assertNotIn("checkpoint: { supported: true", ima_import_block.group(0))
@@ -325,11 +331,15 @@ class ElectronHealthTests(unittest.TestCase):
             "wandao_checkpoint.py",
             "wandao_cli.py",
             "wandao_credentials.py",
+            "wandao_browser.py",
             "gui_utils.py",
         }
 
         self.assertFalse(provider_scripts - bundled_python)
         self.assertFalse(required_common - bundled_python)
+        self.assertNotIn("export_wiz.py", bundled_python)
+        self.assertNotIn("export_feishu.py", bundled_python)
+        self.assertNotIn("import_feishu.py", bundled_python)
 
     def test_builtin_provider_scripts_are_allowed_by_main_process(self) -> None:
         main_js = read_text("wandao_electron/main.js")
@@ -340,6 +350,30 @@ class ElectronHealthTests(unittest.TestCase):
         provider_scripts = set(re.findall(r"script:\s*'([^']+\.py)'", providers_js))
 
         self.assertFalse(provider_scripts - allowed_scripts)
+
+    def test_online_plugins_are_signed_sandboxed_and_not_bundled_as_platform_scripts(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        preload_js = read_text("wandao_electron/preload.js")
+        app_js = read_text("wandao_electron/renderer/app.js")
+        providers_js = read_text("wandao_electron/renderer/providers.js")
+        package = json.loads(read_text("wandao_electron/package.json"))
+
+        self.assertIn("new PluginManager", main_js)
+        self.assertIn("providerEntriesWithErrors", main_js)
+        self.assertIn("get-plugin-catalog", main_js)
+        self.assertIn("get-plugin-ui", main_js)
+        self.assertIn("getPluginCatalog", preload_js)
+        self.assertIn("installPlugin", preload_js)
+        self.assertIn('sandbox="allow-scripts"', app_js)
+        self.assertNotIn('sandbox="allow-scripts allow-same-origin"', app_js)
+        self.assertIn("default-src 'none'", app_js)
+        self.assertIn("replaceExternal", providers_js)
+        self.assertNotIn("id: 'wiz'", providers_js)
+        self.assertNotIn("id: 'feishu-export'", providers_js)
+        resources = json.dumps(package["build"]["extraResources"], ensure_ascii=False)
+        self.assertNotIn("export_wiz.py", resources)
+        self.assertNotIn("export_feishu.py", resources)
+        self.assertNotIn("import_feishu.py", resources)
 
 
 if __name__ == "__main__":

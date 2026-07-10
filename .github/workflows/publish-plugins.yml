@@ -1,0 +1,117 @@
+name: Validate and Publish Plugins
+
+on:
+  pull_request:
+    paths:
+      - "plugins/**"
+      - "wandao_electron/plugin_*.js"
+      - "scripts/build_plugin*.js"
+      - "scripts/validate_plugins.js"
+      - ".github/workflows/publish-plugins.yml"
+  push:
+    branches: [main]
+    paths:
+      - "plugins/**"
+      - "wandao_electron/plugin_*.js"
+      - "scripts/build_plugin*.js"
+      - "scripts/validate_plugins.js"
+      - ".github/workflows/publish-plugins.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Plugin Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate manifests and lifecycle
+        run: |
+          node scripts/validate_plugins.js
+          node --test tests_js/plugin_manager.test.js
+          python -m py_compile wandao_browser.py plugins/*/backend/*.py
+      - name: Enforce one plugin and a newer version
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'plugin-batch')
+        run: node scripts/check_plugin_versions.js origin/${{ github.base_ref }}
+      - name: Enforce versions for an approved plugin batch
+        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'plugin-batch')
+        run: node scripts/check_plugin_versions.js origin/${{ github.base_ref }} --allow-multiple
+      - name: Build PR preview packages
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          mkdir -p .preview-key dist-plugins
+          node - <<'NODE'
+          const fs = require('fs');
+          const crypto = require('crypto');
+          const pair = crypto.generateKeyPairSync('ed25519');
+          fs.writeFileSync('.preview-key/private.pem', pair.privateKey.export({ type: 'pkcs8', format: 'pem' }));
+          NODE
+          for manifest in plugins/*/plugin.json; do
+            plugin_dir="$(dirname "$manifest")"
+            id="$(node -p "require('./$manifest').id")"
+            version="$(node -p "require('./$manifest').version")"
+            node scripts/build_plugin.js --source "$plugin_dir" --output "dist-plugins/${id}-${version}-PR-preview.wandao-plugin" --private-key .preview-key/private.pem --key-id pr-preview
+          done
+      - name: Upload PR preview
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-pr-preview
+          path: dist-plugins/*.wandao-plugin
+          if-no-files-found: error
+
+  publish:
+    name: Publish Signed Plugin Registry
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      WANDAO_PLUGIN_PRIVATE_KEY: ${{ secrets.WANDAO_PLUGIN_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Require release signing key
+        shell: bash
+        run: |
+          if [ -z "$WANDAO_PLUGIN_PRIVATE_KEY" ]; then
+            echo "WANDAO_PLUGIN_PRIVATE_KEY is not configured" >&2
+            exit 1
+          fi
+      - name: Build signed packages and registry
+        shell: bash
+        run: |
+          mkdir -p dist-plugins
+          for manifest in plugins/*/plugin.json; do
+            plugin_dir="$(dirname "$manifest")"
+            id="$(node -p "require('./$manifest').id")"
+            version="$(node -p "require('./$manifest').version")"
+            node scripts/build_plugin.js --source "$plugin_dir" --output "dist-plugins/${id}-${version}.wandao-plugin"
+          done
+          node scripts/build_plugin_registry.js \
+            --packages dist-plugins \
+            --base-url https://github.com/${{ github.repository }}/releases/download/plugins-latest \
+            --output dist-plugins/registry.json
+      - name: Publish stable plugin assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if ! gh release view plugins-latest >/dev/null 2>&1; then
+            gh release create plugins-latest --title "Wandao Plugin Registry" --notes "万能导在线插件库，请在应用内安装。" --prerelease
+          fi
+          gh release upload plugins-latest dist-plugins/* --clobber

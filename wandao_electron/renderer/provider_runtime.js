@@ -46,6 +46,7 @@
   }
 
   function sourceText(provider = {}) {
+    if (provider.sourceKind === 'plugin') return '插件中心（签名已验证）';
     if (provider.sourceKind === 'user') return '本地用户目录';
     if (provider.sourceKind === 'bundled') return '应用内置 Provider';
     return 'Provider 配置';

@@ -19,12 +19,18 @@ from scripts.validate_providers import validate_repository
 NODE_CHECK_FILES = [
     "wandao_electron/main.js",
     "wandao_electron/preload.js",
+    "wandao_electron/plugin_format.js",
+    "wandao_electron/plugin_manager.js",
     "wandao_electron/renderer/app.js",
     "wandao_electron/renderer/providers.js",
     "wandao_electron/renderer/provider_runtime.js",
     "wandao_electron/renderer/task_report.js",
     "wandao_electron/renderer/structured_logs.js",
     "wandao_electron/scripts/npm_install_cn.js",
+    "scripts/build_plugin.js",
+    "scripts/build_plugin_registry.js",
+    "scripts/validate_plugins.js",
+    "scripts/check_plugin_versions.js",
     "wandao_electron/scripts/prepare_python_runtime.py",
 ]
 
@@ -77,6 +83,8 @@ def run_node_checks() -> None:
             continue
         subprocess.run(["node", "--check", str(path)], cwd=REPO_ROOT, check=True)
         checked += 1
+    subprocess.run(["node", "scripts/validate_plugins.js"], cwd=REPO_ROOT, check=True)
+    subprocess.run(["node", "--test", "tests_js/plugin_manager.test.js"], cwd=REPO_ROOT, check=True)
     subprocess.run(
         [
             "node",

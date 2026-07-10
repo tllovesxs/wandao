@@ -56,19 +56,13 @@
     "files": [
       "main.js",
       "preload.js",
+      "plugin_format.js",
+      "plugin_manager.js",
       "assets/**/*",
       "renderer/**/*",
       "!node_modules/**/*"
     ],
     "extraResources": [
-      {
-        "from": "../import_feishu.py",
-        "to": "python/import_feishu.py"
-      },
-      {
-        "from": "../export_feishu.py",
-        "to": "python/export_feishu.py"
-      },
       {
         "from": "../export_zsxq.py",
         "to": "python/export_zsxq.py"
@@ -96,10 +90,6 @@
       {
         "from": "../export_onenote.py",
         "to": "python/export_onenote.py"
-      },
-      {
-        "from": "../export_wiz.py",
-        "to": "python/export_wiz.py"
       },
       {
         "from": "../import_yinxiang.py",
@@ -132,6 +122,10 @@
       {
         "from": "../wandao_credentials.py",
         "to": "python/wandao_credentials.py"
+      },
+      {
+        "from": "../wandao_browser.py",
+        "to": "python/wandao_browser.py"
       },
       {
         "from": "../requirements.txt",

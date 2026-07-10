@@ -71,6 +71,12 @@
 
 ## 新增或修改 Provider 检查
 
+- [ ] 如果这是在线插件，改动集中在一个 `plugins/<id>` 目录
+- [ ] 已提升 `plugin.json.version`，并确认 `core.minVersion`
+- [ ] 已按最小权限填写 `permissions`
+- [ ] 没有导入其他平台的业务脚本
+- [ ] 已运行 `node scripts/validate_plugins.js`
+
 如果本 PR 涉及 `providers/`，请确认：
 
 - [ ] 已提供 `provider.json`

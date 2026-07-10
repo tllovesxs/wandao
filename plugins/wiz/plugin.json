@@ -1,0 +1,15 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "wiz",
+  "name": "为知笔记",
+  "description": "导出为知笔记网页版内容，保留目录、正文和本地图片。",
+  "version": "1.0.0",
+  "publisher": "Wandao Official",
+  "homepage": "https://www.wiz.cn/",
+  "license": "AGPL-3.0-only",
+  "core": { "minVersion": "1.2.8" },
+  "platforms": ["win32", "darwin", "linux"],
+  "entrypoints": { "providers": ["providers/wiz/provider.json"] },
+  "permissions": ["browser-automation", "credentials", "filesystem:write", "network", "process"]
+}

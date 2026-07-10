@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tllovesxs/wandao/plugins/plugin.schema.json",
+  "title": "Wandao Plugin Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "description", "version", "publisher", "core", "entrypoints", "permissions"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{1,63}$" },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$" },
+    "publisher": { "type": "string", "minLength": 1 },
+    "homepage": { "type": "string" },
+    "license": { "type": "string" },
+    "core": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minVersion"],
+      "properties": {
+        "minVersion": { "type": "string" }
+      }
+    },
+    "platforms": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["win32", "darwin", "linux"] }
+    },
+    "entrypoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providers"],
+      "properties": {
+        "providers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "ui": { "type": "string" }
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["browser-automation", "credentials", "filesystem:read", "filesystem:write", "network", "process"]
+      }
+    }
+  }
+}

@@ -2442,6 +2442,136 @@ button,
   }
 }
 
+.plugin-toolbar,
+.plugin-card-actions,
+.custom-plugin-banner,
+.custom-plugin-banner > div {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-5);
+  margin-top: var(--s-5);
+}
+
+.plugin-card {
+  display: flex;
+  min-height: 280px;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-raise);
+}
+
+.plugin-card.installed {
+  border-color: var(--brand-line);
+}
+
+.plugin-card-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-4);
+}
+
+.plugin-card h3 {
+  margin-top: var(--s-1);
+  font: 700 22px/1.2 var(--font-display);
+}
+
+.plugin-card > p {
+  color: var(--text-2);
+  line-height: 1.7;
+}
+
+.plugin-publisher,
+.plugin-version,
+.plugin-status {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.plugin-version {
+  white-space: nowrap;
+}
+
+.plugin-permissions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.plugin-permissions span {
+  padding: 5px 9px;
+  border-radius: var(--r-pill);
+  background: var(--surface-sunk);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.plugin-status {
+  margin-top: auto;
+}
+
+.plugin-status.incompatible,
+.danger-text {
+  color: var(--danger);
+}
+
+.plugin-empty {
+  grid-column: 1 / -1;
+  padding: 48px 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-lg);
+  color: var(--text-3);
+  text-align: center;
+}
+
+.custom-plugin-shell {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-raise);
+}
+
+.custom-plugin-banner {
+  justify-content: space-between;
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.custom-plugin-banner strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.custom-plugin-frame {
+  display: block;
+  width: 100%;
+  min-height: 620px;
+  border: 0;
+  background: #fff;
+}
+
+@media (max-width: 900px) {
+  .plugin-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .plugin-toolbar,
+  .custom-plugin-banner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -12,6 +12,8 @@ __pycache__/
 .zsxq-chrome-profile/
 .youdao-chrome-profile/
 .tmp-*/
+.tmp-plugin-build/
+dist-plugins/
 .aliyun_thoughts_auth.json
 .yuque_auth.json
 .youdao_auth.json

@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "id": "wiz",
+  "platform": "wiz",
+  "name": "为知笔记",
+  "title": "为知笔记 Markdown 导出",
+  "navLabel": "为知笔记导出",
+  "description": "读取为知笔记网页版目录，批量导出 Markdown，并保存正文图片。",
+  "type": "hybrid",
+  "group": "export",
+  "trustLevel": "official",
+  "status": "stable",
+  "defaults": { "output": "exports/wiz" },
+  "guide": "README.md",
+  "homepage": "https://www.wiz.cn/",
+  "tags": ["导出", "目录", "图片", "断点续跑"],
+  "capabilities": {
+    "export": true,
+    "import": false,
+    "guide": true,
+    "login": true,
+    "scanToc": true,
+    "images": true,
+    "attachments": false,
+    "tree": true,
+    "batch": true,
+    "retryFailures": true
+  },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": true },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
+  "toc": {
+    "itemsPath": "nodes",
+    "idKey": "nodeId",
+    "exportIdKey": "exportId",
+    "titleKey": "title",
+    "parentIdKey": "parentNodeId",
+    "selectableKey": "selectable",
+    "selectionArg": "--doc-id",
+    "note": "读取目录后可按文件夹勾选笔记，导出会保留原目录结构。"
+  },
+  "fields": [
+    {
+      "name": "output",
+      "label": "输出目录",
+      "type": "directory",
+      "arg": "--output",
+      "required": true,
+      "default": "",
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "incremental",
+      "label": "跳过已经存在的 Markdown",
+      "type": "checkbox",
+      "arg": "--incremental",
+      "default": true,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "retry_failed",
+      "label": "只重试上次失败项",
+      "type": "checkbox",
+      "arg": "--retry-failed",
+      "default": false,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "request_delay",
+      "label": "资源请求延迟秒",
+      "type": "number",
+      "arg": "--request-delay",
+      "default": 0,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "request_jitter",
+      "label": "随机浮动秒",
+      "type": "number",
+      "arg": "--request-jitter",
+      "default": 0,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["export"]
+    }
+  ],
+  "actions": [
+    {
+      "id": "login",
+      "kind": "login",
+      "label": "登录并保存凭证",
+      "script": "../../backend/export_wiz.py",
+      "args": ["--login"],
+      "includeSelection": false,
+      "track": false,
+      "secondary": true
+    },
+    {
+      "id": "scan",
+      "kind": "scan",
+      "label": "读取目录",
+      "script": "../../backend/export_wiz.py",
+      "args": ["--scan-toc"],
+      "includeSelection": false,
+      "secondary": true
+    },
+    {
+      "id": "export",
+      "kind": "export",
+      "label": "开始导出",
+      "script": "../../backend/export_wiz.py",
+      "args": ["--progress-every", "1"],
+      "progressTitle": "为知笔记导出",
+      "progressDetail": "正在导出正文和图片..."
+    }
+  ]
+}

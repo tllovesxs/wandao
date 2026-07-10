@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "keys": [
+    {
+      "id": "wandao-official-2026",
+      "algorithm": "ed25519",
+      "publisher": "Wandao Official",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAw0cf4V8+ORgGzOIWZaq+ovy/PvfJYmXbRswKjr6dBY0=\n-----END PUBLIC KEY-----\n"
+    }
+  ]
+}

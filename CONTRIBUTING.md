@@ -174,6 +174,15 @@ python scripts\validate_providers.py
 
 ## Provider PR 检查
 
+新平台优先使用可独立发布的 Plugin v1。完整目录、权限、签名、版本和发布流程见 [在线插件开发与发布](docs/在线插件开发与发布.md)。一个插件可以包含多个 Provider，复杂平台不需要把导入和导出拆成两个安装包。
+
+插件 PR 还必须满足：
+
+- 一个 PR 只负责一个 `plugins/<id>`。
+- 修改插件业务代码时同步提升 `plugin.json.version`。
+- 插件不能导入其他平台的业务脚本；公共逻辑应进入稳定 SDK。
+- PR 预览包使用临时密钥，只有合并后流水线生成的正式签名包能被普通用户安装。
+
 如果 PR 涉及 `providers/`，请确认：
 
 - 已提供 `provider.json`。

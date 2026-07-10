@@ -1,0 +1,17 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "feishu",
+  "name": "飞书",
+  "description": "飞书 Wiki Markdown 导出与导入，包含目录、图片、权限检测和断点续跑。",
+  "version": "1.0.0",
+  "publisher": "Wandao Official",
+  "homepage": "https://www.feishu.cn/",
+  "license": "AGPL-3.0-only",
+  "core": { "minVersion": "1.2.8" },
+  "platforms": ["win32", "darwin", "linux"],
+  "entrypoints": {
+    "providers": ["providers/feishu-export/provider.json", "providers/feishu-import/provider.json"]
+  },
+  "permissions": ["browser-automation", "credentials", "filesystem:read", "filesystem:write", "network", "process"]
+}

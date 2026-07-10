@@ -96,20 +96,6 @@
       checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
     },
     {
-      id: 'feishu-export',
-      platform: 'feishu',
-      navLabel: '飞书导出',
-      title: '飞书 Wiki 知识库导出',
-      description: '将飞书 Wiki 导出为 Markdown',
-      script: 'export_feishu.py',
-      urlParam: '--wiki-url',
-      outputParam: '--output',
-      defaults: { output: 'exports/feishu' },
-      capabilities: { login: true, scanToc: true, retryFailures: true },
-      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
-      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
-    },
-    {
       id: 'aliyun',
       platform: 'aliyun-thoughts',
       navLabel: '阿里 Thoughts 导出',
@@ -147,20 +133,6 @@
       outputParam: '--output',
       noUrl: true,
       defaults: { output: 'exports/youdao' },
-      capabilities: { login: true, scanToc: true, retryFailures: true },
-      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
-      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
-    },
-    {
-      id: 'wiz',
-      platform: 'wiz',
-      navLabel: '为知笔记导出',
-      title: '为知笔记导出',
-      description: '将为知笔记网页版内容导出为本地 Markdown 文件，并保留目录和图片',
-      script: 'export_wiz.py',
-      outputParam: '--output',
-      noUrl: true,
-      defaults: { output: 'exports/wiz', delay: '0', jitter: '0' },
       capabilities: { login: true, scanToc: true, retryFailures: true },
       retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
       checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
@@ -208,19 +180,6 @@
       retryFailures: { arg: '--retry-failures', label: '只重试失败项' }
     },
     {
-      id: 'feishu-import',
-      platform: 'feishu',
-      navLabel: '飞书 Markdown 导入',
-      title: '飞书 Wiki Markdown 导入',
-      description: '将本地 Markdown 批量导入到飞书 Wiki',
-      script: 'import_feishu.py',
-      urlParam: '--wiki-url',
-      outputParam: '--source-dir',
-      isImport: true,
-      defaults: { output: 'exports/feishu' },
-      capabilities: { login: true, scanToc: false }
-    },
-    {
       id: 'yinxiang-import',
       platform: 'yinxiang',
       navLabel: '印象笔记 Markdown 导入',
@@ -247,11 +206,18 @@
       capabilities: { login: false, scanToc: false }
     }
   ].forEach(register);
+  const coreProviderIds = new Set(providers.keys());
 
   window.WandaoProviders = {
     defaultId: 'zsxq-group',
     register,
     registerMany,
+    replaceExternal(items) {
+      Array.from(providers.keys()).forEach((id) => {
+        if (!coreProviderIds.has(id)) providers.delete(id);
+      });
+      return registerMany(items);
+    },
     get(id) {
       return providers.get(id);
     },

@@ -1,0 +1,1 @@
+"""WizNote plugin."""

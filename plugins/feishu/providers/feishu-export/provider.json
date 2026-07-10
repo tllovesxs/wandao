@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "feishu-export",
+  "platform": "feishu",
+  "name": "飞书",
+  "title": "飞书 Wiki Markdown 导出",
+  "navLabel": "飞书导出",
+  "description": "读取飞书 Wiki 目录并批量导出 Markdown、图片和目录结构。",
+  "type": "hybrid",
+  "group": "export",
+  "trustLevel": "official",
+  "status": "stable",
+  "defaults": { "output": "exports/feishu" },
+  "guide": "README.md",
+  "tags": ["导出", "Wiki", "图片", "断点续跑"],
+  "capabilities": { "export": true, "import": false, "guide": true, "login": true, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": true },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
+  "toc": { "itemsPath": "ordered", "idKey": "wiki_token", "exportIdKey": "wiki_token", "titleKey": "title", "parentIdKey": "parent_wiki_token", "selectionArg": "--doc-id", "selectableWhenExportId": true },
+  "fields": [
+    { "name": "wiki_url", "label": "飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["scan", "export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
+    { "name": "update_existing", "label": "增量时更新已有文档", "type": "checkbox", "arg": "--update-existing", "default": false, "advanced": true, "actions": ["export"] },
+    { "name": "retry_failed", "label": "只重试上次失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },
+    { "name": "request_delay", "label": "请求延迟秒", "type": "number", "arg": "--request-delay", "default": 0.3, "min": 0, "step": 0.1, "advanced": true, "actions": ["export"] },
+    { "name": "request_jitter", "label": "随机浮动秒", "type": "number", "arg": "--request-jitter", "default": 0.2, "min": 0, "step": 0.1, "advanced": true, "actions": ["export"] },
+    { "name": "keep_remote_images", "label": "图片下载失败时保留远程链接", "type": "checkbox", "arg": "--keep-remote-images", "default": true, "advanced": true, "actions": ["export"] }
+  ],
+  "actions": [
+    { "id": "login", "kind": "login", "label": "登录并保存凭证", "script": "../../backend/export_feishu.py", "args": ["--login"], "includeSelection": false, "track": false, "secondary": true },
+    { "id": "scan", "kind": "scan", "label": "读取 Wiki 目录", "script": "../../backend/export_feishu.py", "args": ["--scan-toc"], "includeSelection": false, "secondary": true },
+    { "id": "export", "kind": "export", "label": "开始导出", "script": "../../backend/export_feishu.py", "args": ["--progress-every", "1"], "progressTitle": "飞书 Wiki 导出", "progressDetail": "正在导出目录、正文和图片..." }
+  ]
+}

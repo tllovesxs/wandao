@@ -3,10 +3,13 @@ const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const https = require('https');
+const { PluginManager } = require('./plugin_manager');
 
 let mainWindow;
 let pythonProcess = null;
 let pythonProcessStopping = false;
+let pluginRegistryCache = null;
+let pluginRegistryCachedAt = 0;
 const MAX_PROCESS_OUTPUT_CHARS = 32 * 1024 * 1024;
 
 const PROJECT_INFO = {
@@ -26,6 +29,13 @@ const APP_ID = 'com.wandao.app';
 const SETTINGS_FILE = 'settings.json';
 const SETTINGS_SCHEMA_VERSION = 1;
 const BROWSER_DOWNLOAD_URL = 'https://www.google.com/chrome/';
+const PLUGIN_REGISTRY_URL = process.env.WANDAO_PLUGIN_REGISTRY_URL
+  || 'https://github.com/tllovesxs/wandao/releases/download/plugins-latest/registry.json';
+let pluginManagerInstance = null;
+
+if (process.env.WANDAO_USER_DATA_DIR) {
+  app.setPath('userData', path.resolve(process.env.WANDAO_USER_DATA_DIR));
+}
 
 function resolveAppAsset(fileName) {
   const candidates = uniquePaths([
@@ -63,6 +73,21 @@ function cleanupPythonProcess() {
     pythonProcess = null;
     pythonProcessStopping = false;
   }
+}
+
+function pluginManager() {
+  if (!pluginManagerInstance) {
+    const trustStore = readJsonFile(resolveAppAsset('plugin-trust.json'));
+    pluginManagerInstance = new PluginManager({
+      rootDir: path.join(app.getPath('userData'), 'plugins'),
+      trustStore,
+      coreVersion: app.getVersion(),
+      platform: process.platform,
+      registryUrl: PLUGIN_REGISTRY_URL,
+      allowLocalHttp: Boolean(process.env.WANDAO_PLUGIN_ALLOW_LOCAL_HTTP)
+    });
+  }
+  return pluginManagerInstance;
 }
 
 function protectTaskArgs(args) {
@@ -138,15 +163,12 @@ function writePrivateTextAtomic(filePath, content) {
 const ALLOWED_SCRIPTS = new Set([
   'export_zsxq.py',
   'export_yuque.py',
-  'export_feishu.py',
   'export_aliyun_thoughts.py',
   'export_yinxiang.py',
   'export_youdao.py',
   'export_onenote.py',
-  'export_wiz.py',
   'import_yinxiang.py',
   'import_yuque.py',
-  'import_feishu.py',
   'ima_knowledge.py'
 ]);
 
@@ -474,7 +496,7 @@ function isInsidePath(root, candidate) {
 function managedFileRoots(options = {}) {
   const roots = [app.getPath('userData')];
   if (options.allowProjectRoot) {
-    roots.push(path.dirname(findPythonScript('import_feishu.py')));
+    roots.push(pythonLibraryDir());
   }
   return uniquePaths(roots);
 }
@@ -505,7 +527,16 @@ function readGuideMarkdown(providerRoot, guidePath) {
   return fs.readFileSync(resolved, 'utf-8');
 }
 
-function pluginScriptRef(providerId, scriptName, providerRoot) {
+function pluginScriptRef(providerId, scriptName, providerRoot, pluginInfo = null) {
+  if (pluginInfo) {
+    if (!scriptName || String(scriptName).startsWith('plugin:')) return String(scriptName || '');
+    const resolved = path.resolve(providerRoot, scriptName);
+    if (!isInsidePath(pluginInfo.pluginRoot, resolved) || !fs.existsSync(resolved) || path.extname(resolved).toLowerCase() !== '.py') {
+      return '';
+    }
+    const relative = path.relative(pluginInfo.pluginRoot, resolved).replace(/\\/g, '/');
+    return `plugin:${pluginInfo.pluginId}:${relative}`;
+  }
   if (!scriptName || ALLOWED_SCRIPTS.has(scriptName) || String(scriptName).startsWith('provider:')) {
     return scriptName || '';
   }
@@ -598,9 +629,9 @@ function validateProviderManifestRuntime(raw, providerRoot) {
   return id;
 }
 
-function normalizeProviderManifest(raw, providerRoot, sourceKind) {
+function normalizeProviderManifest(raw, providerRoot, sourceKind, pluginInfo = null) {
   const id = validateProviderManifestRuntime(raw, providerRoot);
-  const defaultScript = raw.script ? pluginScriptRef(id, raw.script, providerRoot) : '';
+  const defaultScript = raw.script ? pluginScriptRef(id, raw.script, providerRoot, pluginInfo) : '';
   if (raw.script && !defaultScript) {
     throw new Error(`Provider 默认脚本无效：${raw.script}`);
   }
@@ -611,13 +642,31 @@ function normalizeProviderManifest(raw, providerRoot, sourceKind) {
     trustLevel: raw.trustLevel || (sourceKind === 'user' ? 'local' : 'community'),
     status: raw.status || 'experimental',
     templateId: raw.templateId || '',
-    guideMarkdown: readGuideMarkdown(providerRoot, raw.guide || raw.guidePath || 'README.md')
+    guideMarkdown: readGuideMarkdown(providerRoot, raw.guide || raw.guidePath || 'README.md'),
+    pluginId: pluginInfo?.pluginId || '',
+    pluginVersion: pluginInfo?.pluginVersion || '',
+    pluginPermissions: pluginInfo?.permissions || [],
+    pluginVerified: Boolean(pluginInfo?.verified)
   };
+  if (pluginInfo && raw.ui?.mode === 'custom' && raw.ui.entry) {
+    const uiPath = path.resolve(providerRoot, raw.ui.entry);
+    if (!isInsidePath(pluginInfo.pluginRoot, uiPath) || !fs.existsSync(uiPath) || path.extname(uiPath).toLowerCase() !== '.html') {
+      throw new Error(`自定义 UI 文件不存在或路径越界：${raw.ui.entry}`);
+    }
+    const relativeUiPath = path.relative(pluginInfo.pluginRoot, uiPath).replace(/\\/g, '/');
+    if (!pluginInfo.uiEntry || pluginInfo.uiEntry !== relativeUiPath) {
+      throw new Error('自定义 UI 必须在 plugin.json 的 entrypoints.ui 中显式声明');
+    }
+    provider.ui = {
+      mode: 'custom',
+      entry: relativeUiPath
+    };
+  }
   provider.script = defaultScript;
   if (Array.isArray(raw.actions)) {
     provider.actions = raw.actions.map((action, index) => {
       const declaredScript = action && action.script ? action.script : raw.script;
-      const actionScript = pluginScriptRef(id, declaredScript, providerRoot);
+      const actionScript = pluginScriptRef(id, declaredScript, providerRoot, pluginInfo);
       if (!actionScript) {
         throw new Error(`actions[${index}].script 无效：${declaredScript}`);
       }
@@ -654,7 +703,30 @@ function discoverProviderManifests() {
       }
     }
   }
+  const pluginDiscovery = pluginManager().providerEntriesWithErrors();
+  errors.push(...pluginDiscovery.errors.map((message) => `插件校验失败：${message}`));
+  for (const entry of pluginDiscovery.entries) {
+    try {
+      const providerRoot = path.dirname(entry.manifestPath);
+      const manifest = normalizeProviderManifest(readJsonFile(entry.manifestPath), providerRoot, 'plugin', entry);
+      if (seen.has(manifest.id)) {
+        errors.push(`${entry.manifestPath}：Provider ID 冲突，已忽略插件中的 ${manifest.id}`);
+        continue;
+      }
+      seen.add(manifest.id);
+      providers.push(manifest);
+    } catch (error) {
+      console.warn(`Failed to load plugin provider ${entry.manifestPath}:`, error);
+      errors.push(`${entry.manifestPath}：${error.message || String(error)}`);
+    }
+  }
   return { providers, errors };
+}
+
+function findPluginScript(scriptName) {
+  const match = String(scriptName || '').match(/^plugin:([a-z0-9_-]+):(.+)$/i);
+  if (!match) throw new Error(`不允许执行的插件脚本：${scriptName}`);
+  return pluginManager().resolveScript(match[1], match[2]).path;
 }
 
 function findProviderScript(scriptName) {
@@ -678,7 +750,10 @@ function findProviderScript(scriptName) {
   throw new Error(`无法找到插件脚本：${scriptName}`);
 }
 
-function findPythonScript(scriptName = 'import_feishu.py') {
+function findPythonScript(scriptName = 'import_yuque.py') {
+  if (String(scriptName || '').startsWith('plugin:')) {
+    return findPluginScript(scriptName);
+  }
   if (String(scriptName || '').startsWith('provider:')) {
     return findProviderScript(scriptName);
   }
@@ -736,11 +811,16 @@ function pythonCommand() {
 }
 
 function pythonLibraryDir() {
-  try {
-    return path.dirname(findPythonScript('import_feishu.py'));
-  } catch (_error) {
-    return '';
+  const candidates = uniquePaths([
+    path.join(__dirname, '..'),
+    process.cwd(),
+    path.join(app.getAppPath(), '..'),
+    path.join(process.resourcesPath || '', 'python')
+  ]);
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'wandao_logging.py'))) return candidate;
   }
+  return '';
 }
 
 function pythonEnv(extra = {}) {
@@ -768,6 +848,43 @@ function pythonEnv(extra = {}) {
   return env;
 }
 
+function pluginExecutionContext(scriptName) {
+  const match = String(scriptName || '').match(/^plugin:([a-z0-9_-]+):(.+)$/i);
+  if (!match) return null;
+  const resolved = pluginManager().resolveScript(match[1], match[2]);
+  const dataDir = path.join(app.getPath('userData'), 'plugin-data', match[1]);
+  fs.mkdirSync(dataDir, { recursive: true });
+  return { ...resolved, pluginId: match[1], dataDir };
+}
+
+function executionEnv(options, pluginContext = null) {
+  const coreLibrary = pythonLibraryDir();
+  const pluginPaths = pluginContext ? [pluginContext.root, coreLibrary] : [coreLibrary];
+  const env = pythonEnv({
+    WANDAO_TASK_ID: options?.taskId || '',
+    WANDAO_PROVIDER_ID: options?.providerId || '',
+    PYTHONPATH: [...pluginPaths, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+  });
+  if (!pluginContext) return env;
+  env.WANDAO_PLUGIN_ID = pluginContext.pluginId;
+  env.WANDAO_PLUGIN_VERSION = pluginContext.plugin.currentVersion;
+  env.WANDAO_PLUGIN_ROOT = pluginContext.root;
+  env.WANDAO_PLUGIN_DATA_DIR = pluginContext.dataDir;
+  env.WANDAO_DATA_DIR = pluginContext.dataDir;
+  env.WANDAO_PLUGIN_PERMISSIONS = JSON.stringify(pluginContext.plugin.manifest.permissions || []);
+  for (const key of Object.keys(env)) {
+    if (/^(GH_|GITHUB_|AWS_|AZURE_|GOOGLE_|OPENAI_|ANTHROPIC_|WANDAO_PLUGIN_PRIVATE_KEY)/i.test(key)) delete env[key];
+  }
+  return env;
+}
+
+async function currentPluginRegistry(force = false) {
+  if (!force && pluginRegistryCache && Date.now() - pluginRegistryCachedAt < 5 * 60 * 1000) return pluginRegistryCache;
+  pluginRegistryCache = await pluginManager().fetchRegistry();
+  pluginRegistryCachedAt = Date.now();
+  return pluginRegistryCache;
+}
+
 function commandLineLength(args) {
   return (args || []).reduce((total, value) => total + String(value || '').length + 3, 0);
 }
@@ -783,7 +900,8 @@ function compressDocIdArgs(scriptName, args) {
     'export_yuque.py',
     'ima_knowledge.py'
   ]);
-  if (!supported.has(scriptName)) {
+  const scriptBaseName = path.basename(String(scriptName || '').split(':').pop() || '');
+  if (!supported.has(scriptBaseName)) {
     return args;
   }
 
@@ -805,7 +923,7 @@ function compressDocIdArgs(scriptName, args) {
 
   const tmpDir = path.join(app.getPath('userData'), 'tmp');
   fs.mkdirSync(tmpDir, { recursive: true });
-  const prefix = path.basename(scriptName, '.py').replace(/^export_/, '');
+  const prefix = path.basename(scriptBaseName, '.py').replace(/^export_/, '');
   const fileName = `${prefix}-doc-ids-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
   const filePath = path.join(tmpDir, fileName);
   fs.writeFileSync(filePath, JSON.stringify({ docIds }, null, 2), 'utf-8');
@@ -1235,7 +1353,9 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     }
     let scriptPath;
     let commandArgs;
+    let pluginContext;
     try {
+      pluginContext = pluginExecutionContext(scriptName);
       scriptPath = findPythonScript(scriptName);
       commandArgs = compressDocIdArgs(scriptName, args || []);
     } catch (error) {
@@ -1247,11 +1367,7 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     const proc = spawn(pythonCommand(), pythonArgs, {
       cwd: path.dirname(scriptPath),
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: pythonEnv({
-        WANDAO_TASK_ID: options?.taskId || '',
-        WANDAO_PROVIDER_ID: options?.providerId || '',
-        PYTHONPATH: [pythonLibraryDir(), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-      })
+      env: executionEnv(options, pluginContext)
     });
     pythonProcess = proc;
     pythonProcessStopping = false;
@@ -1441,6 +1557,76 @@ ipcMain.handle('get-provider-manifests', async () => {
   }
 });
 
+ipcMain.handle('get-plugin-catalog', async (event, options = {}) => {
+  try {
+    const registry = await currentPluginRegistry(Boolean(options?.refresh));
+    return { success: true, plugins: pluginManager().listWithRegistry(registry), registryUpdatedAt: registry.generatedAt || '' };
+  } catch (error) {
+    return {
+      success: true,
+      plugins: pluginManager().listWithRegistry(),
+      registryError: error.message || String(error),
+      offline: true
+    };
+  }
+});
+
+ipcMain.handle('install-plugin', async (event, pluginId) => {
+  try {
+    const registry = await currentPluginRegistry(true);
+    const plugin = await pluginManager().installFromRegistry(String(pluginId || ''), registry);
+    return { success: true, plugin };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('install-plugin-file', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: '安装万能导插件',
+    properties: ['openFile'],
+    filters: [{ name: 'Wandao Plugin', extensions: ['wandao-plugin'] }]
+  });
+  if (result.canceled || !result.filePaths[0]) return { success: false, canceled: true };
+  try {
+    return { success: true, plugin: pluginManager().installFile(result.filePaths[0]) };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('set-plugin-enabled', async (event, pluginId, enabled) => {
+  try {
+    return { success: true, plugin: pluginManager().setEnabled(String(pluginId || ''), Boolean(enabled)) };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('rollback-plugin', async (event, pluginId) => {
+  try {
+    return { success: true, plugin: pluginManager().rollback(String(pluginId || '')) };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('uninstall-plugin', async (event, pluginId) => {
+  try {
+    return { success: true, removed: pluginManager().uninstall(String(pluginId || '')) };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('get-plugin-ui', async (event, pluginId, entry) => {
+  try {
+    return { success: true, html: pluginManager().readUi(String(pluginId || ''), String(entry || '')) };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
 ipcMain.handle('copy-text', async (event, text) => {
   clipboard.writeText(String(text || ''));
   return { success: true };
@@ -1452,6 +1638,6 @@ ipcMain.handle('get-app-path', async () => {
     appPath: app.getAppPath(),
     userData,
     dataRoot: userData,
-    projectRoot: path.dirname(findPythonScript('import_feishu.py'))
+    projectRoot: pythonLibraryDir()
   };
 });

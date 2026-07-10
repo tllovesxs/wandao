@@ -6,6 +6,7 @@ const PRIMARY_NAV_ITEMS = [
   { id: 'platform-center', label: '平台中心', description: '选择平台和操作', icon: 'platforms' },
   { id: 'task-center', label: '任务中心', description: '查看最近任务', icon: 'tasks' },
   { id: 'notice-center', label: '教程公告', description: '公告与教程', icon: 'notice' },
+  { id: 'plugin-center', label: '插件中心', description: '安装与更新平台', icon: 'plugins' },
   { id: 'settings', label: '设置', description: '偏好与帮助', icon: 'settings' }
 ];
 const GITHUB_REPO_URL = 'https://github.com/tllovesxs/wandao';
@@ -13,6 +14,9 @@ const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/tllovesxs/wandao/main
 const GITHUB_BLOB_BASE = 'https://github.com/tllovesxs/wandao/blob/main/';
 const NOTICE_CENTER_MANIFEST_URL = `${GITHUB_RAW_BASE}docs/tutorial-announcements.json`;
 const DEFAULT_BROWSER_DOWNLOAD_URL = 'https://www.google.com/chrome/';
+let pluginCatalogState = { status: 'idle', plugins: [], error: '', offline: false, updatedAt: '' };
+let pluginCatalogRequestId = 0;
+let customPluginMessageCleanup = null;
 const FALLBACK_NOTICE_CENTER = {
   version: 1,
   updatedAt: '2026-07-08',
@@ -1208,7 +1212,7 @@ function providerList(group) {
 }
 
 async function loadProviderManifests() {
-  if (!window.electronAPI.getProviderManifests || !PROVIDER_REGISTRY?.registerMany) return;
+  if (!window.electronAPI.getProviderManifests || !PROVIDER_REGISTRY?.replaceExternal) return;
   const result = await window.electronAPI.getProviderManifests();
   if (!result?.success) {
     log(`加载社区 provider 失败：${result?.error || '未知错误'}`, 'error');
@@ -1220,10 +1224,9 @@ async function loadProviderManifests() {
   if (manifestErrors.length) {
     appendUserLog(`有 ${manifestErrors.length} 个本地 Provider 配置无效，已安全忽略。详情请查看详细日志。`, 'warn');
   }
-  if (!manifests.length) return;
-  PROVIDER_REGISTRY.registerMany(manifests);
+  PROVIDER_REGISTRY.replaceExternal(manifests);
   refreshProviderTools();
-  appendDetailedLog('provider', 'info', `已加载 ${manifests.length} 个文件型 provider。`);
+  appendDetailedLog('provider', 'info', `已加载 ${manifests.length} 个外部 Provider。`);
 }
 
 function renderProviderSafetyNotice(provider) {
@@ -1362,6 +1365,7 @@ function navigationIcon(name) {
     platforms: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
     tasks: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2"/>',
     notice: '<path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7l-4 2V6a2 2 0 0 1 2-2Z"/><path d="M8 9h8M8 13h6"/>',
+    plugins: '<path d="M8 3v4M16 3v4M5 9h14v4a7 7 0 0 1-14 0V9Z"/><path d="M12 20v-5"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.08-1l2-1.5-2-3.46-2.35.95a7 7 0 0 0-1.72-1L14.5 3h-5l-.35 2.99a7 7 0 0 0-1.72 1L5.08 6.04l-2 3.46L5.08 11a7 7 0 0 0 0 2l-2 1.5 2 3.46 2.35-.95a7 7 0 0 0 1.72 1L9.5 21h5l.35-2.99a7 7 0 0 0 1.72-1l2.35.95 2-3.46-2-1.5c.05-.33.08-.66.08-1Z"/>'
   };
   return `<svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name] || paths.platforms}</svg>`;
@@ -1666,7 +1670,7 @@ function renderHomePage() {
       <article class="home-card home-card-primary">
         <span class="card-eyebrow">开始新任务</span>
         <h4>从常用平台带走知识</h4>
-        <p>飞书、语雀、有道、阿里云、OneNote、为知等平台都从同一个入口开始。</p>
+        <p>已安装的平台都从同一个入口开始，更多平台可以按需从插件中心安装。</p>
         <button class="btn-primary" data-switch-view="platform-center" type="button">打开平台中心</button>
       </article>
       <article class="home-card">
@@ -2224,6 +2228,164 @@ function renderProviderModeSwitcher(provider) {
   bindWorkbenchActions(switcher);
 }
 
+const PLUGIN_PERMISSION_LABELS = {
+  'browser-automation': '浏览器自动化',
+  credentials: '登录凭证',
+  'filesystem:read': '读取本地文件',
+  'filesystem:write': '写入本地文件',
+  network: '访问网络',
+  process: '运行独立进程'
+};
+
+function pluginPermissionTags(plugin) {
+  return (plugin.permissions || []).map((item) => PLUGIN_PERMISSION_LABELS[item] || item);
+}
+
+function pluginStatusText(plugin) {
+  if (!plugin.compatibility?.compatible) return plugin.compatibility?.reason || '与当前版本不兼容';
+  if (!plugin.installed) return '未安装';
+  if (!plugin.enabled) return `已安装 ${plugin.installedVersion} · 已停用`;
+  if (plugin.updateAvailable) return `已安装 ${plugin.installedVersion} · 可更新到 ${plugin.version}`;
+  return `已安装 ${plugin.installedVersion} · 已启用`;
+}
+
+function renderPluginCard(plugin) {
+  const permissionTags = pluginPermissionTags(plugin);
+  const compatible = plugin.compatibility?.compatible !== false;
+  const primary = !plugin.installed
+    ? `<button class="btn-primary" data-plugin-action="install" data-plugin-id="${escapeHtml(plugin.id)}" type="button" ${compatible ? '' : 'disabled'}>安装</button>`
+    : (plugin.updateAvailable
+      ? `<button class="btn-primary" data-plugin-action="install" data-plugin-id="${escapeHtml(plugin.id)}" type="button">更新</button>`
+      : `<button class="btn-secondary" data-plugin-action="toggle" data-plugin-id="${escapeHtml(plugin.id)}" data-enabled="${plugin.enabled ? 'false' : 'true'}" type="button">${plugin.enabled ? '停用' : '启用'}</button>`);
+  return `
+    <article class="plugin-card ${plugin.installed ? 'installed' : ''}">
+      <div class="plugin-card-heading">
+        <div>
+          <span class="plugin-publisher">${escapeHtml(plugin.publisher || '社区开发者')}</span>
+          <h3>${escapeHtml(plugin.name || plugin.id)}</h3>
+        </div>
+        <span class="plugin-version">v${escapeHtml(plugin.version || plugin.installedVersion || '')}</span>
+      </div>
+      <p>${escapeHtml(plugin.description || '')}</p>
+      <div class="plugin-permissions">
+        ${permissionTags.map((item) => `<span>${escapeHtml(item)}</span>`).join('') || '<span>无需额外权限</span>'}
+      </div>
+      <div class="plugin-status ${compatible ? '' : 'incompatible'}">${escapeHtml(pluginStatusText(plugin))}</div>
+      <div class="plugin-card-actions">
+        ${primary}
+        ${plugin.installed && (plugin.previousVersions || []).length ? `<button class="btn-text" data-plugin-action="rollback" data-plugin-id="${escapeHtml(plugin.id)}" type="button">回滚</button>` : ''}
+        ${plugin.installed ? `<button class="btn-text danger-text" data-plugin-action="uninstall" data-plugin-id="${escapeHtml(plugin.id)}" type="button">卸载</button>` : ''}
+      </div>
+    </article>
+  `;
+}
+
+async function loadPluginCatalog(refresh = false) {
+  if (!window.electronAPI.getPluginCatalog) return;
+  const requestId = ++pluginCatalogRequestId;
+  pluginCatalogState = { ...pluginCatalogState, status: 'loading', error: '' };
+  if (currentTool === 'plugin-center') renderPluginCenterPage();
+  const result = await window.electronAPI.getPluginCatalog({ refresh });
+  if (requestId !== pluginCatalogRequestId) return;
+  pluginCatalogState = {
+    status: result?.success ? 'ready' : 'error',
+    plugins: Array.isArray(result?.plugins) ? result.plugins : [],
+    error: result?.registryError || result?.error || '',
+    offline: Boolean(result?.offline),
+    updatedAt: result?.registryUpdatedAt || ''
+  };
+  if (currentTool === 'plugin-center') renderPluginCenterPage();
+}
+
+async function refreshProvidersAfterPluginChange() {
+  await loadProviderManifests();
+  renderProviderNavigation();
+}
+
+async function runPluginCenterAction(action, pluginId, button) {
+  button.disabled = true;
+  try {
+    let result;
+    const plugin = pluginCatalogState.plugins.find((item) => item.id === pluginId);
+    if (action === 'install') {
+      const permissions = pluginPermissionTags(plugin || {});
+      const detail = permissions.length ? `\n\n将授予：${permissions.join('、')}` : '';
+      if (!confirm(`${plugin?.installed ? '更新' : '安装'}插件“${plugin?.name || pluginId}”？${detail}`)) return;
+      result = await window.electronAPI.installPlugin(pluginId);
+    } else if (action === 'toggle') {
+      result = await window.electronAPI.setPluginEnabled(pluginId, button.dataset.enabled === 'true');
+    } else if (action === 'rollback') {
+      if (!confirm('回滚到上一个已安装版本？当前版本会保留，可再次切换。')) return;
+      result = await window.electronAPI.rollbackPlugin(pluginId);
+    } else if (action === 'uninstall') {
+      if (!confirm(`卸载插件“${plugin?.name || pluginId}”？插件生成的导出文件不会删除。`)) return;
+      result = await window.electronAPI.uninstallPlugin(pluginId);
+    }
+    if (!result?.success) throw new Error(result?.error || '插件操作失败');
+    log(`插件操作完成：${plugin?.name || pluginId}`, 'success');
+    await refreshProvidersAfterPluginChange();
+    await loadPluginCatalog(true);
+  } catch (error) {
+    log(`插件操作失败：${formatError(error)}`, 'error');
+    alert(formatError(error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function bindPluginCenterActions(root) {
+  root.querySelector('[data-plugin-refresh]')?.addEventListener('click', () => loadPluginCatalog(true));
+  root.querySelector('[data-plugin-local-install]')?.addEventListener('click', async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      const result = await window.electronAPI.installPluginFile();
+      if (result?.canceled) return;
+      if (!result?.success) throw new Error(result?.error || '本地插件安装失败');
+      await refreshProvidersAfterPluginChange();
+      await loadPluginCatalog(true);
+    } catch (error) {
+      alert(formatError(error));
+    } finally {
+      event.currentTarget.disabled = false;
+    }
+  });
+  root.querySelectorAll('[data-plugin-action]').forEach((button) => {
+    button.addEventListener('click', () => runPluginCenterAction(button.dataset.pluginAction, button.dataset.pluginId, button));
+  });
+}
+
+function renderPluginCenterPage() {
+  setTaskHistoryVisible(false);
+  setToolHeading('插件中心', '按需安装平台能力，插件更新不需要重新安装万能导。');
+  const contentArea = document.getElementById('content-area');
+  const loading = pluginCatalogState.status === 'loading';
+  const status = pluginCatalogState.offline
+    ? `<div class="info-box plugin-offline"><strong>当前无法连接在线插件库</strong><p>${escapeHtml(pluginCatalogState.error || '仍可管理已安装插件，联网后点击刷新。')}</p></div>`
+    : '';
+  contentArea.innerHTML = `
+    <section class="view-panel plugin-center-hero">
+      <div class="view-panel-header">
+        <div>
+          <p class="view-kicker">按需扩展</p>
+          <h3>只安装你需要的平台</h3>
+          <p>插件包会校验官方签名和文件完整性，安装、更新、停用、回滚互不影响主程序版本。</p>
+        </div>
+        <div class="plugin-toolbar">
+          <button class="btn-secondary" data-plugin-local-install type="button">安装本地插件</button>
+          <button class="btn-primary" data-plugin-refresh type="button">刷新插件库</button>
+        </div>
+      </div>
+    </section>
+    ${status}
+    <section class="plugin-grid">
+      ${loading ? '<div class="plugin-empty">正在读取插件库...</div>' : pluginCatalogState.plugins.map(renderPluginCard).join('')}
+      ${!loading && !pluginCatalogState.plugins.length ? '<div class="plugin-empty">暂时没有可显示的插件。你仍可安装经过签名的本地插件包。</div>' : ''}
+    </section>
+  `;
+  bindPluginCenterActions(contentArea);
+  if (pluginCatalogState.status === 'idle') loadPluginCatalog(false);
+}
+
 function normalizeActionHierarchy(root = document.getElementById('content-area')) {
   if (!root) return;
   root.querySelectorAll('.action-section .btn-primary').forEach((button) => {
@@ -2245,6 +2407,8 @@ function renderAppView(viewId) {
     renderTaskCenterPage();
   } else if (viewId === 'notice-center') {
     renderNoticeCenterPage();
+  } else if (viewId === 'plugin-center') {
+    renderPluginCenterPage();
   } else if (viewId === 'settings') {
     renderSettingsPage();
   } else {
@@ -2514,6 +2678,7 @@ function renderManifestProviderForm(provider) {
             ${escapeHtml(action.label || action.id || '执行')}
           </button>
         `).join('')}
+        ${actions.some((action) => action.kind === 'login') ? `<button class="btn-secondary" id="${provider.id}-login-done" type="button" hidden disabled>我已完成登录，保存凭证</button>` : ''}
         <button class="btn-danger" id="${provider.id}-stop" disabled>停止</button>
       </section>
     </div>
@@ -2588,6 +2753,13 @@ function buildManifestActionArgs(provider, action, fields) {
   if (!isScanAction && action.includeSelection !== false && provider.capabilities?.scanToc && tocStates[provider.id]?.loaded) {
     args.push(...selectedTocArgs(provider.id));
   }
+  const actionKind = String(action.kind || action.id || '').toLowerCase();
+  if (provider.checkpoint?.supported && ['export', 'import', 'run'].includes(actionKind) && !args.includes('--checkpoint-file')) {
+    const outputField = fields.find(isManifestOutputField);
+    const output = outputField ? manifestFieldValue(provider, outputField) : '';
+    const checkpointFile = providerCheckpointFile(provider.id, output);
+    if (checkpointFile) args.push('--checkpoint-file', checkpointFile, '--resume');
+  }
   return args;
 }
 
@@ -2627,6 +2799,11 @@ function initializeManifestProviderHandlers(provider, actions, fields) {
   }
   fields.forEach((field) => {
     const id = manifestFieldId(provider, field);
+    const input = document.getElementById(id);
+    if (input && isManifestOutputField(field) && !input.value && provider.defaults?.output) {
+      const root = appPaths?.dataRoot || appPaths?.userData || appPaths?.projectRoot;
+      if (root) input.value = `${root}/${provider.defaults.output}`;
+    }
     const browse = document.getElementById(`${id}-browse`);
     if (!browse) return;
     browse.addEventListener('click', async () => {
@@ -2639,6 +2816,17 @@ function initializeManifestProviderHandlers(provider, actions, fields) {
         if (file) document.getElementById(id).value = file;
       }
     });
+  });
+  const loginDoneButton = document.getElementById(`${provider.id}-login-done`);
+  loginDoneButton?.addEventListener('click', async () => {
+    loginDoneButton.disabled = true;
+    loginDoneButton.textContent = '正在保存凭证...';
+    const result = await window.electronAPI.sendPythonInput('\n');
+    if (!result?.success) {
+      loginDoneButton.disabled = false;
+      loginDoneButton.textContent = '我已完成登录，保存凭证';
+      alert(result?.error || '当前登录任务没有等待确认');
+    }
   });
   actions.forEach((action) => {
     const button = document.querySelector(`[data-manifest-action="${CSS.escape(action.id || action.label)}"]`);
@@ -2663,6 +2851,11 @@ function initializeManifestProviderHandlers(provider, actions, fields) {
         return;
       }
       setRunning(true, provider.id);
+      if (action.kind === 'login' && loginDoneButton) {
+        loginDoneButton.hidden = false;
+        loginDoneButton.disabled = false;
+        loginDoneButton.textContent = '我已完成登录，保存凭证';
+      }
       startProgress(action.progressTitle || action.label || provider.title, action.progressDetail || '正在执行 provider 动作...');
       log(`开始：${action.label || provider.title}`, 'info');
       try {
@@ -2697,11 +2890,96 @@ function initializeManifestProviderHandlers(provider, actions, fields) {
         log(`错误：${formatError(error)}`, 'error');
         finishProgress(false, `${action.label || '任务'}出错，请查看运行日志`);
       } finally {
+        if (action.kind === 'login' && loginDoneButton) {
+          loginDoneButton.hidden = true;
+          loginDoneButton.disabled = true;
+        }
         setRunning(false, provider.id);
       }
     });
   });
   document.getElementById(`${provider.id}-stop`)?.addEventListener('click', handleStop);
+}
+
+function sandboxPluginHtml(html) {
+  const policy = "default-src 'none'; img-src data:; media-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'none'; base-uri 'none';";
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
+  const source = String(html || '');
+  if (/<head(?:\s[^>]*)?>/i.test(source)) {
+    return source.replace(/<head(?:\s[^>]*)?>/i, (match) => `${match}${meta}`);
+  }
+  return `<!doctype html><html><head>${meta}</head><body>${source}</body></html>`;
+}
+
+async function executeCustomPluginAction(provider, actionId, rawArgs) {
+  const action = (provider.actions || []).find((item) => item.id === actionId);
+  if (!action || !(action.script || provider.script)) throw new Error('自定义 UI 请求了未声明的动作');
+  const args = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
+  const totalLength = args.reduce((sum, item) => sum + item.length, 0);
+  if (args.length > 500 || args.some((item) => item.length > 16000) || totalLength > 128000) {
+    throw new Error('自定义 UI 提交的参数超过安全限制');
+  }
+  if (!confirmProviderExecution(provider, action)) throw new Error('用户取消执行');
+  setRunning(true, provider.id);
+  startProgress(action.progressTitle || action.label || provider.title, action.progressDetail || '正在执行插件动作...');
+  try {
+    const result = await runTrackedPythonCommand(action.script || provider.script, [...(action.args || []), ...args], {
+      providerId: provider.id,
+      title: action.label || provider.title,
+      action: action.actionName || action.label || '执行',
+      track: action.track !== false
+    });
+    finishProgress(Boolean(result?.success), result?.success ? '插件动作完成' : '插件动作失败');
+    return result;
+  } finally {
+    setRunning(false, provider.id);
+  }
+}
+
+async function renderCustomPluginProvider(provider) {
+  const contentArea = document.getElementById('content-area');
+  contentArea.innerHTML = '<div class="plugin-empty">正在加载插件界面...</div>';
+  const result = await window.electronAPI.getPluginUi(provider.pluginId, provider.ui.entry);
+  if (currentTool !== provider.id) return;
+  if (!result?.success) {
+    contentArea.innerHTML = `<div class="info-box"><strong>插件界面加载失败</strong><p>${escapeHtml(result?.error || '未知错误')}</p></div>`;
+    return;
+  }
+  contentArea.innerHTML = `
+    <section class="custom-plugin-shell">
+      <div class="custom-plugin-banner">
+        <div>${renderTrustBadge(provider)}<strong>${escapeHtml(provider.title || provider.name)}</strong></div>
+        <span>沙箱界面 · 无 Node 权限 · 默认断网</span>
+      </div>
+      <iframe class="custom-plugin-frame" title="${escapeHtml(provider.title || provider.name)}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+    </section>
+  `;
+  const frame = contentArea.querySelector('.custom-plugin-frame');
+  frame.srcdoc = sandboxPluginHtml(result.html);
+  const listener = async (event) => {
+    if (event.source !== frame.contentWindow || event.data?.source !== 'wandao-plugin') return;
+    const { requestId, method, payload = {} } = event.data;
+    try {
+      let response;
+      if (method === 'selectDirectory') {
+        response = await window.electronAPI.selectDirectory({ title: String(payload.title || '选择目录'), defaultPath: String(payload.defaultPath || '') });
+      } else if (method === 'selectFile') {
+        response = await window.electronAPI.selectFile({ title: String(payload.title || '选择文件'), filters: Array.isArray(payload.filters) ? payload.filters : [] });
+      } else if (method === 'openExternal') {
+        if (!/^https:\/\//i.test(String(payload.url || ''))) throw new Error('插件界面只允许打开 HTTPS 链接');
+        response = await window.electronAPI.openExternal(payload.url);
+      } else if (method === 'runAction') {
+        response = await executeCustomPluginAction(provider, String(payload.actionId || ''), payload.args);
+      } else {
+        throw new Error(`不支持的插件界面方法：${method}`);
+      }
+      frame.contentWindow?.postMessage({ source: 'wandao-host', requestId, success: true, data: response }, '*');
+    } catch (error) {
+      frame.contentWindow?.postMessage({ source: 'wandao-host', requestId, success: false, error: formatError(error) }, '*');
+    }
+  };
+  window.addEventListener('message', listener);
+  customPluginMessageCleanup = () => window.removeEventListener('message', listener);
 }
 
 function renderGenericProviderForm(provider) {
@@ -2770,6 +3048,10 @@ function renderGenericProviderForm(provider) {
 
 // Tool switching
 function switchTool(toolId) {
+  if (customPluginMessageCleanup) {
+    customPluginMessageCleanup();
+    customPluginMessageCleanup = null;
+  }
   refreshProviderTools();
   currentTool = toolId || DEFAULT_VIEW_ID;
   renderProviderNavigation();
@@ -2798,14 +3080,16 @@ function switchTool(toolId) {
   const contentArea = document.getElementById('content-area');
   const template = document.getElementById(config.templateId || `template-${currentTool}`);
 
-  if (config.type === 'guide' || (!config.script && !template && !(config.actions || []).length)) {
+  if (config.sourceKind === 'plugin' && config.ui?.mode === 'custom') {
+    renderCustomPluginProvider(config);
+  } else if (config.type === 'guide' || (!config.script && !template && !(config.actions || []).length)) {
     renderGuideProvider(config);
   } else if (template) {
     contentArea.innerHTML = '';
     const clone = template.content.cloneNode(true);
     contentArea.appendChild(clone);
     initializeToolHandlers(currentTool);
-  } else if (currentTool === 'feishu-import') {
+  } else if (currentTool === 'feishu-import' && config.sourceKind !== 'plugin') {
     loadFeishuImportTool();
   } else {
     renderGenericProviderForm(config);

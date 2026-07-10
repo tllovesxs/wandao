@@ -29,6 +29,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveAppSettings: (settings) => ipcRenderer.invoke('save-app-settings', settings),
   detectBrowsers: () => ipcRenderer.invoke('detect-browsers'),
   getProviderManifests: () => ipcRenderer.invoke('get-provider-manifests'),
+  getPluginCatalog: (options) => ipcRenderer.invoke('get-plugin-catalog', options),
+  installPlugin: (pluginId) => ipcRenderer.invoke('install-plugin', pluginId),
+  installPluginFile: () => ipcRenderer.invoke('install-plugin-file'),
+  setPluginEnabled: (pluginId, enabled) => ipcRenderer.invoke('set-plugin-enabled', pluginId, enabled),
+  rollbackPlugin: (pluginId) => ipcRenderer.invoke('rollback-plugin', pluginId),
+  uninstallPlugin: (pluginId) => ipcRenderer.invoke('uninstall-plugin', pluginId),
+  getPluginUi: (pluginId, entry) => ipcRenderer.invoke('get-plugin-ui', pluginId, entry),
 
   // 应用路径
   getAppPath: () => ipcRenderer.invoke('get-app-path'),

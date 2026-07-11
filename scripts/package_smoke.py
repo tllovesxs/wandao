@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +45,13 @@ def packaged_python(resources: Path) -> Path:
     return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
 
 
+def packaged_python_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 def discovered_provider_ids(resources: Path) -> set[str]:
     launcher = resources / "python" / "wandao.py"
     python = packaged_python(resources)
@@ -54,6 +62,7 @@ def discovered_provider_ids(resources: Path) -> set[str]:
     result = subprocess.run(
         [str(python), str(launcher), "--list"],
         cwd=resources / "python",
+        env=packaged_python_env(),
         capture_output=True,
         check=False,
     )
@@ -73,6 +82,7 @@ def verify_packaged_backend_help(resources: Path, provider_ids: set[str]) -> Non
         result = subprocess.run(
             [str(python), str(launcher), "--provider", provider_id, "--", "--help"],
             cwd=resources / "python",
+            env=packaged_python_env(),
             capture_output=True,
             check=False,
             timeout=30,

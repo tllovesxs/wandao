@@ -57,6 +57,10 @@ class AllPlatformsPluginizedTests(unittest.TestCase):
 
         env = os.environ.copy()
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPO_ROOT), env.get("PYTHONPATH", "")]))
+        # Help text is part of the CLI contract and contains Chinese text. Force
+        # a portable encoding instead of inheriting a Windows runner code page.
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         for script in sorted(scripts):
             with self.subTest(script=script.relative_to(REPO_ROOT)):
                 result = subprocess.run(

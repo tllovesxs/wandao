@@ -4,10 +4,10 @@
 
 ## 功能
 
-- 知识星球、语雀、飞书 Wiki、阿里云 Thoughts、印象笔记导出为 Markdown。
-- 本地 Markdown 批量导入飞书 Wiki。
+- 10 个官方平台以 Plugin v1 提供，覆盖 Markdown 导出、导入和教程。
+- 官方插件随应用提供，也可以通过签名插件库独立更新和回滚。
 - 支持登录凭证保存、目录读取、勾选导出、增量导出、停止任务和全局进度条。
-- 调用项目根目录下的 Python 脚本执行实际导出/导入逻辑。
+- 通过 Provider v1 清单调用插件内 Python 后端，桌面核心不硬编码平台。
 
 ## 开发运行
 
@@ -37,7 +37,7 @@ npm run build:mac
 
 ## 运行依赖
 
-桌面端打包后用户不需要安装 Node.js，但当前版本仍需要本机安装 Python 3.10+，因为导出/导入后端是 Python 脚本。
+桌面端发行包已内置 Node/Electron 所需内容和独立 Python 运行时，普通用户不需要安装 Node.js 或 Python。源码开发需要 Python 3.10+ 与 Node.js 22.12+。
 
 ## 目录结构
 
@@ -45,6 +45,8 @@ npm run build:mac
 wandao_electron/
 ├── main.js
 ├── preload.js
+├── plugin_manager.js
+├── process_result.js
 ├── package.json
 ├── assets/
 └── renderer/

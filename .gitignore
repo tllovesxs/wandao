@@ -4,6 +4,9 @@ __pycache__/
 .dev-runtime/
 
 # Local browser/session state
+.*-chrome-profile/
+.*_auth.json
+.*_config.json
 .aliyun-thoughts-chrome-profile/
 .yuque-chrome-profile/
 .feishu-chrome-profile/

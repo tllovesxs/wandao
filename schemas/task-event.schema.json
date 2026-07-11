@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tllovesxs/wandao/schemas/task-event.schema.json",
+  "title": "Wandao TaskEvent v1",
+  "type": "object",
+  "required": ["ts", "level", "event", "provider", "runId", "jobId", "message"],
+  "properties": {
+    "ts": { "type": "string", "format": "date-time" },
+    "level": { "enum": ["debug", "info", "warn", "error"] },
+    "event": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string" },
+    "taskId": { "type": "string", "description": "Deprecated alias of runId" },
+    "runId": { "type": "string" },
+    "jobId": { "type": "string" },
+    "parentRunId": { "type": "string" },
+    "message": { "type": "string" },
+    "progress": {
+      "type": "object",
+      "properties": { "current": { "type": "integer", "minimum": 0 }, "total": { "type": "integer", "minimum": 0 } },
+      "required": ["current", "total"],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

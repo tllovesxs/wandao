@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "yinxiang-import",
+  "platform": "yinxiang",
+  "name": "印象笔记",
+  "title": "印象笔记 Markdown 导入",
+  "navLabel": "印象笔记导入",
+  "description": "扫描本地 Markdown，按目录映射笔记本并批量写入印象笔记本地库。",
+  "type": "automation",
+  "group": "import",
+  "trustLevel": "official",
+  "status": "stable",
+  "templateId": "template-yinxiang-import",
+  "capabilities": { "export": false, "import": true, "guide": false, "login": false, "scanToc": false, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": false },
+  "fields": [
+    { "name": "database", "label": "印象笔记本地数据库", "type": "file", "arg": "--database", "required": true, "actions": ["plan", "importOne", "import"] },
+    { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "actions": ["plan", "importOne", "import"] },
+    { "name": "notebook", "label": "默认目标笔记本", "type": "text", "arg": "--notebook", "default": "万能导导入", "actions": ["importOne", "import"] },
+    { "name": "preserve_folders", "label": "按目录映射笔记本", "type": "checkbox", "arg": "--preserve-folders", "default": true, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "max_import", "label": "最多导入篇数（0 为全部）", "type": "number", "arg": "--max-import", "default": 0, "min": 0, "advanced": true, "actions": ["import"] }
+  ],
+  "actions": [
+    { "id": "plan", "kind": "plan", "label": "生成导入计划", "script": "../../backend/import_yinxiang.py", "args": ["--scan-source"], "track": false, "secondary": true },
+    { "id": "importOne", "kind": "import", "label": "单篇测试", "script": "../../backend/import_yinxiang.py", "args": ["--import-one", "--yes"], "secondary": true },
+    { "id": "import", "kind": "import", "label": "开始批量导入", "script": "../../backend/import_yinxiang.py", "args": ["--import-all", "--yes"], "progressTitle": "Markdown 导入印象笔记", "progressDetail": "正在创建笔记和复制资源..." }
+  ]
+}

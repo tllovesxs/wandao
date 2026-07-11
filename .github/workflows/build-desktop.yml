@@ -14,8 +14,13 @@ permissions:
 
 jobs:
   quality:
-    name: Quality Gate
-    runs-on: windows-latest
+    name: Quality Gate (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ["3.10", "3.11"]
 
     steps:
       - name: Checkout
@@ -24,7 +29,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -33,6 +38,51 @@ jobs:
 
       - name: Run project quality checks
         run: python scripts/quality_check.py
+
+  package-smoke:
+    name: PR Windows Package Smoke
+    needs: quality
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: wandao_electron/package-lock.json
+      - name: Install dependencies
+        working-directory: wandao_electron
+        run: npm ci
+
+      - name: Require signing credentials for a release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$CSC_LINK" || { echo "CSC_LINK is required for signed releases" >&2; exit 1; }
+          test -n "$CSC_KEY_PASSWORD" || { echo "CSC_KEY_PASSWORD is required for signed releases" >&2; exit 1; }
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            test -n "$APPLE_ID" || { echo "APPLE_ID is required for notarization" >&2; exit 1; }
+            test -n "$APPLE_APP_SPECIFIC_PASSWORD" || { echo "APPLE_APP_SPECIFIC_PASSWORD is required for notarization" >&2; exit 1; }
+            test -n "$APPLE_TEAM_ID" || { echo "APPLE_TEAM_ID is required for notarization" >&2; exit 1; }
+          fi
+      - name: Build unpacked application
+        working-directory: wandao_electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run prepare:python:win && npx electron-builder --win dir --publish never
+
+      - name: Verify packaged Plugin v1 resources
+        run: python scripts/package_smoke.py --resources wandao_electron/dist/win-unpacked/resources
 
   build:
     name: Build ${{ matrix.name }}
@@ -75,7 +125,12 @@ jobs:
       - name: Build desktop package
         working-directory: wandao_electron
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ startsWith(github.ref, 'refs/tags/') && 'true' || 'false' }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GITHUB_TOKEN: ${{ github.token }}
         run: ${{ matrix.command }}
 
@@ -96,6 +151,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Download build artifacts
@@ -106,6 +163,22 @@ jobs:
 
       - name: List release files
         run: find release-artifacts -type f
+
+      - name: Generate release SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: release-artifacts
+          format: spdx-json
+          output-file: release-artifacts/wandao.spdx.json
+
+      - name: Generate SHA-256 checksums
+        working-directory: release-artifacts
+        run: sha256sum * > SHA256SUMS
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release-artifacts/*
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

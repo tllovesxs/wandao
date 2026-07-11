@@ -1,0 +1,11 @@
+* @tllovesxs
+
+# Security and release boundaries require explicit owner review.
+/.github/workflows/ @tllovesxs
+/wandao_electron/main.js @tllovesxs
+/wandao_electron/preload.js @tllovesxs
+/wandao_electron/plugin_*.js @tllovesxs
+/wandao_electron/assets/plugin-trust.json @tllovesxs
+/scripts/build_plugin*.js @tllovesxs
+/plugins/ @tllovesxs
+/plugins/release-policy.json @tllovesxs

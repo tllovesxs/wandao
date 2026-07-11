@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tllovesxs/wandao/schemas/task-result.schema.json",
+  "title": "Wandao TaskResult v1",
+  "type": "object",
+  "required": ["kind", "schemaVersion", "provider", "mode", "totalDocs", "successCount", "failureCount", "failures", "resourceFailures"],
+  "properties": {
+    "kind": { "const": "wandao.result" },
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string" },
+    "jobId": { "type": "string" },
+    "parentRunId": { "type": "string" },
+    "provider": { "type": "string" },
+    "mode": { "type": "string" },
+    "output": { "type": "string" },
+    "reportFile": { "type": "string" },
+    "totalDocs": { "type": "integer", "minimum": 0 },
+    "successCount": { "type": "integer", "minimum": 0 },
+    "failureCount": { "type": "integer", "minimum": 0 },
+    "failures": { "type": "array", "items": { "type": "object" } },
+    "resourceFailures": { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": true
+}

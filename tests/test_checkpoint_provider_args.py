@@ -65,12 +65,12 @@ class CheckpointProviderArgsTests(unittest.TestCase):
 
     def test_resource_failures_keep_export_items_resumable(self) -> None:
         expected_markers = {
-            "export_aliyun_thoughts.py": "checkpoint.fail_item(item_key, f\"{len(img_errors)} 个图片或附件下载失败\")",
+            "plugins/aliyun_thoughts/backend/export_aliyun_thoughts.py": "checkpoint.fail_item(item_key, f\"{len(img_errors)} 个图片或附件下载失败\")",
             "plugins/feishu/backend/export_feishu.py": "checkpoint.fail_item(item_key, f\"{len(img_errors)} 个图片下载失败\")",
-            "export_yuque.py": "checkpoint.fail_item(item_key, f\"{len(resource_errors)} 个图片或附件下载失败\")",
+            "plugins/yuque/backend/export_yuque.py": "checkpoint.fail_item(item_key, f\"{len(resource_errors)} 个图片或附件下载失败\")",
             "plugins/wiz/backend/export_wiz.py": "checkpoint.fail_item(item_key, f\"{len(img_failures)} 个图片下载失败\")",
-            "export_youdao.py": "checkpoint.fail_item(item_key, f\"{resource_failures_in_doc} 个图片或附件下载失败\")",
-            "export_zsxq.py": "checkpoint.fail_item(\n                            checkpoint_item_key",
+            "plugins/youdao/backend/export_youdao.py": "checkpoint.fail_item(item_key, f\"{resource_failures_in_doc} 个图片或附件下载失败\")",
+            "plugins/zsxq/backend/export_zsxq.py": "checkpoint.fail_item(\n                            checkpoint_item_key",
         }
         for filename, marker in expected_markers.items():
             with self.subTest(script=filename):

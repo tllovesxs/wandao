@@ -14,7 +14,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ELECTRON_DIR="$ROOT_DIR/wandao_electron"
 RUNTIME_DIR="$ROOT_DIR/.dev-runtime"
 NODE_DIR="$RUNTIME_DIR/node"
-NODE_VERSION="v20.18.1"
+NODE_VERSION="v22.12.0"
 
 step() {
   printf '\n==> %s\n' "$1"
@@ -61,6 +61,29 @@ node_package_name() {
   esac
 }
 
+node_package_sha256() {
+  case "$1" in
+    node-v22.12.0-darwin-arm64.tar.gz) printf "293dcc6c2408da21562d135b0412525e381bb6fe150d688edb58fe850d0f3e13" ;;
+    node-v22.12.0-darwin-x64.tar.gz) printf "52bc25dd026db7247c3c00439afdb83e95087248267f02d6c1a7250d1f896173" ;;
+    node-v22.12.0-linux-arm64.tar.xz) printf "8cfd5a8b9afae5a2e0bd86b0148ca31d2589c0ea669c2d0b11c132e35d90ed68" ;;
+    node-v22.12.0-linux-x64.tar.xz) printf "22982235e1b71fa8850f82edd09cdae7e3f32df1764a9ec298c72d25ef2c164f" ;;
+    *) return 1 ;;
+  esac
+}
+
+verify_sha256() {
+  local file="$1" expected="$2" actual
+  if command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+  else
+    echo "Neither shasum nor sha256sum is available; refusing unverified Node.js download." >&2
+    return 1
+  fi
+  [[ "$actual" == "$expected" ]]
+}
+
 install_local_node() {
   step "Node.js/npm not found. Downloading local portable Node.js"
   mkdir -p "$RUNTIME_DIR"
@@ -68,9 +91,11 @@ install_local_node() {
   local package_name
   package_name="$(node_package_name)"
   if [[ "$package_name" == "UNSUPPORTED" ]]; then
-    echo "This system is not supported for automatic Node.js install. Please install Node.js 20 LTS manually and retry."
+    echo "This system is not supported for automatic Node.js install. Please install Node.js 22 LTS manually and retry."
     exit 1
   fi
+  local expected_hash
+  expected_hash="$(node_package_sha256 "$package_name")"
 
   local mirror_url="https://npmmirror.com/mirrors/node/$NODE_VERSION/$package_name"
   local official_url="https://nodejs.org/dist/$NODE_VERSION/$package_name"
@@ -89,7 +114,17 @@ install_local_node() {
 
   echo "Download URL: $download_url"
   curl -L "$download_url" -o "$archive_path"
-  tar -xzf "$archive_path" -C "$extract_dir"
+  if ! verify_sha256 "$archive_path" "$expected_hash"; then
+    rm -f "$archive_path"
+    echo "Node.js SHA-256 verification failed for $package_name." >&2
+    exit 1
+  fi
+  ok "Node.js SHA-256 verified"
+  case "$archive_path" in
+    *.tar.gz) tar -xzf "$archive_path" -C "$extract_dir" ;;
+    *.tar.xz) tar -xJf "$archive_path" -C "$extract_dir" ;;
+    *) echo "Unsupported Node.js archive: $archive_path" >&2; exit 1 ;;
+  esac
   local expanded
   expanded="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   if [[ -z "$expanded" ]]; then
@@ -113,7 +148,7 @@ ensure_node_and_npm() {
 
   install_local_node
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    echo "Node.js/npm auto install failed. Please install Node.js 20 LTS manually and retry."
+    echo "Node.js/npm auto install failed. Please install Node.js 22 LTS manually and retry."
     exit 1
   fi
 }

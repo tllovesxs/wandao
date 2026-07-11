@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { compareVersions, sha256Hex, signEnvelope, verifyPluginEnvelope } = require('../wandao_electron/plugin_format');
+const { channelFor, readPolicy, validatePolicy } = require('./plugin_release_policy');
 
 function parseArgs(argv) {
   const result = {};
@@ -26,6 +27,9 @@ function main() {
     throw new Error('用法：build_plugin_registry.js --packages <dir> --base-url <https-url> --output <file>');
   }
   const packageDir = path.resolve(args.packages);
+  const channel = args.channel || 'stable';
+  if (!['stable', 'experimental'].includes(channel)) throw new Error('channel 只能是 stable 或 experimental');
+  const policy = validatePolicy(readPolicy(args.policy));
   const trustStore = JSON.parse(fs.readFileSync(path.resolve(args.trust || 'wandao_electron/assets/plugin-trust.json'), 'utf8'));
   const latest = new Map();
   fs.readdirSync(packageDir)
@@ -35,6 +39,7 @@ function main() {
       const buffer = fs.readFileSync(path.join(packageDir, name));
       const envelope = JSON.parse(buffer.toString('utf8'));
       const { manifest } = verifyPluginEnvelope(envelope, trustStore);
+      if (channelFor(policy, manifest.id) !== channel) return;
       const current = latest.get(manifest.id);
       if (current && compareVersions(current.version, manifest.version) >= 0) return;
       latest.set(manifest.id, {
@@ -46,6 +51,7 @@ function main() {
         minCoreVersion: manifest.core?.minVersion || '0.0.0',
         platforms: manifest.platforms || ['win32', 'darwin', 'linux'],
         permissions: manifest.permissions || [],
+        channel,
         packageUrl: `${args['base-url'].replace(/\/$/, '')}/${encodeURIComponent(name)}`,
         sha256: sha256Hex(buffer),
         homepage: manifest.homepage || ''

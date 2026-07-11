@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { assertSafeRelativePath, validatePluginManifest } = require('../wandao_electron/plugin_format');
+const { readPolicy, validatePolicy } = require('./plugin_release_policy');
 
 const repoRoot = path.resolve(__dirname, '..');
 const pluginsRoot = path.join(repoRoot, 'plugins');
@@ -64,6 +65,7 @@ function main() {
       if (!isInside(pluginRoot, uiPath) || !fs.existsSync(uiPath) || path.extname(uiPath) !== '.html') fail(`自定义 UI 入口无效：${manifest.id}`);
     }
   });
+  validatePolicy(readPolicy(), pluginIds);
   process.stdout.write(`Plugin validation passed (${pluginIds.size} plugins, ${providerIds.size} providers).\n`);
 }
 

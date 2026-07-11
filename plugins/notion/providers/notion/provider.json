@@ -1,24 +1,19 @@
 {
-  "$schema": "../provider.schema.json",
   "schemaVersion": 1,
   "id": "notion",
+  "platform": "notion",
   "name": "Notion",
   "title": "Notion Markdown 迁移指南",
   "navLabel": "Notion 迁移指南",
   "description": "Notion 官方已支持导出 Markdown，万能导提供迁移教程和注意事项。",
   "type": "guide",
   "group": "guide",
-  "trustLevel": "community",
+  "trustLevel": "official",
   "status": "stable",
   "guide": "README.md",
   "homepage": "https://www.notion.so",
   "tags": ["官方导出", "Markdown", "教程"],
-  "capabilities": {
-    "export": false,
-    "import": false,
-    "guide": true,
-    "images": true,
-    "tree": true,
-    "batch": true
-  }
+  "capabilities": { "export": false, "import": false, "guide": true, "login": false, "scanToc": false, "images": true, "attachments": false, "tree": true, "batch": true, "retryFailures": false },
+  "fields": [],
+  "actions": []
 }

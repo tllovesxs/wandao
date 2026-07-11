@@ -227,6 +227,7 @@ class PluginManager {
       enabled: true,
       currentVersion: manifest.version,
       previousVersions: previousVersions.slice(-3),
+      channel: source.registryEntry?.channel || previous?.channel || 'local',
       installedAt: previous?.installedAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -325,6 +326,7 @@ class PluginManager {
       installedVersion: local.currentVersion,
       updateAvailable: false,
       previousVersions: local.previousVersions,
+      channel: local.channel || 'local',
       compatibility: local.compatibility,
       unavailableFromRegistry: true
     }));

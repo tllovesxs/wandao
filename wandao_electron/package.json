@@ -1,6 +1,6 @@
 {
   "name": "wandao",
-  "version": "1.2.9",
+  "version": "1.3.0",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
@@ -58,78 +58,26 @@
       "preload.js",
       "plugin_format.js",
       "plugin_manager.js",
+      "process_result.js",
+      "command_security.js",
       "assets/**/*",
       "renderer/**/*",
       "!node_modules/**/*"
     ],
     "extraResources": [
       {
-        "from": "../export_zsxq.py",
-        "to": "python/export_zsxq.py"
+        "from": "..",
+        "to": "python",
+        "filter": ["*.py", "wandao_core/**/*", "requirements.txt"]
       },
       {
-        "from": "../export_yuque.py",
-        "to": "python/export_yuque.py"
-      },
-      {
-        "from": "../import_yuque.py",
-        "to": "python/import_yuque.py"
-      },
-      {
-        "from": "../export_aliyun_thoughts.py",
-        "to": "python/export_aliyun_thoughts.py"
-      },
-      {
-        "from": "../export_yinxiang.py",
-        "to": "python/export_yinxiang.py"
-      },
-      {
-        "from": "../export_youdao.py",
-        "to": "python/export_youdao.py"
-      },
-      {
-        "from": "../export_onenote.py",
-        "to": "python/export_onenote.py"
-      },
-      {
-        "from": "../import_yinxiang.py",
-        "to": "python/import_yinxiang.py"
-      },
-      {
-        "from": "../ima_knowledge.py",
-        "to": "python/ima_knowledge.py"
-      },
-      {
-        "from": "../gui_utils.py",
-        "to": "python/gui_utils.py"
-      },
-      {
-        "from": "../wandao_logging.py",
-        "to": "python/wandao_logging.py"
-      },
-      {
-        "from": "../wandao_report.py",
-        "to": "python/wandao_report.py"
-      },
-      {
-        "from": "../wandao_checkpoint.py",
-        "to": "python/wandao_checkpoint.py"
-      },
-      {
-        "from": "../wandao_cli.py",
-        "to": "python/wandao_cli.py"
-      },
-      {
-        "from": "../wandao_credentials.py",
-        "to": "python/wandao_credentials.py"
-      },
-      {
-        "from": "../wandao_browser.py",
-        "to": "python/wandao_browser.py"
-      },
-      {
-        "from": "../requirements.txt",
-        "to": "python/requirements.txt"
+        "from": "../plugins",
+        "to": "plugins",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
       },
       {
         "from": "../providers",
@@ -149,8 +97,7 @@
       "target": [
         "nsis"
       ],
-      "icon": "assets/icon.ico",
-      "signExecutable": false
+      "icon": "assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -165,7 +112,9 @@
         "zip"
       ],
       "icon": "assets/icon.icns",
-      "category": "public.app-category.utilities"
+      "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
     }
   },
   "type": "commonjs"

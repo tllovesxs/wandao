@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "ima-import",
+  "platform": "ima",
+  "name": "ima 知识库",
+  "title": "ima 知识库导入",
+  "navLabel": "ima 导入",
+  "description": "扫描本地文件并批量上传到 ima 知识库根目录或已有文件夹。",
+  "type": "automation",
+  "group": "import",
+  "trustLevel": "official",
+  "status": "stable",
+  "templateId": "template-ima-import",
+  "capabilities": { "export": false, "import": true, "guide": false, "login": false, "scanToc": false, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": false },
+  "fields": [
+    { "name": "client_id", "label": "ima Client ID", "type": "text", "arg": "--client-id", "actions": ["saveConfig", "list", "plan", "importOne", "import"] },
+    { "name": "api_key", "label": "ima API Key", "type": "password", "arg": "--api-key", "actions": ["saveConfig", "list", "plan", "importOne", "import"] },
+    { "name": "knowledge_base_id", "label": "目标知识库 ID", "type": "text", "arg": "--knowledge-base-id", "required": true, "actions": ["plan", "importOne", "import"] },
+    { "name": "folder_id", "label": "目标文件夹 ID（可选）", "type": "text", "arg": "--folder-id", "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "source_dir", "label": "本地待导入目录", "type": "directory", "arg": "--source-dir", "required": true, "actions": ["plan", "importOne", "import"] },
+    { "name": "include_referenced_assets", "label": "同时上传 Markdown 引用资源", "type": "checkbox", "arg": "--include-referenced-assets", "default": false, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "max_import", "label": "最多导入数量（0 为全部）", "type": "number", "arg": "--max-import", "default": 0, "min": 0, "advanced": true, "actions": ["import"] }
+  ],
+  "actions": [
+    { "id": "saveConfig", "kind": "custom", "label": "保存 API 配置", "script": "../../backend/ima_knowledge.py", "args": ["--save-config"], "track": false, "secondary": true },
+    { "id": "list", "kind": "check", "label": "读取知识库列表", "script": "../../backend/ima_knowledge.py", "args": ["--list-knowledge-bases", "--addable-only"], "track": false, "secondary": true },
+    { "id": "plan", "kind": "plan", "label": "扫描本地文件", "script": "../../backend/ima_knowledge.py", "args": ["--scan-source"], "track": false, "secondary": true },
+    { "id": "importOne", "kind": "import", "label": "单文件测试", "script": "../../backend/ima_knowledge.py", "args": ["--import-one", "--yes"], "secondary": true },
+    { "id": "import", "kind": "import", "label": "开始批量导入", "script": "../../backend/ima_knowledge.py", "args": ["--import-all", "--yes"], "progressTitle": "本地文件导入 ima", "progressDetail": "正在上传文件和资源..." }
+  ]
+}

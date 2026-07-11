@@ -36,7 +36,7 @@ from mimetypes import guess_type
 from pathlib import Path
 from typing import Any, Callable
 
-from wandao_browser import (
+from wandao_core.browser import (
     CDPClient,
     DEFAULT_PORT,
     ExportError,
@@ -64,8 +64,8 @@ from export_feishu import (
     start_chrome,
     wait_for_wiki_ready,
 )
-from wandao_report import finalize_report
-from wandao_credentials import write_private_json
+from wandao_core.report import finalize_report
+from wandao_core.credentials import write_private_json
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -358,7 +358,7 @@ def save_import_config(config_file: str | Path, data: dict[str, Any]) -> Path:
 
 def save_import_config_from_args(args: argparse.Namespace) -> dict[str, Any]:
     app_id = str(args.app_id or "").strip()
-    app_secret = str(args.app_secret or "").strip()
+    app_secret = str(args.app_secret or os.environ.get("FEISHU_APP_SECRET") or "").strip()
     if not app_id or not app_secret:
         raise ExportError("保存配置前请填写飞书 App ID 和 App Secret。")
     data = {

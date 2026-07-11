@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "ima-export",
+  "platform": "ima",
+  "name": "ima 知识库",
+  "title": "ima 知识库导出",
+  "navLabel": "ima 导出",
+  "description": "通过 ima OpenAPI 读取知识库目录并导出到本地。",
+  "type": "automation",
+  "group": "export",
+  "trustLevel": "official",
+  "status": "stable",
+  "templateId": "template-ima-export",
+  "defaults": { "output": "exports/ima" },
+  "capabilities": { "export": true, "import": false, "guide": false, "login": false, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
+  "toc": { "itemsPath": "ordered", "idKey": "id", "exportIdKey": "id", "titleKey": "name", "parentIdKey": "parentId", "selectionArg": "--doc-id", "selectableWhenExportId": true },
+  "fields": [
+    { "name": "client_id", "label": "ima Client ID", "type": "text", "arg": "--client-id", "actions": ["saveConfig", "list", "scan", "export"] },
+    { "name": "api_key", "label": "ima API Key", "type": "password", "arg": "--api-key", "actions": ["saveConfig", "list", "scan", "export"] },
+    { "name": "knowledge_base_id", "label": "知识库 ID", "type": "text", "arg": "--knowledge-base-id", "required": true, "actions": ["scan", "export"] },
+    { "name": "knowledge_base_name", "label": "知识库名称", "type": "text", "arg": "--knowledge-base-name", "advanced": true, "actions": ["export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] }
+  ],
+  "actions": [
+    { "id": "saveConfig", "kind": "custom", "label": "保存 API 配置", "script": "../../backend/ima_knowledge.py", "args": ["--save-config"], "track": false, "secondary": true },
+    { "id": "list", "kind": "check", "label": "读取知识库列表", "script": "../../backend/ima_knowledge.py", "args": ["--list-knowledge-bases"], "track": false, "secondary": true },
+    { "id": "scan", "kind": "scan", "label": "读取目录", "script": "../../backend/ima_knowledge.py", "args": ["--scan-toc"], "includeSelection": false, "secondary": true },
+    { "id": "export", "kind": "export", "label": "开始导出", "script": "../../backend/ima_knowledge.py", "args": ["--progress-every", "1"], "progressTitle": "ima 知识库导出", "progressDetail": "正在导出知识库内容..." }
+  ]
+}

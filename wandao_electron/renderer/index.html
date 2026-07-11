@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'">
   <title>万能导 Wandao</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -51,6 +52,7 @@
           <div class="progress-header">
             <span id="progress-title">准备中</span>
             <span id="progress-percent">0%</span>
+            <button class="btn-danger" id="btn-global-stop" type="button" disabled>停止任务</button>
           </div>
           <div class="progress-track" role="progressbar" aria-label="任务进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="progress-fill" id="progress-fill"></div>

@@ -9,7 +9,11 @@ $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ElectronDir = Join-Path $RootDir "wandao_electron"
 $RuntimeDir = Join-Path $RootDir ".dev-runtime"
 $NodeDir = Join-Path $RuntimeDir "node"
-$NodeVersion = "v20.18.1"
+$NodeVersion = "v22.12.0"
+$NodeChecksums = @{
+  "node-v22.12.0-win-x64.zip" = "2b8f2256382f97ad51e29ff71f702961af466c4616393f767455501e6aece9b8"
+  "node-v22.12.0-win-arm64.zip" = "17401720af48976e3f67c41e8968a135fb49ca1f88103a92e0e8c70605763854"
+}
 
 function Write-Step($message) {
   Write-Host ""
@@ -59,6 +63,8 @@ function Install-LocalNode {
   New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 
   $packageName = Get-WindowsNodePackageName
+  $expectedHash = $NodeChecksums[$packageName]
+  if (-not $expectedHash) { throw "No trusted SHA-256 is configured for $packageName." }
   $mirrorUrl = "https://npmmirror.com/mirrors/node/$NodeVersion/$packageName"
   $officialUrl = "https://nodejs.org/dist/$NodeVersion/$packageName"
   $mirrorProbe = Test-Url $mirrorUrl 5 -Head
@@ -77,6 +83,12 @@ function Install-LocalNode {
 
   Write-Host "Download URL: $downloadUrl"
   Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
+  $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actualHash -ne $expectedHash) {
+    Remove-Item -LiteralPath $zipPath -Force
+    throw "Node.js SHA-256 verification failed for $packageName."
+  }
+  Write-Ok "Node.js SHA-256 verified"
   Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
   $expanded = Get-ChildItem -LiteralPath $extractDir -Directory | Select-Object -First 1
   if (-not $expanded) { throw "Node.js extraction failed: extracted folder not found." }
@@ -103,7 +115,7 @@ function Ensure-NodeAndNpm {
   $nodePath = Get-CommandPath "node"
   $npmPath = Get-CommandPath "npm"
   if (-not $nodePath -or -not $npmPath) {
-    throw "Node.js/npm auto install failed. Please install Node.js 20 LTS manually and retry."
+    throw "Node.js/npm auto install failed. Please install Node.js 22 LTS manually and retry."
   }
 }
 

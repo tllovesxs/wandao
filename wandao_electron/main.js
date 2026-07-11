@@ -1,15 +1,18 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, safeStorage } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const https = require('https');
 const { PluginManager } = require('./plugin_manager');
+const { assertSafeRelativePath, validatePluginManifest } = require('./plugin_format');
+const { parseLastJson, parseProcessResult } = require('./process_result');
+const { extractSensitiveArguments } = require('./command_security');
 
 let mainWindow;
 let pythonProcess = null;
 let pythonProcessStopping = false;
-let pluginRegistryCache = null;
-let pluginRegistryCachedAt = 0;
+let shutdownConfirmed = false;
+const pluginRegistryCache = new Map();
 const MAX_PROCESS_OUTPUT_CHARS = 32 * 1024 * 1024;
 
 const PROJECT_INFO = {
@@ -31,6 +34,8 @@ const SETTINGS_SCHEMA_VERSION = 1;
 const BROWSER_DOWNLOAD_URL = 'https://www.google.com/chrome/';
 const PLUGIN_REGISTRY_URL = process.env.WANDAO_PLUGIN_REGISTRY_URL
   || 'https://github.com/tllovesxs/wandao/releases/download/plugins-latest/registry.json';
+const EXPERIMENTAL_PLUGIN_REGISTRY_URL = process.env.WANDAO_EXPERIMENTAL_PLUGIN_REGISTRY_URL
+  || 'https://github.com/tllovesxs/wandao/releases/download/plugins-experimental/registry.json';
 let pluginManagerInstance = null;
 
 if (process.env.WANDAO_USER_DATA_DIR) {
@@ -66,7 +71,7 @@ function configureAppIdentity() {
 function cleanupPythonProcess() {
   if (pythonProcess) {
     try {
-      pythonProcess.kill();
+      terminateProcessTree(pythonProcess, { force: true });
     } catch (_error) {
       // Ignore shutdown cleanup errors.
     }
@@ -88,6 +93,176 @@ function pluginManager() {
     });
   }
   return pluginManagerInstance;
+}
+
+function terminateProcessTree(proc, { force = false } = {}) {
+  if (!proc || !Number.isInteger(proc.pid) || proc.pid <= 0) return false;
+  if (process.platform === 'win32') {
+    // Windows has no POSIX process groups. taskkill /T explicitly includes all
+    // descendants spawned by a provider (Python helpers, browser drivers, etc).
+    const result = spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'], {
+      windowsHide: true,
+      stdio: 'ignore'
+    });
+    return !result.error && result.status === 0;
+  }
+  try {
+    // Provider tasks are launched detached on POSIX, so the negative PID safely
+    // targets the task's own process group instead of the Electron process.
+    process.kill(-proc.pid, force ? 'SIGKILL' : 'SIGTERM');
+    return true;
+  } catch (_error) {
+    return proc.kill(force ? 'SIGKILL' : 'SIGTERM');
+  }
+}
+
+function confirmTaskShutdown() {
+  if (!pythonProcess || shutdownConfirmed) return true;
+  const response = dialog.showMessageBoxSync(mainWindow || undefined, {
+    type: 'warning',
+    title: '任务仍在运行',
+    message: '当前迁移任务尚未完成。',
+    detail: '立即退出会停止任务；已完成文件和 checkpoint 会保留，下次可继续。',
+    buttons: ['继续运行', '停止任务并退出'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  });
+  if (response !== 1) return false;
+  shutdownConfirmed = true;
+  cleanupPythonProcess();
+  return true;
+}
+
+function bundledPluginRoots() {
+  return uniquePaths([
+    path.join(__dirname, '..', 'plugins'),
+    path.join(app.getAppPath(), '..', 'plugins'),
+    path.join(process.resourcesPath || '', 'plugins')
+  ]);
+}
+
+function readBundledPlugin(pluginId) {
+  const expectedId = String(pluginId || '').trim();
+  for (const root of bundledPluginRoots()) {
+    const pluginRoot = path.join(root, expectedId);
+    const manifestPath = path.join(pluginRoot, 'plugin.json');
+    if (!fs.existsSync(manifestPath)) continue;
+    const manifest = validatePluginManifest(readJsonFile(manifestPath));
+    if (manifest.id !== expectedId || path.basename(pluginRoot) !== manifest.id) {
+      throw new Error(`内置插件目录与 ID 不一致：${expectedId}`);
+    }
+    if (manifest.platforms?.length && !manifest.platforms.includes(process.platform)) {
+      throw new Error(`内置插件不支持当前系统：${expectedId}`);
+    }
+    return { pluginRoot, manifestPath, manifest };
+  }
+  return null;
+}
+
+function bundledPluginEntriesWithErrors() {
+  const entries = [];
+  const errors = [];
+  const seenPluginIds = new Set();
+  const installed = new Map(pluginManager().listInstalled().map((item) => [item.id, item]));
+  for (const root of bundledPluginRoots()) {
+    if (!fs.existsSync(root)) continue;
+    for (const directory of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!directory.isDirectory() || directory.name.startsWith('_') || directory.name.startsWith('.')) continue;
+      const pluginRoot = path.join(root, directory.name);
+      const manifestPath = path.join(pluginRoot, 'plugin.json');
+      if (!fs.existsSync(manifestPath)) continue;
+      try {
+        const manifest = validatePluginManifest(readJsonFile(manifestPath));
+        if (directory.name !== manifest.id) throw new Error(`插件目录名必须等于插件 ID：${manifest.id}`);
+        if (seenPluginIds.has(manifest.id)) continue;
+        seenPluginIds.add(manifest.id);
+        const installedPlugin = installed.get(manifest.id);
+        if (installedPlugin && !installedPlugin.enabled) continue;
+        if (installedPlugin?.enabled && installedPlugin.compatibility?.compatible) continue;
+        if (manifest.platforms?.length && !manifest.platforms.includes(process.platform)) continue;
+        for (const relativePath of manifest.entrypoints.providers) {
+          const safe = assertSafeRelativePath(relativePath, 'Provider 入口');
+          const providerPath = path.resolve(pluginRoot, ...safe.split('/'));
+          if (!isInsidePath(pluginRoot, providerPath) || !fs.existsSync(providerPath)) {
+            throw new Error(`Provider 入口不存在或越界：${relativePath}`);
+          }
+          entries.push({
+            pluginId: manifest.id,
+            pluginVersion: manifest.version,
+            pluginRoot,
+            manifestPath: providerPath,
+            permissions: manifest.permissions || [],
+            uiEntry: manifest.entrypoints.ui || '',
+            verified: true,
+            bundled: true,
+            manifest
+          });
+        }
+      } catch (error) {
+        errors.push(`${manifestPath}：${error.message || String(error)}`);
+      }
+    }
+  }
+  return { entries, errors };
+}
+
+// Bundled plugins are part of the signed desktop artifact.  They deliberately
+// remain visible in the plugin center even when the online registry is offline:
+// users should be able to tell which platform capabilities ship with Wandao and
+// which ones have been overridden by an installed signed update.
+function bundledPluginCatalogEntries() {
+  const bundled = new Map();
+  for (const root of bundledPluginRoots()) {
+    if (!fs.existsSync(root)) continue;
+    for (const directory of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!directory.isDirectory() || directory.name.startsWith('_') || directory.name.startsWith('.')) continue;
+      const manifestPath = path.join(root, directory.name, 'plugin.json');
+      if (!fs.existsSync(manifestPath) || bundled.has(directory.name)) continue;
+      try {
+        const manifest = validatePluginManifest(readJsonFile(manifestPath));
+        if (manifest.id !== directory.name) throw new Error('插件目录与 manifest ID 不一致');
+        bundled.set(manifest.id, {
+          ...manifest,
+          bundled: true,
+          channel: 'stable',
+          bundledVersion: manifest.version,
+          installed: false,
+          enabled: true,
+          installedVersion: '',
+          updateAvailable: false,
+          previousVersions: [],
+          compatibility: pluginManager().compatibility(manifest)
+        });
+      } catch (_error) {
+        // Provider discovery will report the concrete manifest error.  A broken
+        // manifest is not advertised as a usable plugin in the UI.
+      }
+    }
+  }
+  return bundled;
+}
+
+function pluginCatalogWithBundled(registry = null) {
+  const bundled = bundledPluginCatalogEntries();
+  const catalog = pluginManager().listWithRegistry(registry).map((entry) => {
+    const builtin = bundled.get(entry.id);
+    if (!builtin) return entry;
+    bundled.delete(entry.id);
+    const installed = Boolean(entry.installed);
+    return {
+      ...builtin,
+      ...entry,
+      bundled: true,
+      channel: entry.channel || 'stable',
+      bundledVersion: builtin.version,
+      updateAvailable: installed
+        ? entry.updateAvailable
+        : compareVersions(entry.version, builtin.version) > 0
+    };
+  });
+  return [...catalog, ...bundled.values()]
+    .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id), 'zh-Hans-CN'));
 }
 
 function protectTaskArgs(args) {
@@ -159,18 +334,6 @@ function writePrivateTextAtomic(filePath, content) {
     }
   }
 }
-
-const ALLOWED_SCRIPTS = new Set([
-  'export_zsxq.py',
-  'export_yuque.py',
-  'export_aliyun_thoughts.py',
-  'export_yinxiang.py',
-  'export_youdao.py',
-  'export_onenote.py',
-  'import_yinxiang.py',
-  'import_yuque.py',
-  'ima_knowledge.py'
-]);
 
 function uniquePaths(paths) {
   const seen = new Set();
@@ -529,15 +692,16 @@ function readGuideMarkdown(providerRoot, guidePath) {
 
 function pluginScriptRef(providerId, scriptName, providerRoot, pluginInfo = null) {
   if (pluginInfo) {
-    if (!scriptName || String(scriptName).startsWith('plugin:')) return String(scriptName || '');
+    if (!scriptName || /^(?:plugin|bundled-plugin):/.test(String(scriptName))) return String(scriptName || '');
     const resolved = path.resolve(providerRoot, scriptName);
     if (!isInsidePath(pluginInfo.pluginRoot, resolved) || !fs.existsSync(resolved) || path.extname(resolved).toLowerCase() !== '.py') {
       return '';
     }
     const relative = path.relative(pluginInfo.pluginRoot, resolved).replace(/\\/g, '/');
-    return `plugin:${pluginInfo.pluginId}:${relative}`;
+    const prefix = pluginInfo.bundled ? 'bundled-plugin' : 'plugin';
+    return `${prefix}:${pluginInfo.pluginId}:${relative}`;
   }
-  if (!scriptName || ALLOWED_SCRIPTS.has(scriptName) || String(scriptName).startsWith('provider:')) {
+  if (!scriptName || String(scriptName).startsWith('provider:')) {
     return scriptName || '';
   }
   const resolved = path.resolve(providerRoot, scriptName);
@@ -680,6 +844,30 @@ function discoverProviderManifests() {
   const providers = [];
   const errors = [];
   const seen = new Set();
+  const installedPluginDiscovery = pluginManager().providerEntriesWithErrors();
+  errors.push(...installedPluginDiscovery.errors.map((message) => `插件校验失败：${message}`));
+  const bundledPluginDiscovery = bundledPluginEntriesWithErrors();
+  errors.push(...bundledPluginDiscovery.errors.map((message) => `内置插件校验失败：${message}`));
+  for (const [sourceKind, discovery] of [
+    ['plugin', installedPluginDiscovery],
+    ['bundled-plugin', bundledPluginDiscovery]
+  ]) {
+    for (const entry of discovery.entries) {
+      try {
+        const providerRoot = path.dirname(entry.manifestPath);
+        const manifest = normalizeProviderManifest(readJsonFile(entry.manifestPath), providerRoot, sourceKind, entry);
+        if (seen.has(manifest.id)) {
+          errors.push(`${entry.manifestPath}：Provider ID 冲突，已忽略 ${manifest.id}`);
+          continue;
+        }
+        seen.add(manifest.id);
+        providers.push(manifest);
+      } catch (error) {
+        console.warn(`Failed to load ${sourceKind} provider ${entry.manifestPath}:`, error);
+        errors.push(`${entry.manifestPath}：${error.message || String(error)}`);
+      }
+    }
+  }
   const userProviderRoot = path.join(app.getPath('userData'), 'providers');
   for (const root of providerRoots()) {
     if (!fs.existsSync(root)) continue;
@@ -703,23 +891,6 @@ function discoverProviderManifests() {
       }
     }
   }
-  const pluginDiscovery = pluginManager().providerEntriesWithErrors();
-  errors.push(...pluginDiscovery.errors.map((message) => `插件校验失败：${message}`));
-  for (const entry of pluginDiscovery.entries) {
-    try {
-      const providerRoot = path.dirname(entry.manifestPath);
-      const manifest = normalizeProviderManifest(readJsonFile(entry.manifestPath), providerRoot, 'plugin', entry);
-      if (seen.has(manifest.id)) {
-        errors.push(`${entry.manifestPath}：Provider ID 冲突，已忽略插件中的 ${manifest.id}`);
-        continue;
-      }
-      seen.add(manifest.id);
-      providers.push(manifest);
-    } catch (error) {
-      console.warn(`Failed to load plugin provider ${entry.manifestPath}:`, error);
-      errors.push(`${entry.manifestPath}：${error.message || String(error)}`);
-    }
-  }
   return { providers, errors };
 }
 
@@ -727,6 +898,22 @@ function findPluginScript(scriptName) {
   const match = String(scriptName || '').match(/^plugin:([a-z0-9_-]+):(.+)$/i);
   if (!match) throw new Error(`不允许执行的插件脚本：${scriptName}`);
   return pluginManager().resolveScript(match[1], match[2]).path;
+}
+
+function findBundledPluginScript(scriptName) {
+  const match = String(scriptName || '').match(/^bundled-plugin:([a-z0-9_-]+):(.+)$/i);
+  if (!match) throw new Error(`不允许执行的内置插件脚本：${scriptName}`);
+  const bundled = readBundledPlugin(match[1]);
+  if (!bundled) throw new Error(`无法找到内置插件：${match[1]}`);
+  if (!(bundled.manifest.permissions || []).includes('process')) {
+    throw new Error(`内置插件没有声明运行进程权限：${match[1]}`);
+  }
+  const safe = assertSafeRelativePath(match[2], '内置插件脚本');
+  const target = path.resolve(bundled.pluginRoot, ...safe.split('/'));
+  if (!isInsidePath(bundled.pluginRoot, target) || !fs.existsSync(target) || path.extname(target).toLowerCase() !== '.py') {
+    throw new Error(`内置插件脚本不存在或类型不允许：${match[2]}`);
+  }
+  return { path: target, root: bundled.pluginRoot, manifest: bundled.manifest };
 }
 
 function findProviderScript(scriptName) {
@@ -754,27 +941,13 @@ function findPythonScript(scriptName = 'import_yuque.py') {
   if (String(scriptName || '').startsWith('plugin:')) {
     return findPluginScript(scriptName);
   }
+  if (String(scriptName || '').startsWith('bundled-plugin:')) {
+    return findBundledPluginScript(scriptName).path;
+  }
   if (String(scriptName || '').startsWith('provider:')) {
     return findProviderScript(scriptName);
   }
-  if (!ALLOWED_SCRIPTS.has(scriptName)) {
-    throw new Error(`不允许执行的脚本：${scriptName}`);
-  }
-
-  const possiblePaths = [
-    path.join(__dirname, '..', scriptName),
-    path.join(process.cwd(), scriptName),
-    path.join(app.getAppPath(), '..', scriptName),
-    path.join(process.resourcesPath || '', 'python', scriptName)
-  ];
-
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      return p;
-    }
-  }
-
-  throw new Error(`无法找到 ${scriptName} 脚本`);
+  throw new Error(`平台脚本必须来自 Plugin v1 或文件型 Provider：${scriptName}`);
 }
 
 function bundledPythonInfo() {
@@ -823,9 +996,23 @@ function pythonLibraryDir() {
   return '';
 }
 
-function pythonEnv(extra = {}) {
+const PLUGIN_ENV_ALLOWLIST = new Set([
+  'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC',
+  'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'LANG', 'LC_ALL', 'TZ'
+]);
+
+function pluginHostEnvironment() {
+  const allowed = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (PLUGIN_ENV_ALLOWLIST.has(key.toUpperCase())) allowed[key] = value;
+  }
+  return allowed;
+}
+
+function pythonEnv(extra = {}, baseEnvironment = process.env) {
   const env = {
-    ...process.env,
+    ...baseEnvironment,
     PYTHONIOENCODING: 'utf-8',
     PYTHONUNBUFFERED: '1',
     PYTHONUTF8: '1',
@@ -849,22 +1036,38 @@ function pythonEnv(extra = {}) {
 }
 
 function pluginExecutionContext(scriptName) {
-  const match = String(scriptName || '').match(/^plugin:([a-z0-9_-]+):(.+)$/i);
+  const value = String(scriptName || '');
+  const installedMatch = value.match(/^plugin:([a-z0-9_-]+):(.+)$/i);
+  const bundledMatch = value.match(/^bundled-plugin:([a-z0-9_-]+):(.+)$/i);
+  const match = installedMatch || bundledMatch;
   if (!match) return null;
-  const resolved = pluginManager().resolveScript(match[1], match[2]);
+  const resolved = installedMatch
+    ? pluginManager().resolveScript(match[1], match[2])
+    : (() => {
+      const bundled = findBundledPluginScript(value);
+      return {
+        path: bundled.path,
+        root: bundled.root,
+        plugin: { currentVersion: bundled.manifest.version, manifest: bundled.manifest }
+      };
+    })();
   const dataDir = path.join(app.getPath('userData'), 'plugin-data', match[1]);
   fs.mkdirSync(dataDir, { recursive: true });
-  return { ...resolved, pluginId: match[1], dataDir };
+  return { ...resolved, pluginId: match[1], dataDir, bundled: Boolean(bundledMatch) };
 }
 
-function executionEnv(options, pluginContext = null) {
+function executionEnv(options, pluginContext = null, secretEnvironment = {}) {
   const coreLibrary = pythonLibraryDir();
   const pluginPaths = pluginContext ? [pluginContext.root, coreLibrary] : [coreLibrary];
   const env = pythonEnv({
-    WANDAO_TASK_ID: options?.taskId || '',
+    WANDAO_TASK_ID: options?.runId || options?.taskId || '',
+    WANDAO_RUN_ID: options?.runId || options?.taskId || '',
+    WANDAO_JOB_ID: options?.jobId || '',
+    WANDAO_PARENT_RUN_ID: options?.parentRunId || '',
     WANDAO_PROVIDER_ID: options?.providerId || '',
+    ...secretEnvironment,
     PYTHONPATH: [...pluginPaths, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-  });
+  }, pluginContext ? pluginHostEnvironment() : process.env);
   if (!pluginContext) return env;
   env.WANDAO_PLUGIN_ID = pluginContext.pluginId;
   env.WANDAO_PLUGIN_VERSION = pluginContext.plugin.currentVersion;
@@ -872,17 +1075,25 @@ function executionEnv(options, pluginContext = null) {
   env.WANDAO_PLUGIN_DATA_DIR = pluginContext.dataDir;
   env.WANDAO_DATA_DIR = pluginContext.dataDir;
   env.WANDAO_PLUGIN_PERMISSIONS = JSON.stringify(pluginContext.plugin.manifest.permissions || []);
-  for (const key of Object.keys(env)) {
-    if (/^(GH_|GITHUB_|AWS_|AZURE_|GOOGLE_|OPENAI_|ANTHROPIC_|WANDAO_PLUGIN_PRIVATE_KEY)/i.test(key)) delete env[key];
-  }
   return env;
 }
 
-async function currentPluginRegistry(force = false) {
-  if (!force && pluginRegistryCache && Date.now() - pluginRegistryCachedAt < 5 * 60 * 1000) return pluginRegistryCache;
-  pluginRegistryCache = await pluginManager().fetchRegistry();
-  pluginRegistryCachedAt = Date.now();
-  return pluginRegistryCache;
+function pluginRegistryUrl(channel = 'stable') {
+  if (channel === 'experimental') return EXPERIMENTAL_PLUGIN_REGISTRY_URL;
+  if (channel === 'stable') return PLUGIN_REGISTRY_URL;
+  throw new Error(`未知插件发布等级：${channel}`);
+}
+
+async function currentPluginRegistry(force = false, channel = 'stable') {
+  const cached = pluginRegistryCache.get(channel);
+  if (!force && cached && Date.now() - cached.cachedAt < 5 * 60 * 1000) return cached.registry;
+  const registry = await pluginManager().fetchRegistry(pluginRegistryUrl(channel));
+  const tagged = {
+    ...registry,
+    plugins: registry.plugins.map((plugin) => ({ ...plugin, channel: plugin.channel || channel }))
+  };
+  pluginRegistryCache.set(channel, { registry: tagged, cachedAt: Date.now() });
+  return tagged;
 }
 
 function commandLineLength(args) {
@@ -890,21 +1101,7 @@ function commandLineLength(args) {
 }
 
 function compressDocIdArgs(scriptName, args) {
-  const supported = new Set([
-    'export_aliyun_thoughts.py',
-    'export_feishu.py',
-    'export_onenote.py',
-    'export_wiz.py',
-    'export_yinxiang.py',
-    'export_youdao.py',
-    'export_yuque.py',
-    'ima_knowledge.py'
-  ]);
   const scriptBaseName = path.basename(String(scriptName || '').split(':').pop() || '');
-  if (!supported.has(scriptBaseName)) {
-    return args;
-  }
-
   const docIds = [];
   const compactArgs = [];
   for (let index = 0; index < (args || []).length; index += 1) {
@@ -944,34 +1141,6 @@ function cleanupTemporaryDocIdFile(args) {
   }
 }
 
-function parseLastJson(stdout) {
-  const raw = String(stdout || '');
-  const lines = raw
-    .split(/\r?\n/)
-    .filter((line) => !line.startsWith('@@WANDAO_LOG@@'));
-  const trimmed = lines.join('\n').trim();
-  if (!trimmed) {
-    return {};
-  }
-  try {
-    return JSON.parse(trimmed);
-  } catch (_error) {
-    for (let index = lines.length - 1; index >= 0; index -= 1) {
-      const line = lines[index].trimStart();
-      if (!line.startsWith('{') && !line.startsWith('[')) {
-        continue;
-      }
-      const jsonText = lines.slice(index).join('\n').trim();
-      try {
-        return JSON.parse(jsonText);
-      } catch (_ignored) {
-        // Keep scanning upward: pretty-printed JSON may contain nested objects.
-      }
-    }
-    return { output: raw };
-  }
-}
-
 function createWindow() {
   const icon = appIconPath();
   mainWindow = new BrowserWindow({
@@ -983,6 +1152,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
       preload: path.join(__dirname, 'preload.js')
     },
     backgroundColor: '#f7f5f1',
@@ -990,9 +1160,18 @@ function createWindow() {
   });
 
   mainWindow.loadFile('renderer/index.html');
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url !== mainWindow.webContents.getURL()) event.preventDefault();
+  });
+  mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
+  });
+
+  mainWindow.on('close', (event) => {
+    if (!confirmTaskShutdown()) event.preventDefault();
   });
 
   mainWindow.on('closed', () => {
@@ -1025,7 +1204,7 @@ function showAboutDialog() {
 
 function openProjectUrl(url) {
   if (!isAllowedExternalUrl(url)) {
-    dialog.showErrorBox('打开链接失败', '只允许打开 http/https 链接。');
+    dialog.showErrorBox('打开链接失败', '只允许打开 HTTPS 链接。');
     return;
   }
   shell.openExternal(url).catch((error) => {
@@ -1105,7 +1284,7 @@ function isAllowedRemoteTextUrl(value) {
 function isAllowedExternalUrl(value) {
   try {
     const parsed = new URL(String(value || ''));
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    return parsed.protocol === 'https:';
   } catch (_error) {
     return false;
   }
@@ -1271,7 +1450,9 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', cleanupPythonProcess);
+app.on('before-quit', (event) => {
+  if (!confirmTaskShutdown()) event.preventDefault();
+});
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
@@ -1357,7 +1538,9 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     try {
       pluginContext = pluginExecutionContext(scriptName);
       scriptPath = findPythonScript(scriptName);
-      commandArgs = compressDocIdArgs(scriptName, args || []);
+      const prepared = extractSensitiveArguments(compressDocIdArgs(scriptName, args || []));
+      commandArgs = prepared.commandArgs;
+      options.commandSecretEnvironment = prepared.secretEnvironment;
     } catch (error) {
       resolve({ success: false, error: error.message || String(error) });
       return;
@@ -1367,7 +1550,8 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     const proc = spawn(pythonCommand(), pythonArgs, {
       cwd: path.dirname(scriptPath),
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: executionEnv(options, pluginContext)
+      detached: process.platform !== 'win32',
+      env: executionEnv(options, pluginContext, options.commandSecretEnvironment || {})
     });
     pythonProcess = proc;
     pythonProcessStopping = false;
@@ -1410,7 +1594,12 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
         pythonProcessStopping = false;
       }
       if (code === 0) {
-        resolve({ success: true, data: parseLastJson(stdout) });
+        const result = parseProcessResult(stdout);
+        if (result.ok) {
+          resolve({ success: true, data: result.data, legacyResult: result.legacy });
+        } else {
+          resolve({ success: false, error: result.error, code: 'protocol_error', data: null });
+        }
       } else {
         const parsed = parseLastJson(stdout);
         resolve({
@@ -1441,7 +1630,7 @@ ipcMain.handle('stop-python-process', async () => {
       return { success: true, stopping: true };
     }
     pythonProcessStopping = true;
-    const signaled = pythonProcess.kill('SIGTERM');
+    const signaled = terminateProcessTree(pythonProcess);
     if (!signaled) {
       pythonProcessStopping = false;
       return { success: false, error: '无法停止当前任务，请稍后重试。' };
@@ -1503,7 +1692,7 @@ ipcMain.handle('open-path', async (event, targetPath) => {
 ipcMain.handle('open-external', async (event, url) => {
   try {
     if (!isAllowedExternalUrl(url)) {
-      return { success: false, error: '只允许打开 http/https 链接。' };
+      return { success: false, error: '只允许打开 HTTPS 链接。' };
     }
     await shell.openExternal(url);
     return { success: true };
@@ -1559,21 +1748,38 @@ ipcMain.handle('get-provider-manifests', async () => {
 
 ipcMain.handle('get-plugin-catalog', async (event, options = {}) => {
   try {
-    const registry = await currentPluginRegistry(Boolean(options?.refresh));
-    return { success: true, plugins: pluginManager().listWithRegistry(registry), registryUpdatedAt: registry.generatedAt || '' };
+    const registry = await currentPluginRegistry(Boolean(options?.refresh), 'stable');
+    const registries = [registry];
+    let experimentalError = '';
+    try {
+      registries.push(await currentPluginRegistry(Boolean(options?.refresh), 'experimental'));
+    } catch (error) {
+      // Stable plugins remain usable when the experimental registry is offline.
+      experimentalError = error.message || String(error);
+    }
+    const combined = {
+      plugins: registries.flatMap((item) => item.plugins),
+      generatedAt: registry.generatedAt || ''
+    };
+    return {
+      success: true,
+      plugins: pluginCatalogWithBundled(combined),
+      registryUpdatedAt: combined.generatedAt,
+      experimentalError
+    };
   } catch (error) {
     return {
       success: true,
-      plugins: pluginManager().listWithRegistry(),
+      plugins: pluginCatalogWithBundled(),
       registryError: error.message || String(error),
       offline: true
     };
   }
 });
 
-ipcMain.handle('install-plugin', async (event, pluginId) => {
+ipcMain.handle('install-plugin', async (event, pluginId, channel = 'stable') => {
   try {
-    const registry = await currentPluginRegistry(true);
+    const registry = await currentPluginRegistry(true, channel === 'experimental' ? 'experimental' : 'stable');
     const plugin = await pluginManager().installFromRegistry(String(pluginId || ''), registry);
     return { success: true, plugin };
   } catch (error) {

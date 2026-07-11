@@ -8,7 +8,9 @@ on:
       - "scripts/build_plugin*.js"
       - "scripts/validate_plugins.js"
       - "scripts/check_plugin_versions.js"
+      - "scripts/plugin_release_policy.js"
       - "tests_js/plugin_manager.test.js"
+      - "tests_js/plugin_release_policy.test.js"
       - "wandao_electron/assets/plugin-trust.json"
       - ".github/workflows/publish-plugins.yml"
   push:
@@ -19,7 +21,9 @@ on:
       - "scripts/build_plugin*.js"
       - "scripts/validate_plugins.js"
       - "scripts/check_plugin_versions.js"
+      - "scripts/plugin_release_policy.js"
       - "tests_js/plugin_manager.test.js"
+      - "tests_js/plugin_release_policy.test.js"
       - "wandao_electron/assets/plugin-trust.json"
       - ".github/workflows/publish-plugins.yml"
   workflow_dispatch:
@@ -44,7 +48,7 @@ jobs:
       - name: Validate manifests and lifecycle
         run: |
           node scripts/validate_plugins.js
-          node --test tests_js/plugin_manager.test.js
+          node --test tests_js/plugin_manager.test.js tests_js/plugin_release_policy.test.js
           python -m py_compile wandao_browser.py plugins/*/backend/*.py
       - name: Enforce one plugin and a newer version
         if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'plugin-batch')
@@ -82,10 +86,9 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: validate
     runs-on: ubuntu-latest
+    environment: plugin-signing
     permissions:
       contents: write
-    env:
-      WANDAO_PLUGIN_PRIVATE_KEY: ${{ secrets.WANDAO_PLUGIN_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -93,6 +96,8 @@ jobs:
           node-version: "22"
       - name: Require release signing key
         shell: bash
+        env:
+          WANDAO_PLUGIN_PRIVATE_KEY: ${{ secrets.WANDAO_PLUGIN_PRIVATE_KEY }}
         run: |
           if [ -z "$WANDAO_PLUGIN_PRIVATE_KEY" ]; then
             echo "WANDAO_PLUGIN_PRIVATE_KEY is not configured" >&2
@@ -100,18 +105,27 @@ jobs:
           fi
       - name: Build signed packages and registry
         shell: bash
+        env:
+          WANDAO_PLUGIN_PRIVATE_KEY: ${{ secrets.WANDAO_PLUGIN_PRIVATE_KEY }}
         run: |
-          mkdir -p dist-plugins
+          mkdir -p dist-plugins/stable dist-plugins/experimental
           for manifest in plugins/*/plugin.json; do
             plugin_dir="$(dirname "$manifest")"
             id="$(node -p "require('./$manifest').id")"
             version="$(node -p "require('./$manifest').version")"
-            node scripts/build_plugin.js --source "$plugin_dir" --output "dist-plugins/${id}-${version}.wandao-plugin"
+            channel="$(node scripts/plugin_release_policy.js --plugin "$id")"
+            node scripts/build_plugin.js --source "$plugin_dir" --output "dist-plugins/${channel}/${id}-${version}.wandao-plugin"
           done
           node scripts/build_plugin_registry.js \
-            --packages dist-plugins \
+            --packages dist-plugins/stable \
             --base-url https://github.com/${{ github.repository }}/releases/download/plugins-latest \
-            --output dist-plugins/registry.json
+            --output dist-plugins/stable/registry.json \
+            --channel stable
+          node scripts/build_plugin_registry.js \
+            --packages dist-plugins/experimental \
+            --base-url https://github.com/${{ github.repository }}/releases/download/plugins-experimental \
+            --output dist-plugins/experimental/registry.json \
+            --channel experimental
       - name: Publish stable plugin assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -120,4 +134,13 @@ jobs:
           if ! gh release view plugins-latest >/dev/null 2>&1; then
             gh release create plugins-latest --title "Wandao Plugin Registry" --notes "万能导在线插件库，请在应用内安装。" --prerelease
           fi
-          gh release upload plugins-latest dist-plugins/* --clobber
+          gh release upload plugins-latest dist-plugins/stable/* --clobber
+      - name: Publish experimental plugin assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if ! gh release view plugins-experimental >/dev/null 2>&1; then
+            gh release create plugins-experimental --title "Wandao Experimental Plugin Registry" --notes "实验性插件：仅供主动测试，不代表官方稳定支持。" --prerelease
+          fi
+          gh release upload plugins-experimental dist-plugins/experimental/* --clobber

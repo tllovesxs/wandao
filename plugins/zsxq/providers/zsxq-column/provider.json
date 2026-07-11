@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "zsxq-column",
+  "platform": "zsxq",
+  "name": "知识星球",
+  "title": "知识星球专栏导出",
+  "navLabel": "知识星球专栏导出",
+  "description": "读取知识星球专栏目录并按章节导出 Markdown、图片和附件。",
+  "type": "automation",
+  "group": "export",
+  "trustLevel": "official",
+  "status": "stable",
+  "templateId": "template-zsxq-column",
+  "defaults": { "output": "exports/zsxq-column" },
+  "capabilities": { "export": true, "import": false, "guide": false, "login": true, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": true },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
+  "toc": { "itemsPath": "ordered", "idKey": "key", "exportIdKey": "key", "titleKey": "title", "parentIdKey": "parentKey", "selectionArg": "--toc-key", "selectableWhenExportId": true },
+  "fields": [
+    { "name": "entry_url", "label": "知识星球专栏 URL", "type": "text", "arg": "--entry-url", "required": true, "actions": ["scan", "export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
+    { "name": "update_existing", "label": "更新已有文档", "type": "checkbox", "arg": "--update-existing", "default": false, "advanced": true, "actions": ["export"] },
+    { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },
+    { "name": "include_comments", "label": "导出可见评论", "type": "checkbox", "arg": "--include-comments", "default": false, "advanced": true, "actions": ["export"] },
+    { "name": "download_files", "label": "下载附件", "type": "checkbox", "arg": "--download-files", "default": false, "advanced": true, "actions": ["export"] }
+  ],
+  "actions": [
+    { "id": "login", "kind": "login", "label": "登录并保存凭证", "script": "../../backend/export_zsxq.py", "args": ["--login"], "track": false, "secondary": true },
+    { "id": "scan", "kind": "scan", "label": "读取专栏目录", "script": "../../backend/export_zsxq.py", "args": ["--scan-toc"], "includeSelection": false, "secondary": true },
+    { "id": "export", "kind": "export", "label": "开始导出", "script": "../../backend/export_zsxq.py", "args": ["--resume"], "progressTitle": "知识星球专栏导出", "progressDetail": "正在导出章节、正文和资源..." }
+  ]
+}

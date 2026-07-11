@@ -1,0 +1,15 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "ima",
+  "name": "ima 知识库",
+  "description": "ima 知识库 OpenAPI 导出与本地文件批量导入。",
+  "version": "1.0.0",
+  "publisher": "Wandao Official",
+  "homepage": "https://ima.qq.com/",
+  "license": "AGPL-3.0-only",
+  "core": { "minVersion": "1.2.9" },
+  "platforms": ["win32", "darwin", "linux"],
+  "entrypoints": { "providers": ["providers/ima-export/provider.json", "providers/ima-import/provider.json"] },
+  "permissions": ["credentials", "filesystem:read", "filesystem:write", "network", "process"]
+}

@@ -1,83 +1,91 @@
 #!/usr/bin/env python3
-"""
-Wandao unified launcher.
-
-Author: tllovesxs
-"""
+"""Wandao unified launcher backed by Plugin v1 manifests."""
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent
 
-PROVIDERS: dict[str, dict[str, str]] = {
-    "zsxq": {
-        "label": "知识星球任意项目/专栏",
-        "script": "export_zsxq.py",
-        "url_arg": "--entry-url",
-        "url_hint": "https://wx.zsxq.com/columns/...",
-    },
-    "yuque": {
-        "label": "语雀任意知识库",
-        "script": "export_yuque.py",
-        "url_arg": "--book-url",
-        "url_hint": "https://www.yuque.com/<namespace>/<book>",
-    },
-    "yuque-import": {
-        "label": "语雀 Markdown 导入",
-        "script": "import_yuque.py",
-        "url_arg": "--target-book-url",
-        "url_hint": "https://www.yuque.com/<namespace>/<book>",
-    },
-    "feishu": {
-        "label": "飞书任意 Wiki 知识库",
-        "script": "export_feishu.py",
-        "url_arg": "--wiki-url",
-        "url_hint": "https://<tenant>.feishu.cn/wiki/<token>",
-    },
-    "aliyun-thoughts": {
-        "label": "阿里云 Thoughts 任意工作区",
-        "script": "export_aliyun_thoughts.py",
-        "url_arg": "--workspace-url",
-        "url_hint": "https://thoughts.aliyun.com/workspaces/<id>/overview",
-    },
-    "yinxiang": {
-        "label": "印象笔记任意笔记本",
-        "script": "export_yinxiang.py",
-        "url_arg": "无需 URL",
-        "url_hint": "首次登录并同步后，可读取本地目录并勾选导出",
-    },
-    "youdao": {
-        "label": "有道云笔记任意目录",
-        "script": "export_youdao.py",
-        "url_arg": "无需 URL",
-        "url_hint": "首次登录并保存凭证后，可读取有道云笔记目录并勾选导出",
-    },
-    "yinxiang-import": {
-        "label": "印象笔记 Markdown 导入",
-        "script": "import_yinxiang.py",
-        "url_arg": "无需 URL",
-        "url_hint": "选择本地 Markdown 目录后，可导入到印象笔记",
-    },
-    "ima": {
-        "label": "ima 知识库导入导出",
-        "script": "ima_knowledge.py",
-        "url_arg": "无需 URL",
-        "url_hint": "填写 ima Client ID / API Key 后，可读取知识库目录、导出或导入文件",
-    },
-}
+
+def find_plugins_root() -> Path:
+    """Support both source checkout and Electron's ``resources`` layout.
+
+    In a checkout the launcher lives beside ``plugins/``. electron-builder
+    places the launcher in ``resources/python`` while bundled Plugin v1
+    packages live in ``resources/plugins``.
+    """
+    for candidate in (ROOT / "plugins", ROOT.parent / "plugins"):
+        if candidate.is_dir():
+            return candidate
+    return ROOT / "plugins"
 
 
-def run_provider(provider: str, args: list[str]) -> int:
-    config = PROVIDERS[provider]
-    script = ROOT / config["script"]
-    command = [sys.executable, str(script), *args]
-    return subprocess.call(command, cwd=str(ROOT))
+PLUGINS_ROOT = find_plugins_root()
+
+
+def _inside(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def discover_providers() -> dict[str, dict[str, Any]]:
+    providers: dict[str, dict[str, Any]] = {}
+    for plugin_path in sorted(PLUGINS_ROOT.glob("*/plugin.json")):
+        plugin_root = plugin_path.parent
+        plugin = json.loads(plugin_path.read_text(encoding="utf-8"))
+        if plugin.get("schemaVersion") != 1 or plugin.get("id") != plugin_root.name:
+            continue
+        platforms = plugin.get("platforms") or []
+        platform = "win32" if sys.platform.startswith("win") else "darwin" if sys.platform == "darwin" else "linux"
+        if platforms and platform not in platforms:
+            continue
+        for relative in plugin.get("entrypoints", {}).get("providers", []):
+            provider_path = (plugin_root / relative).resolve()
+            if not _inside(plugin_root, provider_path) or not provider_path.is_file():
+                continue
+            provider = json.loads(provider_path.read_text(encoding="utf-8"))
+            provider_id = str(provider.get("id") or "")
+            if not provider_id or provider_id in providers:
+                continue
+            actions = provider.get("actions") or []
+            script_path = None
+            for action in actions:
+                script = action.get("script") or provider.get("script")
+                if not script:
+                    continue
+                candidate = (provider_path.parent / script).resolve()
+                if _inside(plugin_root, candidate) and candidate.is_file() and candidate.suffix == ".py":
+                    script_path = candidate
+                    break
+            providers[provider_id] = {
+                "label": provider.get("title") or provider.get("name") or provider_id,
+                "group": provider.get("group") or "guide",
+                "plugin": plugin.get("id") or plugin_root.name,
+                "script": script_path,
+            }
+    return providers
+
+
+def run_provider(provider_id: str, args: list[str], providers: dict[str, dict[str, Any]]) -> int:
+    config = providers[provider_id]
+    script = config.get("script")
+    if not isinstance(script, Path):
+        print(f"{provider_id} 是教程型 Provider，没有可执行脚本。", file=sys.stderr)
+        return 2
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH", "")]))
+    return subprocess.call([sys.executable, str(script), *args], cwd=str(ROOT), env=env)
 
 
 def run_desktop_app() -> int:
@@ -89,32 +97,30 @@ def run_desktop_app() -> int:
         script = ROOT / "start-wandao.sh"
         if script.exists():
             return subprocess.call(["bash", str(script)], cwd=str(ROOT))
-    print("旧版 Python GUI 已废弃。请使用 Electron 桌面端启动脚本 start-wandao。", file=sys.stderr)
+    print("请使用 Electron 桌面端启动脚本 start-wandao。", file=sys.stderr)
     return 1
 
 
-def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
-    parser = argparse.ArgumentParser(description="万能导：多平台知识库导出启动器")
-    parser.add_argument("--provider", choices=sorted(PROVIDERS), help="选择导出平台")
-    parser.add_argument("--gui", action="store_true", help="旧版 Python GUI 已废弃；此选项会启动 Electron 桌面端")
-    parser.add_argument("--list", action="store_true", help="列出支持的平台")
+def parse_args(argv: list[str], providers: dict[str, dict[str, Any]]) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(description="万能导：Plugin v1 多平台知识迁移启动器")
+    parser.add_argument("--provider", choices=sorted(providers), help="选择 Provider")
+    parser.add_argument("--gui", action="store_true", help="启动 Electron 桌面端")
+    parser.add_argument("--list", action="store_true", help="列出已发现的 Provider")
     return parser.parse_known_args(argv)
 
 
-def main(argv: list[str]) -> int:
-    args, rest = parse_args(argv)
+def main(argv: list[str] | None = None) -> int:
+    providers = discover_providers()
+    args, rest = parse_args(list(argv or []), providers)
     if args.list:
-        for key, config in PROVIDERS.items():
-            print(f"{key}\t{config['label']}")
+        for provider_id, config in providers.items():
+            print(f"{provider_id}\t{config['group']}\t{config['label']}\t{config['plugin']}")
         return 0
-    if not args.provider:
-        return run_desktop_app()
-    if args.gui:
-        print("旧版 Python GUI 已废弃，正在启动 Electron 桌面端。", file=sys.stderr)
+    if not args.provider or args.gui:
         return run_desktop_app()
     if rest and rest[0] == "--":
         rest = rest[1:]
-    return run_provider(args.provider, rest)
+    return run_provider(args.provider, rest, providers)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-from wandao_browser import (
+from wandao_core.browser import (
     CDPClient,
     ExportError,
     ExportStopped,
@@ -38,10 +38,10 @@ from wandao_browser import (
     throttle_request,
     wait_for_debug_port,
 )
-from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_cli import extend_arg_list_from_file
-from wandao_credentials import write_private_json
-from wandao_report import finalize_report
+from wandao_core.credentials import write_private_json
+from wandao_core.report import finalize_report
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent

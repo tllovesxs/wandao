@@ -1,0 +1,15 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "zsxq",
+  "name": "知识星球",
+  "description": "知识星球 Group、专栏、帖子与文章 Markdown 导出。",
+  "version": "1.0.0",
+  "publisher": "Wandao Official",
+  "homepage": "https://wx.zsxq.com/",
+  "license": "AGPL-3.0-only",
+  "core": { "minVersion": "1.2.9" },
+  "platforms": ["win32", "darwin", "linux"],
+  "entrypoints": { "providers": ["providers/zsxq-group/provider.json", "providers/zsxq-column/provider.json"] },
+  "permissions": ["browser-automation", "credentials", "filesystem:write", "network", "process"]
+}

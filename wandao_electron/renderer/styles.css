@@ -2451,6 +2451,63 @@ button,
   gap: var(--s-3);
 }
 
+.platform-discovery-card,
+.plugin-search-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+}
+
+.platform-discovery-card {
+  justify-content: space-between;
+  margin-top: var(--s-5);
+}
+
+.platform-discovery-card h3 {
+  margin: var(--s-1) 0;
+  font: 700 21px/1.2 var(--font-display);
+}
+
+.platform-discovery-card p:last-child {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.plugin-search-row {
+  margin-top: var(--s-5);
+}
+
+.plugin-search-row input {
+  width: min(520px, 100%);
+  min-height: 42px;
+  padding: 0 var(--s-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface-raise);
+  color: var(--text);
+  font: inherit;
+}
+
+.plugin-search-row input:focus {
+  outline: 3px solid color-mix(in srgb, var(--brand) 35%, transparent);
+  border-color: var(--brand-line);
+}
+
+.plugin-experimental-notice {
+  margin-top: var(--s-5);
+  border-color: color-mix(in srgb, var(--brand-line) 55%, var(--border));
+  background: color-mix(in srgb, var(--brand) 10%, var(--surface-raise));
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2566,9 +2623,15 @@ button,
   }
 
   .plugin-toolbar,
-  .custom-plugin-banner {
+  .custom-plugin-banner,
+  .platform-discovery-card,
+  .plugin-search-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .plugin-search-row input {
+    width: 100%;
   }
 }
 

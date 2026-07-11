@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "yuque-import",
+  "platform": "yuque",
+  "name": "语雀",
+  "title": "语雀 Markdown 导入",
+  "navLabel": "语雀导入",
+  "description": "扫描本地 Markdown，上传图片和附件并批量创建或更新语雀文档。",
+  "type": "automation",
+  "group": "import",
+  "trustLevel": "official",
+  "status": "stable",
+  "templateId": "template-yuque-import",
+  "capabilities": { "export": false, "import": true, "guide": false, "login": true, "scanToc": false, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
+  "retryFailures": { "arg": "--retry-failures", "label": "只重试失败项" },
+  "fields": [
+    { "name": "target_book_url", "label": "目标语雀知识库 URL", "type": "text", "arg": "--target-book-url", "required": true, "actions": ["saveConfig", "plan", "importOne", "import"] },
+    { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "actions": ["saveConfig", "plan", "importOne", "import"] },
+    { "name": "max_import", "label": "最多导入篇数（0 为全部）", "type": "number", "arg": "--max-import", "default": 0, "min": 0, "advanced": true, "actions": ["import"] },
+    { "name": "skip_existing", "label": "跳过已存在文档", "type": "checkbox", "arg": "--skip-existing", "default": false, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "retry_failures", "label": "只重试上次失败项", "type": "checkbox", "arg": "--retry-failures", "default": false, "advanced": true, "actions": ["import"] }
+  ],
+  "actions": [
+    { "id": "login", "kind": "login", "label": "登录并保存凭证", "script": "../../backend/import_yuque.py", "args": ["--login"], "track": false, "secondary": true },
+    { "id": "saveConfig", "kind": "custom", "label": "保存配置", "script": "../../backend/import_yuque.py", "args": ["--save-config"], "track": false, "secondary": true },
+    { "id": "plan", "kind": "plan", "label": "生成导入计划", "script": "../../backend/import_yuque.py", "args": ["--plan"], "track": false, "secondary": true },
+    { "id": "importOne", "kind": "import", "label": "单篇测试", "script": "../../backend/import_yuque.py", "args": ["--api-import-one", "--yes"], "secondary": true },
+    { "id": "import", "kind": "import", "label": "开始批量导入", "script": "../../backend/import_yuque.py", "args": ["--api-import-all", "--yes"], "progressTitle": "Markdown 导入语雀", "progressDetail": "正在上传文档和资源..." }
+  ]
+}

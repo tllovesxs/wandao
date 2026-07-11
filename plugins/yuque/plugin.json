@@ -1,0 +1,15 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "yuque",
+  "name": "语雀",
+  "description": "语雀知识库 Markdown 导出与批量导入。",
+  "version": "1.0.0",
+  "publisher": "Wandao Official",
+  "homepage": "https://www.yuque.com/",
+  "license": "AGPL-3.0-only",
+  "core": { "minVersion": "1.2.9" },
+  "platforms": ["win32", "darwin", "linux"],
+  "entrypoints": { "providers": ["providers/yuque/provider.json", "providers/yuque-import/provider.json"] },
+  "permissions": ["browser-automation", "credentials", "filesystem:read", "filesystem:write", "network", "process"]
+}

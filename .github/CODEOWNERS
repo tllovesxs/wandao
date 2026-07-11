@@ -1,11 +1,22 @@
-* @tllovesxs
-
-# Security and release boundaries require explicit owner review.
+# Executable code, security controls, release automation and the desktop UI
+# require the maintainer's initial review. Pure documentation is intentionally
+# not listed, so co-creators can improve it without blocking on the maintainer.
+/.github/CODEOWNERS @tllovesxs
 /.github/workflows/ @tllovesxs
-/wandao_electron/main.js @tllovesxs
-/wandao_electron/preload.js @tllovesxs
-/wandao_electron/plugin_*.js @tllovesxs
-/wandao_electron/assets/plugin-trust.json @tllovesxs
-/scripts/build_plugin*.js @tllovesxs
+/.github/dependabot.yml @tllovesxs
+/.gitignore @tllovesxs
+/SECURITY.md @tllovesxs
+
 /plugins/ @tllovesxs
-/plugins/release-policy.json @tllovesxs
+/providers/ @tllovesxs
+/wandao_electron/ @tllovesxs
+/wandao_core/ @tllovesxs
+/scripts/ @tllovesxs
+/tests/ @tllovesxs
+/tests_js/ @tllovesxs
+
+/*.py @tllovesxs
+/pyproject.toml @tllovesxs
+/requirements.txt @tllovesxs
+/start-wandao.ps1 @tllovesxs
+/start-wandao.sh @tllovesxs

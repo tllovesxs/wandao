@@ -7,6 +7,7 @@ const { PluginManager } = require('./plugin_manager');
 const { assertSafeRelativePath, validatePluginManifest } = require('./plugin_format');
 const { parseLastJson, parseProcessResult } = require('./process_result');
 const { extractSensitiveArguments } = require('./command_security');
+const { resolveProviderScript } = require('./provider_script_routing');
 
 let mainWindow;
 let pythonProcess = null;
@@ -826,7 +827,6 @@ function normalizeProviderManifest(raw, providerRoot, sourceKind, pluginInfo = n
       entry: relativeUiPath
     };
   }
-  provider.script = defaultScript;
   if (Array.isArray(raw.actions)) {
     provider.actions = raw.actions.map((action, index) => {
       const declaredScript = action && action.script ? action.script : raw.script;
@@ -837,6 +837,7 @@ function normalizeProviderManifest(raw, providerRoot, sourceKind, pluginInfo = n
       return { ...action, script: actionScript };
     });
   }
+  provider.script = resolveProviderScript(defaultScript, provider.actions);
   return provider;
 }
 

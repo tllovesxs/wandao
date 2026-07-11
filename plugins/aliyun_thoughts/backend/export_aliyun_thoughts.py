@@ -937,7 +937,7 @@ class AliyunThoughtsEditClient:
         sid = self._extract_sid(body)
         sync_time = self._poll_sync_time(base_url, headers, sid, timeout=timeout)
 
-        auth_uuid = str(uuid.uuid1())
+        auth_uuid = str(uuid.uuid4())
         signature_payload = json.dumps(
             {"time": sync_time, "uuid": auth_uuid},
             ensure_ascii=False,

@@ -7,7 +7,13 @@
 - Windows：下载 `.exe` 安装包。
 - macOS：下载 `.zip` 压缩包，解压后运行应用。
 
-正式发行包应通过 Developer ID 签名和公证。若系统阻止运行开发预览包，请不要直接绕过 Gatekeeper；优先使用正式发行包，或校验源码和 SHA-256 后从源码启动。
+当前 macOS `.zip` 包未进行 Apple 公证。请只从本项目 GitHub Release 下载；若解压并移动到“应用程序”后提示“已损坏，无法打开”，在终端执行：
+
+```bash
+xattr -cr /Applications/Wandao.app
+```
+
+再重新打开应用。
 
 发行版已内置 Python 运行时和导入导出依赖，普通用户不需要额外安装 Python。
 

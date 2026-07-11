@@ -124,7 +124,7 @@ Author: `tllovesxs`
 4. 在左侧进入“平台中心”，选择要使用的平台。
 5. 按界面提示填写链接、登录、读取目录、选择范围并执行任务。
 
-> **macOS 用户注意**：正式发行包应通过 Developer ID 签名和公证。若系统阻止运行开发预览包，请不要直接绕过 Gatekeeper；优先使用正式发行包，或校验源码和 SHA-256 后从源码启动。
+> **macOS 用户注意**：当前 macOS `.zip` 包未进行 Apple 公证。请只从本项目 GitHub Release 下载；若解压并移动到“应用程序”后提示“已损坏，无法打开”，在终端执行：`xattr -cr /Applications/Wandao.app`，再重新打开。
 
 发行版已内置 Python 运行时，普通用户不需要额外安装 Python。
 

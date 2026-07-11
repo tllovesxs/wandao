@@ -202,7 +202,9 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertEqual(package["build"]["electronDist"], "node_modules/electron/dist")
         self.assertNotIn("signExecutable", package["build"]["win"])
         self.assertTrue(package["build"]["mac"]["hardenedRuntime"])
-        self.assertIn("Require signing credentials for a release tag", workflow)
+        self.assertIn('CSC_IDENTITY_AUTO_DISCOVERY: "false"', workflow)
+        self.assertNotIn("Require signing credentials for a release tag", workflow)
+        self.assertNotIn("CSC_LINK:", workflow)
         self.assertIn("actions/attest-build-provenance", workflow)
         self.assertIn("Generate release SBOM", workflow)
 

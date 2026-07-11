@@ -3192,12 +3192,15 @@ function switchTool(toolId) {
   // Load tool template
   const contentArea = document.getElementById('content-area');
   const template = document.getElementById(config.templateId || `template-${currentTool}`);
+  // Plugin providers render from their manifest; a lingering HTML template would use removed
+  // fields (urlParam/noUrl), so bypass it.
+  const isPluginSourced = config.sourceKind === 'plugin' || config.sourceKind === 'bundled-plugin';
 
   if (config.sourceKind === 'plugin' && config.ui?.mode === 'custom') {
     renderCustomPluginProvider(config);
   } else if (config.type === 'guide' || (!config.script && !template && !(config.actions || []).length)) {
     renderGuideProvider(config);
-  } else if (template) {
+  } else if (template && !isPluginSourced) {
     contentArea.innerHTML = '';
     const clone = template.content.cloneNode(true);
     contentArea.appendChild(clone);

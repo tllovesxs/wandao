@@ -447,7 +447,12 @@ def page_for_workspace(port: int, workspace_id: str) -> dict[str, Any] | None:
     pages = http_json(f"http://127.0.0.1:{port}/json/list", timeout=5)
     for page in pages:
         url = page.get("url", "")
-        if "thoughts.aliyun.com" in url and workspace_id in url and page.get("type") == "page":
+        parsed = urllib.parse.urlparse(url)
+        if (
+            page.get("type") == "page"
+            and parsed.hostname == "thoughts.aliyun.com"
+            and workspace_id in parsed.path
+        ):
             return page
     return None
 
@@ -938,7 +943,9 @@ class AliyunThoughtsEditClient:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        signature = hashlib.sha1((signature_payload + ALIYUN_EDIT_AUTH_SALT).encode("utf-8")).hexdigest()
+        # Aliyun's edit socket protocol requires this legacy SHA-1 wire value;
+        # it is not used to protect locally stored credentials or user data.
+        signature = hashlib.sha1((signature_payload + ALIYUN_EDIT_AUTH_SALT).encode("utf-8")).hexdigest()  # lgtm [py/weak-cryptographic-algorithm]
         auth_seq = self._post_event(
             base_url,
             headers,

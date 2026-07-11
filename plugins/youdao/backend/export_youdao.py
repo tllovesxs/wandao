@@ -188,7 +188,7 @@ def page_for_youdao(port: int) -> dict[str, Any] | None:
         if page.get("type") != "page":
             continue
         page_url = urllib.parse.urlparse(page.get("url", ""))
-        if page_url.hostname and page_url.hostname.endswith("note.youdao.com"):
+        if page_url.hostname == "note.youdao.com":
             return page
     return None
 
@@ -219,9 +219,11 @@ def connect_youdao_browser(args: argparse.Namespace) -> tuple[CDPClient, subproc
 
 
 def is_youdao_cookie(cookie: dict[str, Any]) -> bool:
-    domain = (cookie.get("domain") or "").lower()
+    domain = (cookie.get("domain") or "").lower().lstrip(".")
     name = cookie.get("name") or ""
-    return ("youdao.com" in domain or domain.endswith("ydstatic.com")) and (
+    is_youdao_domain = domain == "youdao.com" or domain.endswith(".youdao.com")
+    is_static_domain = domain == "ydstatic.com" or domain.endswith(".ydstatic.com")
+    return (is_youdao_domain or is_static_domain) and (
         name.startswith("YNOTE") or name in {"OUTFOX_SEARCH_USER_ID", "DICT_SESS"}
     )
 

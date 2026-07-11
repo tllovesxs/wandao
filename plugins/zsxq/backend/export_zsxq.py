@@ -145,7 +145,8 @@ def normalize_entry_url(entry_url: str) -> str:
     parsed = urllib.parse.urlparse(entry_url.strip())
     if not parsed.scheme or not parsed.netloc:
         raise ExportError("请填写完整的知识星球 URL")
-    if "zsxq.com" not in parsed.netloc:
+    host = (parsed.hostname or "").lower()
+    if host != "zsxq.com" and not host.endswith(".zsxq.com"):
         raise ExportError("当前工具只支持 zsxq.com 知识星球页面")
     return entry_url.strip()
 
@@ -154,7 +155,7 @@ def page_for_zsxq(port: int) -> dict[str, Any] | None:
     pages = http_json(f"http://127.0.0.1:{port}/json/list", timeout=5)
     for page in pages:
         url = page.get("url", "")
-        if page.get("type") == "page" and ("wx.zsxq.com" in url or "articles.zsxq.com" in url or "t.zsxq.com" in url):
+        if page.get("type") == "page" and is_zsxq_page_url(url):
             return page
     for page in pages:
         if page.get("type") == "page" and page.get("webSocketDebuggerUrl"):
@@ -185,8 +186,15 @@ def connect_browser(args: argparse.Namespace, entry_url: str) -> tuple[CDPClient
 
 
 def is_zsxq_cookie(cookie: dict[str, Any]) -> bool:
-    domain = (cookie.get("domain") or "").lower()
-    return any(token in domain for token in ("zsxq.com", "zsxq.cn", "zsxq-img", "zsxqpic"))
+    domain = (cookie.get("domain") or "").lower().lstrip(".")
+    return (
+        domain == "zsxq.com"
+        or domain.endswith(".zsxq.com")
+        or domain == "zsxq.cn"
+        or domain.endswith(".zsxq.cn")
+        or domain.startswith("zsxq-img")
+        or domain.startswith("zsxqpic")
+    )
 
 
 def save_auth_state(cdp: CDPClient, auth_file: Path, entry_url: str) -> dict[str, Any]:
@@ -1715,7 +1723,7 @@ def find_article_url_on_topic(cdp: CDPClient, args: argparse.Namespace | None = 
             ready: !!topic || document.body.innerText.length > 300,
           };
         })()""",
-        lambda value: bool(value.get("article")) or "articles.zsxq.com" in value.get("href", "") or bool(value.get("ready")),
+        lambda value: bool(value.get("article")) or is_zsxq_article_url(str(value.get("href") or "")) or bool(value.get("ready")),
         timeout=35,
         args=args,
     )
@@ -2411,7 +2419,7 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
                     event="log.message",
                     level="warn",
                 )
-        article_url = info.get("article") or (topic_url if "articles.zsxq.com" in topic_url else "")
+        article_url = info.get("article") or (topic_url if is_zsxq_article_url(topic_url) else "")
         topic_comments = collect_current_comments(cdp, args) if article_url else []
         if article_url:
             navigate_with_retry(cdp, article_url, args)

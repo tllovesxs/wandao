@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from wandao_report import finalize_report
 
@@ -57,6 +58,26 @@ class WandaoReportTests(unittest.TestCase):
         self.assertEqual(report["totalDocs"], 4)
         self.assertEqual(report["successCount"], 3)
         self.assertEqual(report["failureCount"], 1)
+
+    def test_finalize_report_emits_task_result_v1_with_run_lineage(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "WANDAO_RUN_ID": "run-123",
+                "WANDAO_JOB_ID": "job-456",
+                "WANDAO_PARENT_RUN_ID": "run-122",
+            },
+            clear=False,
+        ):
+            report = finalize_report({"totalDocs": 0}, provider="wiz", mode="export")
+
+        self.assertEqual(report["kind"], "wandao.result")
+        self.assertEqual(report["schemaVersion"], 1)
+        self.assertEqual(report["runId"], "run-123")
+        self.assertEqual(report["jobId"], "job-456")
+        self.assertEqual(report["parentRunId"], "run-122")
+        for field in ("provider", "mode", "totalDocs", "successCount", "failureCount", "failures", "resourceFailures"):
+            self.assertIn(field, report)
 
 
 if __name__ == "__main__":

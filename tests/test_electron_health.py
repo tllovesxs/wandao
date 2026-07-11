@@ -14,10 +14,16 @@ def read_text(rel_path: str) -> str:
 class ElectronHealthTests(unittest.TestCase):
     def test_browser_window_keeps_safe_renderer_defaults(self) -> None:
         main_js = read_text("wandao_electron/main.js")
+        index_html = read_text("wandao_electron/renderer/index.html")
 
         self.assertRegex(main_js, r"nodeIntegration\s*:\s*false")
         self.assertRegex(main_js, r"contextIsolation\s*:\s*true")
+        self.assertRegex(main_js, r"sandbox\s*:\s*true")
         self.assertRegex(main_js, r"preload\s*:\s*path\.join\(__dirname,\s*['\"]preload\.js['\"]\)")
+        self.assertIn("setWindowOpenHandler", main_js)
+        self.assertIn("will-navigate", main_js)
+        self.assertIn("setPermissionRequestHandler", main_js)
+        self.assertIn("Content-Security-Policy", index_html)
         self.assertNotRegex(main_js, r"webSecurity\s*:\s*false")
         self.assertNotRegex(main_js, r"allowRunningInsecureContent\s*:\s*true")
 
@@ -43,6 +49,9 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("safeStorage.decryptString", main_js)
         self.assertIn("persistable.protectedArgs = protectedResult.payload", app_js)
         self.assertIn("persistable.args = []", app_js)
+        self.assertIn("persistable.resultData = maskSensitiveValue", app_js)
+        self.assertIn("persistable.logs = maskSensitiveValue", app_js)
+        self.assertIn("persistable.error = maskSensitiveText", app_js)
         self.assertIn("task.status === 'running' || task.status === 'stopping'", app_js)
         self.assertIn("task.status = 'interrupted'", app_js)
 
@@ -50,10 +59,15 @@ class ElectronHealthTests(unittest.TestCase):
         main_js = read_text("wandao_electron/main.js")
 
         self.assertIn("if (pythonProcess === proc)", main_js)
+        self.assertIn("function terminateProcessTree", main_js)
+        self.assertIn("spawnSync('taskkill'", main_js)
+        self.assertIn("process.kill(-proc.pid", main_js)
+        self.assertIn("detached: process.platform !== 'win32'", main_js)
         stop_start = main_js.index("ipcMain.handle('stop-python-process'")
         stop_handler = main_js[stop_start : stop_start + 900]
         self.assertNotIn("pythonProcess = null", stop_handler)
         self.assertIn("pythonProcessStopping = true", stop_handler)
+        self.assertIn("terminateProcessTree(pythonProcess)", stop_handler)
 
     def test_process_and_task_logs_are_bounded(self) -> None:
         main_js = read_text("wandao_electron/main.js")
@@ -109,7 +123,7 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("resolveManagedFilePath(filePath, { allowProjectRoot: true })", main_js)
         self.assertIn("resolveManagedFilePath(filePath)", main_js)
         self.assertIn("function isAllowedExternalUrl", main_js)
-        self.assertIn("parsed.protocol === 'https:' || parsed.protocol === 'http:'", main_js)
+        self.assertIn("return parsed.protocol === 'https:'", main_js)
         self.assertIn("if (!isAllowedExternalUrl(url))", main_js)
         self.assertNotIn("root.startsWith(app.getPath('userData'))", main_js)
 
@@ -176,11 +190,79 @@ class ElectronHealthTests(unittest.TestCase):
         workflow = read_text(".github/workflows/build-desktop.yml")
         package = json.loads(read_text("wandao_electron/package.json"))
 
-        self.assertEqual(workflow.count('node-version: "22"'), 2)
+        self.assertGreaterEqual(workflow.count('node-version: "22"'), 3)
+        self.assertIn("windows-latest, ubuntu-latest, macos-latest", workflow)
+        self.assertIn('python: ["3.10", "3.11"]', workflow)
+        self.assertIn("PR Windows Package Smoke", workflow)
+        self.assertIn("scripts/package_smoke.py --resources wandao_electron/dist/win-unpacked/resources", workflow)
+        package_smoke = read_text("scripts/package_smoke.py")
+        self.assertIn("verify_packaged_backend_help", package_smoke)
+        self.assertIn('"--provider", provider_id, "--", "--help"', package_smoke)
         self.assertEqual(package["engines"]["node"], ">=22.12.0")
         self.assertEqual(package["build"]["electronDist"], "node_modules/electron/dist")
-        self.assertFalse(package["build"]["win"]["signExecutable"])
-        self.assertNotIn("signAndEditExecutable", package["build"]["win"])
+        self.assertNotIn("signExecutable", package["build"]["win"])
+        self.assertTrue(package["build"]["mac"]["hardenedRuntime"])
+        self.assertIn("Require signing credentials for a release tag", workflow)
+        self.assertIn("actions/attest-build-provenance", workflow)
+        self.assertIn("Generate release SBOM", workflow)
+
+    def test_bootstrap_node_runtime_is_pinned_and_verified(self) -> None:
+        powershell = read_text("start-wandao.ps1")
+        shell = read_text("start-wandao.sh")
+
+        self.assertIn('$NodeVersion = "v22.12.0"', powershell)
+        self.assertIn('NODE_VERSION="v22.12.0"', shell)
+        self.assertIn("Get-FileHash", powershell)
+        self.assertIn("verify_sha256", shell)
+        self.assertIn("2b8f2256382f97ad51e29ff71f702961af466c4616393f767455501e6aece9b8", powershell)
+        self.assertIn("22982235e1b71fa8850f82edd09cdae7e3f32df1764a9ec298c72d25ef2c164f", shell)
+
+    def test_running_task_requires_confirmation_before_exit(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        app_js = read_text("wandao_electron/renderer/app.js")
+        index_html = read_text("wandao_electron/renderer/index.html")
+
+        self.assertIn("function confirmTaskShutdown", main_js)
+        self.assertIn("停止任务并退出", main_js)
+        self.assertIn("mainWindow.on('close'", main_js)
+        self.assertIn('id="btn-global-stop"', index_html)
+        self.assertIn("btn-global-stop", app_js)
+
+    def test_plugin_center_always_shows_bundled_platform_plugins(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        app_js = read_text("wandao_electron/renderer/app.js")
+
+        self.assertIn("function bundledPluginCatalogEntries", main_js)
+        self.assertIn("function pluginCatalogWithBundled", main_js)
+        self.assertIn("plugins: pluginCatalogWithBundled(combined)", main_js)
+        self.assertIn("plugins: pluginCatalogWithBundled()", main_js)
+        self.assertIn("随主程序提供", app_js)
+        self.assertIn("安装更新", app_js)
+
+    def test_plugin_release_channels_are_visible_for_experimental_plugins(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        app_js = read_text("wandao_electron/renderer/app.js")
+        workflow = read_text(".github/workflows/publish-plugins.yml")
+
+        self.assertIn("EXPERIMENTAL_PLUGIN_REGISTRY_URL", main_js)
+        self.assertIn("currentPluginRegistry(Boolean(options?.refresh), 'experimental')", main_js)
+        self.assertNotIn("includeExperimental", main_js)
+        self.assertIn("plugins-experimental", workflow)
+        self.assertIn("dist-plugins/stable", workflow)
+        self.assertIn("dist-plugins/experimental", workflow)
+        self.assertIn("实验性插件已标注", app_js)
+        self.assertIn("实验性 · 主动测试", app_js)
+
+    def test_platform_discovery_links_to_searchable_plugin_center(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        styles = read_text("wandao_electron/renderer/styles.css")
+
+        self.assertIn("去插件中心找更多平台", app_js)
+        self.assertIn('data-switch-view="plugin-center"', app_js)
+        self.assertIn("function filteredPluginCatalog", app_js)
+        self.assertIn("data-plugin-search", app_js)
+        self.assertIn("搜索平台、功能、发布者或权限", app_js)
+        self.assertIn(".plugin-search-row", styles)
 
     def test_task_history_has_minimal_failure_diagnostics(self) -> None:
         app_js = read_text("wandao_electron/renderer/app.js")
@@ -225,17 +307,8 @@ class ElectronHealthTests(unittest.TestCase):
         main_js = read_text("wandao_electron/main.js")
 
         self.assertIn("function compressDocIdArgs", main_js)
-        for script in [
-            "export_aliyun_thoughts.py",
-            "export_feishu.py",
-            "export_onenote.py",
-            "export_wiz.py",
-            "export_yinxiang.py",
-            "export_youdao.py",
-            "export_yuque.py",
-            "ima_knowledge.py",
-        ]:
-            self.assertIn(f"'{script}'", main_js)
+        self.assertNotIn("const supported = new Set", main_js)
+        self.assertIn("if (value === '--doc-id'", main_js)
         self.assertIn("return [...compactArgs, '--doc-id-file', filePath]", main_js)
 
     def test_group_toc_progress_is_labeled_as_topic_list_reading(self) -> None:
@@ -247,17 +320,20 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("已跳过视频帖", structured_logs_js)
 
     def test_zsxq_group_and_column_are_separate_providers(self) -> None:
-        providers_js = read_text("wandao_electron/renderer/providers.js")
+        group_provider = json.loads(read_text("plugins/zsxq/providers/zsxq-group/provider.json"))
+        column_provider = json.loads(read_text("plugins/zsxq/providers/zsxq-column/provider.json"))
         index_html = read_text("wandao_electron/renderer/index.html")
         app_js = read_text("wandao_electron/renderer/app.js")
 
-        self.assertIn("id: 'zsxq-group'", providers_js)
-        self.assertIn("id: 'zsxq-column'", providers_js)
-        self.assertIn("capabilities: { login: true, scanToc: false, retryFailures: true }", providers_js)
-        self.assertIn("capabilities: { login: true, scanToc: true, retryFailures: true }", providers_js)
-        self.assertIn("checkpoint: { supported: true, strategy: 'cursor', resourceTracking: true }", providers_js)
-        self.assertIn("checkpoint: { supported: true, strategy: 'items', resourceTracking: true }", providers_js)
-        self.assertIn("retryFailures: { arg: '--retry-failed'", providers_js)
+        self.assertEqual(group_provider["id"], "zsxq-group")
+        self.assertEqual(column_provider["id"], "zsxq-column")
+        self.assertFalse(group_provider["capabilities"]["scanToc"])
+        self.assertTrue(column_provider["capabilities"]["scanToc"])
+        self.assertEqual(group_provider["checkpoint"]["strategy"], "cursor")
+        self.assertEqual(column_provider["checkpoint"]["strategy"], "items")
+        self.assertTrue(group_provider["checkpoint"]["resourceTracking"])
+        self.assertTrue(column_provider["checkpoint"]["resourceTracking"])
+        self.assertEqual(group_provider["retryFailures"]["arg"], "--retry-failed")
         self.assertIn('template id="template-zsxq-group"', index_html)
         self.assertIn('template id="template-zsxq-column"', index_html)
         self.assertIn('id="zsxq-group-download-files"', index_html)
@@ -272,30 +348,27 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("toolId === 'zsxq-column'", app_js)
 
     def test_checkpoint_is_declared_for_adapted_export_providers_only(self) -> None:
-        providers_js = read_text("wandao_electron/renderer/providers.js")
-        adapted_ids = ["yuque", "aliyun", "yinxiang", "youdao", "onenote", "ima-export"]
-
-        for provider_id in adapted_ids:
-            pattern = rf"id: '{provider_id}'[\s\S]+?checkpoint: {{ supported: true, strategy: 'items', resourceTracking: false }}"
-            self.assertRegex(providers_js, pattern)
-
-        self.assertRegex(
-            providers_js,
-            r"id: 'zsxq-group'[\s\S]+?checkpoint: { supported: true, strategy: 'cursor', resourceTracking: true }",
-        )
-        self.assertRegex(
-            providers_js,
-            r"id: 'zsxq-column'[\s\S]+?checkpoint: { supported: true, strategy: 'items', resourceTracking: true }",
-        )
-        feishu_provider = json.loads(read_text("plugins/feishu/providers/feishu-export/provider.json"))
-        wiz_provider = json.loads(read_text("plugins/wiz/providers/wiz/provider.json"))
-        self.assertTrue(feishu_provider["checkpoint"]["supported"])
-        self.assertTrue(feishu_provider["checkpoint"]["resourceTracking"])
-        self.assertTrue(wiz_provider["checkpoint"]["supported"])
-        self.assertTrue(wiz_provider["checkpoint"]["resourceTracking"])
-        ima_import_block = re.search(r"id: 'ima-import'[\s\S]+?\n    }", providers_js)
-        self.assertIsNotNone(ima_import_block)
-        self.assertNotIn("checkpoint: { supported: true", ima_import_block.group(0))
+        provider_paths = {
+            "yuque": "plugins/yuque/providers/yuque/provider.json",
+            "aliyun": "plugins/aliyun_thoughts/providers/aliyun/provider.json",
+            "yinxiang": "plugins/yinxiang/providers/yinxiang/provider.json",
+            "youdao": "plugins/youdao/providers/youdao/provider.json",
+            "onenote": "plugins/onenote/providers/onenote/provider.json",
+            "ima-export": "plugins/ima/providers/ima-export/provider.json",
+            "zsxq-group": "plugins/zsxq/providers/zsxq-group/provider.json",
+            "zsxq-column": "plugins/zsxq/providers/zsxq-column/provider.json",
+            "feishu-export": "plugins/feishu/providers/feishu-export/provider.json",
+            "wiz": "plugins/wiz/providers/wiz/provider.json",
+        }
+        providers = {provider_id: json.loads(read_text(path)) for provider_id, path in provider_paths.items()}
+        for provider_id in ["yuque", "aliyun", "yinxiang", "youdao", "onenote", "ima-export"]:
+            self.assertEqual(providers[provider_id]["checkpoint"]["strategy"], "items")
+            self.assertFalse(providers[provider_id]["checkpoint"]["resourceTracking"])
+        self.assertEqual(providers["zsxq-group"]["checkpoint"]["strategy"], "cursor")
+        for provider_id in ["zsxq-group", "zsxq-column", "feishu-export", "wiz"]:
+            self.assertTrue(providers[provider_id]["checkpoint"]["resourceTracking"])
+        ima_import = json.loads(read_text("plugins/ima/providers/ima-import/provider.json"))
+        self.assertNotIn("checkpoint", ima_import)
 
     def test_checkpoint_runtime_is_bundled_for_packaged_app(self) -> None:
         package_json = read_text("wandao_electron/package.json")
@@ -306,26 +379,21 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertRegex(package["version"], r"^\d+\.\d+\.\d+$")
         self.assertEqual(package["version"], package_lock["version"])
         self.assertEqual(package["version"], package_lock["packages"][""]["version"])
-        self.assertIn('"from": "../wandao_checkpoint.py"', package_json)
-        self.assertIn('"to": "python/wandao_checkpoint.py"', package_json)
-        self.assertIn('"from": "../wandao_cli.py"', package_json)
-        self.assertIn('"to": "python/wandao_cli.py"', package_json)
+        python_resource = next(item for item in package["build"]["extraResources"] if item.get("to") == "python")
+        self.assertEqual(python_resource["from"], "..")
+        self.assertIn("*.py", python_resource["filter"])
+        self.assertIn("wandao_core/**/*", python_resource["filter"])
+        self.assertIn("requirements.txt", python_resource["filter"])
         self.assertIn(f'version = "{package["version"]}"', pyproject)
         self.assertIn('"wandao_checkpoint"', pyproject)
         self.assertIn('"wandao_cli"', pyproject)
 
     def test_provider_python_scripts_are_bundled_for_packaged_app(self) -> None:
         package = json.loads(read_text("wandao_electron/package.json"))
-        providers_js = read_text("wandao_electron/renderer/providers.js")
         resources = package["build"]["extraResources"]
-        bundled_python = {
-            Path(str(item.get("from", "")).replace("\\", "/")).name
-            for item in resources
-            if isinstance(item, dict) and str(item.get("from", "")).endswith(".py")
-        }
-        provider_scripts = set(re.findall(r"script:\s*'([^']+\.py)'", providers_js))
+        plugin_resource = next(item for item in resources if item.get("to") == "plugins")
+        python_resource = next(item for item in resources if item.get("to") == "python")
         required_common = {
-            "export_aliyun_thoughts.py",
             "wandao_logging.py",
             "wandao_report.py",
             "wandao_checkpoint.py",
@@ -334,24 +402,37 @@ class ElectronHealthTests(unittest.TestCase):
             "wandao_browser.py",
             "gui_utils.py",
         }
+        self.assertEqual(plugin_resource["from"], "../plugins")
+        self.assertEqual(python_resource["from"], "..")
+        self.assertTrue((REPO_ROOT / "wandao_core" / "__init__.py").is_file())
+        self.assertTrue(required_common.issubset({path.name for path in REPO_ROOT.glob("*.py")}))
+        for manifest_path in (REPO_ROOT / "plugins").glob("*/plugin.json"):
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for provider_path in manifest["entrypoints"]["providers"]:
+                provider_file = manifest_path.parent / provider_path
+                provider = json.loads(provider_file.read_text(encoding="utf-8"))
+                for action in provider.get("actions", []):
+                    script = action.get("script") or provider.get("script")
+                    if script:
+                        self.assertTrue((provider_file.parent / script).resolve().is_file())
 
-        self.assertFalse(provider_scripts - bundled_python)
-        self.assertFalse(required_common - bundled_python)
-        self.assertNotIn("export_wiz.py", bundled_python)
-        self.assertNotIn("export_feishu.py", bundled_python)
-        self.assertNotIn("import_feishu.py", bundled_python)
-
-    def test_builtin_provider_scripts_are_allowed_by_main_process(self) -> None:
+    def test_platform_scripts_only_come_from_plugins_or_file_providers(self) -> None:
         main_js = read_text("wandao_electron/main.js")
         providers_js = read_text("wandao_electron/renderer/providers.js")
-        allowed_match = re.search(r"const ALLOWED_SCRIPTS = new Set\(\[([\s\S]+?)\]\);", main_js)
-        self.assertIsNotNone(allowed_match)
-        allowed_scripts = set(re.findall(r"'([^']+\.py)'", allowed_match.group(1)))
-        provider_scripts = set(re.findall(r"script:\s*'([^']+\.py)'", providers_js))
+        self.assertNotIn("ALLOWED_SCRIPTS", main_js)
+        self.assertIn("bundled-plugin:", main_js)
+        self.assertIn("平台脚本必须来自 Plugin v1 或文件型 Provider", main_js)
+        self.assertNotRegex(providers_js, r"(?:export|import)_[a-z0-9_]+\.py")
 
-        self.assertFalse(provider_scripts - allowed_scripts)
+    def test_plugin_process_environment_uses_an_allowlist(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
 
-    def test_online_plugins_are_signed_sandboxed_and_not_bundled_as_platform_scripts(self) -> None:
+        self.assertIn("const PLUGIN_ENV_ALLOWLIST = new Set", main_js)
+        self.assertIn("pluginHostEnvironment()", main_js)
+        self.assertIn("pluginContext ? pluginHostEnvironment() : process.env", main_js)
+        self.assertNotIn("WANDAO_PLUGIN_PRIVATE_KEY)/i.test(key)", main_js)
+
+    def test_plugins_are_signed_sandboxed_and_official_plugins_are_bundled(self) -> None:
         main_js = read_text("wandao_electron/main.js")
         preload_js = read_text("wandao_electron/preload.js")
         app_js = read_text("wandao_electron/renderer/app.js")
@@ -370,10 +451,10 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("replaceExternal", providers_js)
         self.assertNotIn("id: 'wiz'", providers_js)
         self.assertNotIn("id: 'feishu-export'", providers_js)
-        resources = json.dumps(package["build"]["extraResources"], ensure_ascii=False)
-        self.assertNotIn("export_wiz.py", resources)
-        self.assertNotIn("export_feishu.py", resources)
-        self.assertNotIn("import_feishu.py", resources)
+        plugin_resource = next(item for item in package["build"]["extraResources"] if item.get("to") == "plugins")
+        self.assertEqual(plugin_resource["from"], "../plugins")
+        self.assertIn("bundledPluginEntriesWithErrors", main_js)
+        self.assertIn("installedPlugin?.enabled", main_js)
 
 
 if __name__ == "__main__":

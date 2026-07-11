@@ -30,7 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   detectBrowsers: () => ipcRenderer.invoke('detect-browsers'),
   getProviderManifests: () => ipcRenderer.invoke('get-provider-manifests'),
   getPluginCatalog: (options) => ipcRenderer.invoke('get-plugin-catalog', options),
-  installPlugin: (pluginId) => ipcRenderer.invoke('install-plugin', pluginId),
+  installPlugin: (pluginId, channel) => ipcRenderer.invoke('install-plugin', pluginId, channel),
   installPluginFile: () => ipcRenderer.invoke('install-plugin-file'),
   setPluginEnabled: (pluginId, enabled) => ipcRenderer.invoke('set-plugin-enabled', pluginId, enabled),
   rollbackPlugin: (pluginId) => ipcRenderer.invoke('rollback-plugin', pluginId),

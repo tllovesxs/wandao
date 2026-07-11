@@ -214,6 +214,7 @@ function verifyRegistryEnvelope(registry, trustStore) {
     });
     if (seen.has(plugin.id)) throw new Error(`注册表插件 ID 重复：${plugin.id}`);
     seen.add(plugin.id);
+    if (plugin.channel && !['stable', 'experimental'].includes(plugin.channel)) throw new Error(`插件发布等级无效：${plugin.id}`);
     if (!/^https:\/\//i.test(String(plugin.packageUrl || '')) && !/^http:\/\/127\.0\.0\.1(?::\d+)?\//i.test(String(plugin.packageUrl || ''))) {
       throw new Error(`插件下载地址不安全：${plugin.id}`);
     }

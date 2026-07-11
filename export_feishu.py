@@ -2,10 +2,9 @@
 """Compatibility entry point for the installable Feishu plugin."""
 
 import sys
-
-from plugins.feishu.backend.export_feishu import *  # noqa: F401,F403
-from plugins.feishu.backend.export_feishu import main as _plugin_main
+from plugins.feishu.backend import export_feishu as _implementation
 
 
 if __name__ == "__main__":
-    raise SystemExit(_plugin_main(sys.argv[1:]))
+    raise SystemExit(_implementation.main(sys.argv[1:]))
+sys.modules[__name__] = _implementation

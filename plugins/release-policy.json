@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "defaultChannel": "experimental",
+  "plugins": {
+    "aliyun_thoughts": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" },
+    "feishu": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" },
+    "ima": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" },
+    "notion": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" },
+    "onenote": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" },
+    "wiz": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" },
+    "yinxiang": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" },
+    "youdao": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" },
+    "yuque": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" },
+    "zsxq": { "channel": "stable", "approvedBy": "tllovesxs", "approvedAt": "2026-07-11" }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "youdao",
+  "name": "有道云笔记",
+  "description": "有道云笔记 Markdown、图片和附件导出。",
+  "version": "1.0.0",
+  "publisher": "Wandao Official",
+  "homepage": "https://note.youdao.com/",
+  "license": "AGPL-3.0-only",
+  "core": { "minVersion": "1.2.9" },
+  "platforms": ["win32", "darwin", "linux"],
+  "entrypoints": { "providers": ["providers/youdao/provider.json"] },
+  "permissions": ["browser-automation", "credentials", "filesystem:write", "network", "process"]
+}

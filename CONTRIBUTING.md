@@ -119,6 +119,14 @@ PR 描述必须说明：
 
 不要把尚未实现的能力写成已支持。
 
+### 发布等级：合并不等于稳定发布
+
+新插件即使通过 CI 并被合并，也会默认进入 `experimental` 实验库；这不会阻止共创、PR 预览或源码测试。实验插件会在插件中心正常显示和搜索，但会带有明确实验性标记，并应说明已知限制。
+
+只有维护者批准后，插件才会进入 `plugins/release-policy.json` 的 `stable` 列表并进入默认官方插件库。申请稳定发布时，请额外提交：脱敏样例输入/输出、目录/图片/附件与失败场景证据、真实人工验证记录、已知限制、恢复与报告验证结果。不要为了通过稳定审核而提交真实凭证或私有内容。
+
+`CODEOWNERS` 已把发布策略和插件目录指定给维护者审核；维护者还需要在 GitHub 的 `main` 分支保护规则中启用“Require review from Code Owners”，否则 GitHub 不会实际阻止绕过审核的合并。
+
 ## 本地开发
 
 Windows：
@@ -190,6 +198,7 @@ python scripts\validate_providers.py
 - 修改插件业务代码时同步提升 `plugin.json.version`。
 - 插件不能导入其他平台的业务脚本；公共逻辑应进入稳定 SDK。
 - PR 预览包使用临时密钥，只用于流水线验证；只有合并后流水线生成的正式签名包能被普通用户安装。
+- 新插件默认发布为 `experimental`；修改 `plugins/release-policy.json` 或申请 `stable` 必须由维护者审核，且不会作为普通插件 PR 的前置条件。
 - 已运行 `node scripts\validate_plugins.js` 和 `node --test tests_js/plugin_manager.test.js`，或说明无法运行原因。
 
 ## Provider v1 兼容 PR 检查

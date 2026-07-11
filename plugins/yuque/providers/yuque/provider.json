@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "yuque",
+  "platform": "yuque",
+  "name": "语雀",
+  "title": "语雀任意知识库导出",
+  "navLabel": "语雀导出",
+  "description": "读取语雀知识库目录，导出 Markdown、图片和附件并保留层级。",
+  "type": "automation",
+  "group": "export",
+  "trustLevel": "official",
+  "status": "stable",
+  "templateId": "template-yuque",
+  "defaults": { "output": "exports/yuque" },
+  "capabilities": { "export": true, "import": false, "guide": false, "login": true, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
+  "toc": { "itemsPath": "ordered", "idKey": "uuid", "exportIdKey": "uuid", "titleKey": "title", "parentIdKey": "parent_uuid", "selectionArg": "--doc-id", "selectableWhenExportId": true },
+  "fields": [
+    { "name": "book_url", "label": "语雀知识库 URL", "type": "text", "arg": "--book-url", "required": true, "actions": ["scan", "export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
+    { "name": "update_existing", "label": "更新已有文档", "type": "checkbox", "arg": "--update-existing", "default": false, "advanced": true, "actions": ["export"] },
+    { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },
+    { "name": "request_delay", "label": "请求延迟秒", "type": "number", "arg": "--request-delay", "default": 0.8, "min": 0, "step": 0.1, "advanced": true, "actions": ["export"] },
+    { "name": "request_jitter", "label": "随机浮动秒", "type": "number", "arg": "--request-jitter", "default": 0.4, "min": 0, "step": 0.1, "advanced": true, "actions": ["export"] }
+  ],
+  "actions": [
+    { "id": "login", "kind": "login", "label": "登录并保存凭证", "script": "../../backend/export_yuque.py", "args": ["--login"], "track": false, "secondary": true },
+    { "id": "scan", "kind": "scan", "label": "读取知识库目录", "script": "../../backend/export_yuque.py", "args": ["--scan-toc"], "includeSelection": false, "secondary": true },
+    { "id": "export", "kind": "export", "label": "开始导出", "script": "../../backend/export_yuque.py", "args": ["--progress-every", "1"], "progressTitle": "语雀知识库导出", "progressDetail": "正在导出正文、图片和附件..." }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "yinxiang",
+  "name": "印象笔记",
+  "description": "印象笔记 Markdown 导出与本地批量导入。",
+  "version": "1.0.0",
+  "publisher": "Wandao Official",
+  "homepage": "https://www.yinxiang.com/",
+  "license": "AGPL-3.0-only",
+  "core": { "minVersion": "1.2.9" },
+  "platforms": ["win32", "darwin", "linux"],
+  "entrypoints": { "providers": ["providers/yinxiang/provider.json", "providers/yinxiang-import/provider.json"] },
+  "permissions": ["credentials", "filesystem:read", "filesystem:write", "network", "process"]
+}

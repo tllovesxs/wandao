@@ -1,0 +1,1 @@
+"""Youdao plugin backend."""

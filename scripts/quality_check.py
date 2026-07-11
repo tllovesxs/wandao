@@ -21,6 +21,8 @@ NODE_CHECK_FILES = [
     "wandao_electron/preload.js",
     "wandao_electron/plugin_format.js",
     "wandao_electron/plugin_manager.js",
+    "wandao_electron/process_result.js",
+    "wandao_electron/command_security.js",
     "wandao_electron/renderer/app.js",
     "wandao_electron/renderer/providers.js",
     "wandao_electron/renderer/provider_runtime.js",
@@ -31,6 +33,7 @@ NODE_CHECK_FILES = [
     "scripts/build_plugin_registry.js",
     "scripts/validate_plugins.js",
     "scripts/check_plugin_versions.js",
+    "scripts/plugin_release_policy.js",
     "wandao_electron/scripts/prepare_python_runtime.py",
 ]
 
@@ -84,7 +87,17 @@ def run_node_checks() -> None:
         subprocess.run(["node", "--check", str(path)], cwd=REPO_ROOT, check=True)
         checked += 1
     subprocess.run(["node", "scripts/validate_plugins.js"], cwd=REPO_ROOT, check=True)
-    subprocess.run(["node", "--test", "tests_js/plugin_manager.test.js"], cwd=REPO_ROOT, check=True)
+    subprocess.run(
+        [
+            "node", "--test",
+            "tests_js/plugin_manager.test.js",
+            "tests_js/process_result.test.js",
+            "tests_js/command_security.test.js",
+            "tests_js/plugin_release_policy.test.js",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
     subprocess.run(
         [
             "node",
@@ -92,6 +105,7 @@ def run_node_checks() -> None:
             (
                 "global.window=global;"
                 "require('./wandao_electron/renderer/providers.js');"
+                "global.WandaoProviders.register(require('./plugins/yuque/providers/yuque-import/provider.json'));"
                 "const yuque=global.WandaoProviders.get('yuque-import');"
                 "if(!yuque.capabilities.retryFailures||yuque.retryFailures.arg!=='--retry-failures') process.exit(1);"
             ),

@@ -1,6 +1,6 @@
 [project]
 name = "wandao"
-version = "1.2.9"
+version = "1.3.0"
 description = "万能导：多平台知识库 Markdown 导出与互转工具"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,3 +42,9 @@ py-modules = [
   "wandao_cli",
   "wandao_credentials",
 ]
+
+[tool.setuptools.packages.find]
+include = ["plugins*", "wandao_core*"]
+
+[tool.setuptools.package-data]
+"*" = ["plugin.json", "providers/*/provider.json", "providers/*/README.md"]

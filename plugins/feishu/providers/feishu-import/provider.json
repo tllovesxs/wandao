@@ -14,7 +14,7 @@
   "tags": ["导入", "Wiki", "图片补全", "权限检测"],
   "capabilities": { "export": false, "import": true, "guide": true, "login": true, "scanToc": false, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": false },
   "fields": [
-    { "name": "wiki_url", "label": "目标飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["probe", "plan", "import", "setupTarget"] },
+    { "name": "wiki_url", "label": "目标飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["login", "probe", "plan", "import", "setupTarget"] },
     { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "actions": ["plan", "import"] },
     { "name": "app_id", "label": "飞书应用 App ID（留空读取已保存配置）", "type": "text", "arg": "--app-id", "actions": ["saveConfig", "checkApp", "permissions", "probe", "plan", "import", "setupTarget"] },
     { "name": "app_secret", "label": "飞书应用 App Secret（留空读取已保存配置）", "type": "password", "arg": "--app-secret", "actions": ["saveConfig", "checkApp", "probe", "plan", "import", "setupTarget"] },

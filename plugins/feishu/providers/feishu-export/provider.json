@@ -18,7 +18,7 @@
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
   "toc": { "itemsPath": "ordered", "idKey": "wiki_token", "exportIdKey": "wiki_token", "titleKey": "title", "parentIdKey": "parent_wiki_token", "selectionArg": "--doc-id", "selectableWhenExportId": true },
   "fields": [
-    { "name": "wiki_url", "label": "飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["scan", "export"] },
+    { "name": "wiki_url", "label": "飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["login", "scan", "export"] },
     { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
     { "name": "update_existing", "label": "增量时更新已有文档", "type": "checkbox", "arg": "--update-existing", "default": false, "advanced": true, "actions": ["export"] },

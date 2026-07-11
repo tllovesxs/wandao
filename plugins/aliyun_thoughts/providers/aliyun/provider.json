@@ -17,7 +17,7 @@
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
   "toc": { "itemsPath": "ordered", "idKey": "id", "exportIdKey": "id", "titleKey": "title", "parentIdKey": "parentId", "selectionArg": "--doc-id", "selectableWhenExportId": true },
   "fields": [
-    { "name": "workspace_url", "label": "Thoughts 工作区 URL", "type": "text", "arg": "--workspace-url", "required": true, "actions": ["scan", "export"] },
+    { "name": "workspace_url", "label": "Thoughts 工作区 URL", "type": "text", "arg": "--workspace-url", "required": true, "actions": ["login", "scan", "export"] },
     { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
     { "name": "update_existing", "label": "更新已有文档", "type": "checkbox", "arg": "--update-existing", "default": false, "advanced": true, "actions": ["export"] },

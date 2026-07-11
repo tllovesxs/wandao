@@ -634,6 +634,11 @@ def js_string(value: str) -> str:
 
 def page_fetch_json(cdp: CDPClient, url: str, args: argparse.Namespace | None = None) -> Any:
     throttle_request(args)
+    # CDP evaluation can temporarily run in an about:blank context while the
+    # Thoughts page is still loading. Relative XHR paths are invalid there, so
+    # always give the browser a complete endpoint URL.
+    if url.startswith("/"):
+        url = f"https://thoughts.aliyun.com{url}"
     expression = f"""
 new Promise((resolve, reject) => {{
   const xhr = new XMLHttpRequest();

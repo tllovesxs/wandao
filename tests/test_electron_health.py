@@ -69,6 +69,14 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("pythonProcessStopping = true", stop_handler)
         self.assertIn("terminateProcessTree(pythonProcess)", stop_handler)
 
+    def test_stop_marker_is_written_before_forced_process_termination(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+
+        self.assertIn("let pythonStopFile", main_js)
+        self.assertIn("env.WANDAO_STOP_FILE = stopFile", main_js)
+        self.assertIn("fs.writeFileSync(pythonStopFile, 'stop', 'utf8')", main_js)
+        self.assertIn("}, 8000).unref()", main_js)
+
     def test_process_and_task_logs_are_bounded(self) -> None:
         main_js = read_text("wandao_electron/main.js")
         app_js = read_text("wandao_electron/renderer/app.js")

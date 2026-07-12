@@ -538,6 +538,15 @@ def normalize_resources(resources: list[dict[str, Any]] | list[str], images: lis
     return normalized
 
 
+def select_export_docs(toc: list[dict[str, Any]], selected_doc_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in toc
+        if item.get("type") == "DOC"
+        and (not selected_doc_ids or str(item.get("doc_id") or item.get("uuid")) in selected_doc_ids)
+    ]
+
+
 def localize_resources(
     markdown: str,
     resources: list[dict[str, Any]],
@@ -713,11 +722,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         book = data["book"]
         toc = data["toc"]
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
-        docs = [
-            item
-            for item in toc
-            if item.get("type") == "DOC" and (not selected_doc_ids or str(item.get("doc_id") or item["uuid"]) in selected_doc_ids)
-        ]
+        docs = select_export_docs(toc, selected_doc_ids)
         doc_paths, _ = build_doc_paths(toc, output, selected_doc_ids or None)
         existing = scan_exported_docs(output)
         for doc_id, old_path in existing.items():

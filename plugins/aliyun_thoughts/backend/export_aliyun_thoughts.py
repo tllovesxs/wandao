@@ -308,6 +308,14 @@ class Node:
     raw: dict[str, Any]
 
 
+def select_document_nodes(nodes: list[Node], selected_doc_ids: set[str] | None = None) -> list[Node]:
+    return [
+        node
+        for node in nodes
+        if node.type == "document" and (not selected_doc_ids or node.id in selected_doc_ids)
+    ]
+
+
 def http_json(url: str, timeout: int = 10) -> Any:
     with urllib.request.urlopen(url, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -1911,7 +1919,7 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                 emit(args, f"接口导出初始化失败，将回退浏览器渲染方式：{exc}")
 
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
-        docs = [node for node in nodes if node.type == "document" and (not selected_doc_ids or node.id in selected_doc_ids)]
+        docs = select_document_nodes(nodes, selected_doc_ids)
         ensure_document_parent_dirs(docs, planned_doc_paths, output)
         if checkpoint:
             checkpoint.start_task(

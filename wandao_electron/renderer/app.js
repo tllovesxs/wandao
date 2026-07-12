@@ -4627,11 +4627,8 @@ function selectedTocArgs(toolId) {
   if (toolId === 'zsxq-column') {
     args.push('--toc-mode', 'toc');
     selected.forEach((id) => args.push('--toc-key', id));
-  } else if (TOOLS[toolId]?.sourceKind || TOOLS[toolId]?.toc?.selectionArg) {
-    const selectionArg = TOOLS[toolId]?.toc?.selectionArg || '--doc-id';
-    selected.forEach((id) => args.push(selectionArg, id));
   } else {
-    selected.forEach((id) => args.push('--doc-id', id));
+    args.push(...window.WandaoTocTree.selectionArgs(TOOLS[toolId], selected));
   }
   return args;
 }

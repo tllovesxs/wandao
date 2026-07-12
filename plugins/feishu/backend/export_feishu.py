@@ -498,6 +498,26 @@ def load_drive_folder_tree(
     return value
 
 
+def annotate_selectable_toc(ordered: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    annotated: list[dict[str, Any]] = []
+    for item in ordered:
+        node = dict(item)
+        node["selectable"] = bool(node.get("url")) and node.get("obj_type") == 22
+        annotated.append(node)
+    return annotated
+
+
+def select_exportable_docs(
+    ordered: list[dict[str, Any]], selected_doc_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    docs = [item for item in ordered if item.get("url") and item.get("obj_type") == 22]
+    if not docs:
+        docs = [item for item in ordered if item.get("url")]
+    if selected_doc_ids:
+        docs = [item for item in docs if item.get("wiki_token") in selected_doc_ids]
+    return docs
+
+
 def order_tree(tree: dict[str, Any]) -> list[dict[str, Any]]:
     nodes: dict[str, dict[str, Any]] = tree.get("nodes") or {}
     child_map: dict[str, list[str]] = tree.get("childMap") or {}
@@ -525,7 +545,7 @@ def order_tree(tree: dict[str, Any]) -> list[dict[str, Any]]:
     for token, node in sorted(nodes.items(), key=lambda pair: int(pair[1].get("sort_id") or 0)):
         if token not in seen and node.get("title"):
             walk(token, 0)
-    return ordered
+    return annotate_selectable_toc(ordered)
 
 
 FEISHU_CONVERTER_JS = r"""
@@ -1071,11 +1091,7 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
             }
             ordered = [node]
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
-        docs = [item for item in ordered if item.get("url") and item.get("obj_type") == 22]
-        if not docs:
-            docs = [item for item in ordered if item.get("url")]
-        if selected_doc_ids:
-            docs = [item for item in docs if item.get("wiki_token") in selected_doc_ids]
+        docs = select_exportable_docs(ordered, selected_doc_ids)
         doc_paths = build_doc_paths(ordered, tree, output)
         existing = scan_exported_docs(output)
         for token, old_path in existing.items():

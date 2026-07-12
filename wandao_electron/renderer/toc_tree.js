@@ -60,5 +60,10 @@
     return { byId, children };
   }
 
-  return { normalizeStandardTocNodes, tocNodeMaps, valueAtPath };
+  function selectionArgs(provider, exportIds) {
+    const selectionArg = provider?.toc?.selectionArg || '--doc-id';
+    return (exportIds || []).flatMap((exportId) => [selectionArg, String(exportId)]);
+  }
+
+  return { normalizeStandardTocNodes, tocNodeMaps, selectionArgs, valueAtPath };
 });

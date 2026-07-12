@@ -40,6 +40,8 @@ from wandao_core.browser import (
     CDPClient,
     DEFAULT_PORT,
     ExportError,
+    ExportStopped,
+    check_stopped,
     chrome_debug_available,
     default_data_dir,
     default_state_path,
@@ -1086,6 +1088,7 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
     exported = 0
     skipped = 0
     failures: list[dict[str, Any]] = []
+    stopped = False
     rows: list[dict[str, Any]] = []
     stats = {
         "imageSuccess": 0,
@@ -1104,6 +1107,7 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
         md_or_file_path = local_paths[node.id]
         item_key = f"youdao:node:{node.id}"
         try:
+            check_stopped(args)
             if checkpoint and getattr(args, "resume", False) and not args.update_existing and checkpoint.item_status(item_key) == "completed":
                 row_file = md_or_file_path.with_suffix(".md") if node.is_note_like else md_or_file_path
                 skipped += 1
@@ -1141,12 +1145,14 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
                 doc={"id": node.id, "title": node.title, "index": index, "path": "/".join(node.path_parts)},
             )
             downloaded = client.download_file(node.id)
+            check_stopped(args)
             markdown, is_markdown = convert_note_to_markdown(node, downloaded)
             resource_failures_before = stats["imageFailureCount"] + stats["attachmentFailureCount"]
             if is_markdown:
                 md_path = md_or_file_path.with_suffix(".md")
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 markdown = localize_links(client, markdown, md_path, args, stats)
+                check_stopped(args)
                 md_path.write_text(clean_markdown(markdown, node.title), encoding="utf-8")
                 apply_remote_file_time(md_path, node)
                 row_file = md_path
@@ -1179,6 +1185,12 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
                 event="document.export.completed",
                 doc={"id": node.id, "title": node.title, "index": index, "path": str(row_file)},
             )
+        except ExportStopped:
+            stopped = True
+            if checkpoint:
+                checkpoint.fail_item(item_key, "stopped")
+            emit(f"有道云笔记导出已停止：{node.title}", event="task.stopped", level="warn")
+            break
         except Exception as exc:
             if checkpoint:
                 checkpoint.fail_item(item_key, str(exc))
@@ -1203,6 +1215,7 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
         "skippedDocs": skipped,
         "failureCount": len(failures),
         "failures": failures,
+        "stopped": stopped,
         "requestCount": client.request_count,
         **stats,
     }
@@ -1213,7 +1226,9 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if checkpoint:
         resource_failure_count = stats["imageFailureCount"] + stats["attachmentFailureCount"]
-        if failures or resource_failure_count:
+        if stopped:
+            checkpoint.fail_task("stopped", status="stopped")
+        elif failures or resource_failure_count:
             checkpoint.fail_task(
                 f"{len(failures)} 个文档失败，{resource_failure_count} 个资源失败",
                 status="failed",
@@ -1222,9 +1237,9 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
             checkpoint.complete_task(report)
         checkpoint.close()
     emit(
-        "有道云笔记导出完成" if not failures else f"有道云笔记导出完成，但有 {len(failures)} 个失败项",
-        event="task.completed",
-        level="success" if not failures and not (stats["imageFailureCount"] + stats["attachmentFailureCount"]) else "warn",
+        "有道云笔记导出已停止" if stopped else ("有道云笔记导出完成" if not failures else f"有道云笔记导出完成，但有 {len(failures)} 个失败项"),
+        event="task.stopped" if stopped else "task.completed",
+        level="warn" if stopped or failures or (stats["imageFailureCount"] + stats["attachmentFailureCount"]) else "success",
         reportFile=str(report_path),
         stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures), **stats},
     )
@@ -1288,7 +1303,7 @@ def run_gui() -> int:
     tk.Button(actions, text="退出", command=root.destroy).pack(side="right")
 
     root.mainloop()
-    return 0
+    return 130 if result.get("stopped") else 0
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

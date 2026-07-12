@@ -46,6 +46,5 @@ test('generic export treats the cooperative stop exit code as stopped, not a res
   const handler = appJs.slice(start, end);
 
   assert.match(handler, /if \(result\.code === 130\)/);
-  assert.match(handler, /已停止/);
-  assert.ok(handler.indexOf('result.code === 130') < handler.indexOf('导出失败'));
+  assert.match(handler, /result\.code === 130[\s\S]*已停止[\s\S]*finishProgress/);
 });

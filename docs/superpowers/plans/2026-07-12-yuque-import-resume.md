@@ -279,4 +279,3 @@ gh pr create --repo tllovesxs/wandao --base main --head lilith0-0lilith:codex/fi
 ```
 
 The PR links `Fixes #37`, calls out the shared stop-runtime overlap with #36, lists validation results, and requests manual validation with a non-sensitive test knowledge base.
-

@@ -38,3 +38,10 @@ test('the renderer loads and uses the resume helper before app startup', () => {
   assert.match(appJs, /WandaoTaskResume\?\.buildResumeArgs/);
   assert.match(appJs, /WandaoTaskResume\?\.shouldRetryFailureItems/);
 });
+
+test('Yuque import preserves checkpoint arguments and displays code 130 as stopped', () => {
+  const appJs = fs.readFileSync('wandao_electron/renderer/app.js', 'utf8');
+  assert.match(appJs, /yuque-import\.sqlite/);
+  assert.match(appJs, /result\.code === 130/);
+  assert.match(appJs, /已停止，已完成项目会在下次继续时跳过/);
+});

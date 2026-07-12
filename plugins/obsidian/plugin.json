@@ -1,0 +1,29 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "obsidian",
+  "name": "Obsidian",
+  "description": "扫描 Obsidian Vault 并批量归档为 Markdown，保留目录层级、图片和附件引用。",
+  "version": "0.1.0",
+  "publisher": "community",
+  "homepage": "https://obsidian.md/",
+  "license": "AGPL-3.0-only",
+  "core": {
+    "minVersion": "1.2.9"
+  },
+  "platforms": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "entrypoints": {
+    "providers": [
+      "providers/obsidian-export/provider.json"
+    ]
+  },
+  "permissions": [
+    "filesystem:read",
+    "filesystem:write",
+    "process"
+  ]
+}

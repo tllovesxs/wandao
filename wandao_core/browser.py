@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import base64
 import json
 import os
@@ -71,7 +72,10 @@ def js_string(value: str) -> str:
 
 def stop_requested(args: argparse.Namespace | None) -> bool:
     event = getattr(args, "stop_event", None) if args is not None else None
-    return bool(event and event.is_set())
+    if event and event.is_set():
+        return True
+    stop_file = os.environ.get("WANDAO_STOP_FILE", "").strip()
+    return bool(stop_file and os.path.exists(stop_file))
 
 
 def check_stopped(args: argparse.Namespace | None) -> None:

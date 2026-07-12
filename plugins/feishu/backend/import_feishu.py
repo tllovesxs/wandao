@@ -51,6 +51,7 @@ from wandao_core.browser import (
     stop_requested,
     wait_for_debug_port,
 )
+from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from export_feishu import (
     connect_wiki_browser,
     default_auth_path,
@@ -2091,6 +2092,16 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         raise ExportError("无法获取目标 Wiki 的 spaceId")
 
     docs = scan_markdown_source(Path(args.source_dir), limit=max(0, int(getattr(args, "max_import", 0) or 0))).get("docs") or []
+    checkpoint = open_checkpoint_from_args(args, "feishu-import", "import")
+    if checkpoint:
+        checkpoint.start_task({"source": str(Path(args.source_dir).resolve()), "target": args.wiki_url, "totalDocs": len(docs)})
+        for doc in docs:
+            relative_path = str(doc.get("relativePath") or "")
+            checkpoint.upsert_item(f"feishu-import:{relative_path}", title=relative_path, source_id=relative_path)
+        if args.retry_failed:
+            docs = [doc for doc in docs if checkpoint.item_status(f"feishu-import:{doc.get('relativePath')}") == "failed"]
+        elif args.resume:
+            docs = [doc for doc in docs if checkpoint.item_status(f"feishu-import:{doc.get('relativePath')}") != "completed"]
     root_parent_token = (get_config_value(args, "parent_wiki_token") or target_wiki_token).strip()
     imported_by_relative_path: dict[str, str] = {}
     folder_tokens: dict[str, str] = {}
@@ -2110,6 +2121,7 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         if stop_requested(args):
             raise ExportStopped("用户停止了飞书批量导入任务")
         relative_path = str(doc.get("relativePath") or "")
+        item_key = f"feishu-import:{relative_path}"
         emit(
             args,
             f"[{index}/{len(docs)}] 导入：{relative_path}",
@@ -2117,6 +2129,8 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
             doc={"path": relative_path, "index": index},
         )
         try:
+            if checkpoint:
+                checkpoint.start_item(item_key, "import")
             parent_token = ensure_folder_parent_token(
                 args,
                 relative_path=relative_path,
@@ -2145,6 +2159,8 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
                     "imageRepairError": result.get("imageRepairError") or "",
                 }
             )
+            if checkpoint:
+                checkpoint.complete_item(item_key, metadata={"wikiToken": wiki_token, "docToken": result.get("docToken") or ""})
             emit(
                 args,
                 f"文档导入完成：{relative_path}",
@@ -2156,7 +2172,13 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
                     "imageRepairError": result.get("imageRepairError") or "",
                 },
             )
+        except ExportStopped:
+            if checkpoint:
+                checkpoint.fail_item(item_key, "stopped")
+            raise
         except Exception as exc:
+            if checkpoint:
+                checkpoint.fail_item(item_key, str(exc))
             failures.append({"relativePath": relative_path, "error": str(exc)})
             emit(
                 args,
@@ -2198,6 +2220,8 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         level="success" if not failures else "warn",
         stats={"importedDocs": len(imported), "failureCount": len(failures), "folderPageCount": len(folder_pages)},
     )
+    if checkpoint:
+        checkpoint.close()
     return result
 
 
@@ -2706,6 +2730,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--poll-interval", type=float, default=2.0, help="Seconds between async task polls")
     parser.add_argument("--no-auto-open-permission", action="store_true", help="Do not automatically open Feishu permission request pages")
     parser.add_argument("--yes", action="store_true", help="Confirm write operation for API import commands")
+    add_checkpoint_args(parser)
     return parser.parse_args(argv)
 
 

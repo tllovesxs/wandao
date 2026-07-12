@@ -13,6 +13,7 @@ const { resolveLegacyTemplateConfig } = require('./provider_legacy_compat');
 let mainWindow;
 let pythonProcess = null;
 let pythonProcessStopping = false;
+let pythonStopFile = '';
 let shutdownConfirmed = false;
 const pluginRegistryCache = new Map();
 const MAX_PROCESS_OUTPUT_CHARS = 32 * 1024 * 1024;
@@ -1554,14 +1555,19 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     }
     const pythonArgs = [scriptPath, ...commandArgs];
 
+    const stopFile = path.join(app.getPath('userData'), 'runtime', 'stops', `${options.taskId || Date.now()}.stop`);
+    try { fs.unlinkSync(stopFile); } catch (_error) { /* no stale marker */ }
+    const env = executionEnv(options, pluginContext, options.commandSecretEnvironment || {});
+    env.WANDAO_STOP_FILE = stopFile;
     const proc = spawn(pythonCommand(), pythonArgs, {
       cwd: path.dirname(scriptPath),
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
-      env: executionEnv(options, pluginContext, options.commandSecretEnvironment || {})
+      env
     });
     pythonProcess = proc;
     pythonProcessStopping = false;
+    pythonStopFile = stopFile;
 
     if (options?.stdinText) {
       proc.stdin.write(String(options.stdinText));
@@ -1599,7 +1605,9 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
       if (pythonProcess === proc) {
         pythonProcess = null;
         pythonProcessStopping = false;
+        pythonStopFile = '';
       }
+      try { fs.unlinkSync(stopFile); } catch (_error) { /* marker is best-effort */ }
       if (code === 0) {
         const result = parseProcessResult(stdout);
         if (result.ok) {
@@ -1637,12 +1645,18 @@ ipcMain.handle('stop-python-process', async () => {
       return { success: true, stopping: true };
     }
     pythonProcessStopping = true;
-    const signaled = terminateProcessTree(pythonProcess);
-    if (!signaled) {
-      pythonProcessStopping = false;
-      return { success: false, error: '无法停止当前任务，请稍后重试。' };
+    if (pythonStopFile) {
+      fs.mkdirSync(path.dirname(pythonStopFile), { recursive: true });
+      fs.writeFileSync(pythonStopFile, 'stop', 'utf8');
+      const processAtRequest = pythonProcess;
+      setTimeout(() => {
+        if (pythonProcess === processAtRequest) terminateProcessTree(processAtRequest, { force: true });
+      }, 8000).unref();
+      return { success: true, stopping: true, cooperative: true };
     }
-    return { success: true, stopping: true };
+    const signaled = terminateProcessTree(pythonProcess);
+    if (!signaled) pythonProcessStopping = false;
+    return signaled ? { success: true, stopping: true } : { success: false, error: '无法停止当前任务，请稍后重试。' };
   }
   return { success: false, error: '没有正在运行的任务' };
 });

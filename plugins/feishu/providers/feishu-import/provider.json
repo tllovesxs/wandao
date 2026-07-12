@@ -12,7 +12,9 @@
   "status": "stable",
   "guide": "README.md",
   "tags": ["导入", "Wiki", "图片补全", "权限检测"],
-  "capabilities": { "export": false, "import": true, "guide": true, "login": true, "scanToc": false, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": false },
+  "capabilities": { "export": false, "import": true, "guide": true, "login": true, "scanToc": false, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
   "fields": [
     { "name": "wiki_url", "label": "目标飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["login", "probe", "plan", "import", "setupTarget"] },
     { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "actions": ["plan", "import"] },

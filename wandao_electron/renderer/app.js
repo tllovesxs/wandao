@@ -5128,6 +5128,7 @@ function buildFeishuImportArgs() {
   args.push('--request-jitter', document.getElementById('feishu-import-jitter').value || '0.4');
 
   if (document.getElementById('feishu-import-move-to-wiki').checked) args.push('--move-to-wiki');
+  if (sourceDir) args.push('--checkpoint-file', `${sourceDir.replace(/[\\/]+$/, '')}/.wandao/feishu-import.sqlite`, '--resume');
   if (document.getElementById('feishu-import-skip-rename').checked) args.push('--skip-rename');
   if (!document.getElementById('feishu-import-repair-images').checked) args.push('--skip-image-repair');
   if (document.getElementById('feishu-import-require-image-repair').checked) args.push('--require-image-repair');
@@ -5161,6 +5162,11 @@ async function runFeishuImportCommand(args, taskName) {
       log(JSON.stringify(result.data || {}, null, 2), 'success');
       finishProgress(true, `${taskName}完成`);
       return result.data || {};
+    }
+    if (result.code === 130) {
+      log(`${taskName}已停止，已完成项目会在下次继续时跳过。`, 'warn');
+      finishProgress(false, `${taskName}已停止`);
+      return null;
     }
     log(`失败：${result.error}`, 'error');
     finishProgress(false, `${taskName}失败，请查看运行日志`);

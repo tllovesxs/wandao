@@ -12,6 +12,13 @@ def read_text(rel_path: str) -> str:
 
 
 class ElectronHealthTests(unittest.TestCase):
+
+    def test_windows_stop_requests_cooperative_shutdown_before_forced_kill(self) -> None:
+        source = (REPO_ROOT / "wandao_electron" / "main.js").read_text(encoding="utf-8")
+        stop_handler = source[source.index("ipcMain.handle('stop-python-process'"):]
+        self.assertIn("WANDAO_STOP_FILE", source)
+        self.assertIn("writeFileSync", stop_handler)
+        self.assertLess(stop_handler.index("writeFileSync"), stop_handler.index("terminateProcessTree"))
     def test_browser_window_keeps_safe_renderer_defaults(self) -> None:
         main_js = read_text("wandao_electron/main.js")
         index_html = read_text("wandao_electron/renderer/index.html")

@@ -231,6 +231,22 @@ def load_auth_state(cdp: CDPClient, auth_file: Path) -> int:
     return len(cookies)
 
 
+class ResourceUnauthorizedError(ExportError):
+    """A resource request needs a one-time refresh from the active browser session."""
+
+
+def current_session_cookies(cdp: CDPClient, book_url: str) -> list[dict[str, Any]]:
+    cdp.send("Network.enable")
+    cookies = cdp.send("Network.getAllCookies", timeout=20).get("result", {}).get("cookies", [])
+    return [cookie for cookie in cookies if is_yuque_cookie(cookie, book_url)]
+
+
+def short_api_message(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"(?i)\b(cookie|token|authorization|session|csrf)[^\s,;]*", r"\1=[redacted]", text)
+    return text[:180]
+
+
 def wait_for_app_data(cdp: CDPClient, timeout: int, args: argparse.Namespace | None = None) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -383,16 +399,26 @@ def fetch_doc_markdown(
     title = doc.get("title") or "未命名"
     expression = (
         "(async () => {"
-        f"const j = await fetch('/api/docs/{slug}?include_contributors=true&include_like=true&include_hits=true"
-        f"&merge_dynamic_data=false&book_id={book_id}').then(r => r.json());"
+        f"const r = await fetch('/api/docs/{slug}?include_contributors=true&include_like=true&include_hits=true"
+        f"&merge_dynamic_data=false&book_id={book_id}');"
+        "let j = {}; try { j = await r.json(); } catch (_) {}"
+        "if (!r.ok || !j || !j.data) return { ok: false, status: r.status, "
+        "code: j && (j.code || j.error_code || (j.error && j.error.code)), "
+        "message: j && (j.message || j.msg || (j.error && j.error.message)) };"
         f"const conv = ({YUQUE_CONVERTER_JS})(j.data.content || '', {js_string(title)});"
-        "return { data: { id: j.data.id, title: j.data.title, slug: j.data.slug, "
+        "return { ok: true, status: r.status, data: { id: j.data.id, title: j.data.title, slug: j.data.slug, "
         "content_updated_at: j.data.content_updated_at, word_count: j.data.word_count }, ...conv };"
         "})()"
     )
     value = cdp.evaluate(expression, timeout=120)
-    if not isinstance(value, dict):
-        raise ExportError(f"Unexpected Yuque doc response: {title}")
+    if not isinstance(value, dict) or not value.get("ok") or not isinstance(value.get("data"), dict):
+        status = value.get("status") if isinstance(value, dict) else "unknown"
+        code = value.get("code") if isinstance(value, dict) else "unknown"
+        message = short_api_message(value.get("message") if isinstance(value, dict) else "")
+        detail = f"语雀正文读取失败：{title}；HTTP {status}；code={code or 'unknown'}"
+        if message:
+            detail += f"；{message}"
+        raise ExportError(detail)
     return value
 
 
@@ -501,7 +527,7 @@ def download_resource(
             filename = safe_resource_filename(url, content_type, title, response.headers.get("Content-Disposition"))
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
-            raise ExportError("语雀登录已失效，请重新点击“登录并保存凭证”后重试。") from exc
+            raise ResourceUnauthorizedError("resource 401") from exc
         raise
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / filename
@@ -548,6 +574,7 @@ def localize_resources(
     download_attachments: bool,
     referer: str | None = None,
     args: argparse.Namespace | None = None,
+    refresh_cookies: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> tuple[str, dict[str, int], list[dict[str, str]]]:
     success = {"image": 0, "attachment": 0}
     failures: list[dict[str, str]] = []
@@ -560,6 +587,23 @@ def localize_resources(
         target_dir = md_path.parent / ("attachments" if kind == "attachment" else "assets")
         try:
             target = download_resource(url, target_dir, timeout, cookies, resource.get("title") or kind, referer)
+        except ResourceUnauthorizedError:
+            try:
+                refreshed = refresh_cookies() if refresh_cookies else []
+                if not refreshed:
+                    raise ResourceUnauthorizedError("resource 401")
+                target = download_resource(url, target_dir, timeout, refreshed, resource.get("title") or kind, referer)
+            except ResourceUnauthorizedError:
+                failures.append({"url": url, "kind": kind, "title": resource.get("title") or "", "error": "资源 401，刷新会话后重试仍失败"})
+                if not keep_remote:
+                    markdown = markdown.replace(url, "")
+                continue
+            except Exception as exc:
+                failures.append({"url": url, "kind": kind, "title": resource.get("title") or "", "error": str(exc)})
+                if not keep_remote:
+                    markdown = markdown.replace(url, "")
+                continue
+        try:
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
             success[kind] += 1
         except Exception as exc:
@@ -571,6 +615,15 @@ def localize_resources(
 
 def node_has_children(toc: list[dict[str, Any]], uuid: str) -> bool:
     return any(item.get("parent_uuid") == uuid for item in toc)
+
+
+def selected_toc_docs(toc: list[dict[str, Any]], selected_doc_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    selected = selected_doc_ids or set()
+    return [
+        item
+        for item in toc
+        if item.get("type") == "DOC" and (not selected or str(item.get("doc_id") or item.get("uuid") or "") in selected)
+    ]
 
 
 def build_doc_paths(
@@ -713,11 +766,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         book = data["book"]
         toc = data["toc"]
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
-        docs = [
-            item
-            for item in toc
-            if item.get("type") == "DOC" and (not selected_doc_ids or str(item.get("doc_id") or item["uuid"]) in selected_doc_ids)
-        ]
+        docs = selected_toc_docs(toc, selected_doc_ids)
         doc_paths, _ = build_doc_paths(toc, output, selected_doc_ids or None)
         existing = scan_exported_docs(output)
         for doc_id, old_path in existing.items():
@@ -755,6 +804,12 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         failures: list[dict[str, str]] = []
         resource_failures: list[dict[str, Any]] = []
         stopped = False
+
+        def refresh_resource_cookies() -> list[dict[str, Any]]:
+            nonlocal auth_cookies
+            auth_cookies = current_session_cookies(cdp, book_url)
+            return auth_cookies
+
         emit(
             args,
             f"开始导出语雀知识库：共 {len(docs)} 篇。",
@@ -807,6 +862,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                     args.download_attachments,
                     source_url,
                     args,
+                    refresh_cookies=refresh_resource_cookies,
                 )
                 image_success += resource_counts.get("image", 0)
                 attachment_success += resource_counts.get("attachment", 0)

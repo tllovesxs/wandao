@@ -359,7 +359,7 @@ async (startToken) => {
       obj_type: node.obj_type,
       has_child: !!node.has_child,
       sort_id: node.sort_id || 0,
-      url: node.url || (location.origin + "/wiki/" + token),
+      url: node.url || "",
       wiki_node_type: node.wiki_node_type || 0,
     };
   }
@@ -514,6 +514,7 @@ def order_tree(tree: dict[str, Any]) -> list[dict[str, Any]]:
         seen.add(token)
         item = dict(node)
         item["level"] = level
+        item["selectable"] = bool(item.get("url")) and int(item.get("obj_type") or 0) != 0
         ordered.append(item)
         children = child_map.get(token) or []
         children = sorted(children, key=lambda child: int((nodes.get(child) or {}).get("sort_id") or 0))

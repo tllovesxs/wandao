@@ -31,6 +31,14 @@ test('a real failed task still retries only its failed items when supported', ()
   assert.equal(shouldRetryFailureItems(task, '--retry-failed', 2), true);
 });
 
+test('resume and retry retain the originally selected document arguments', () => {
+  const stopped = { status: 'stopped', args: ['--resume', '--doc-id', 'doc-a', '--doc-id', 'doc-b'] };
+  const failed = { status: 'failed', args: ['--resume', '--doc-id', 'doc-a', '--doc-id', 'doc-b'] };
+
+  assert.deepEqual(buildResumeArgs(stopped, '--retry-failed', 1), stopped.args);
+  assert.deepEqual(buildResumeArgs(failed, '--retry-failed', 1), [...failed.args, '--retry-failed']);
+});
+
 test('the renderer loads and uses the resume helper before app startup', () => {
   const indexHtml = fs.readFileSync('wandao_electron/renderer/index.html', 'utf8');
   const appJs = fs.readFileSync('wandao_electron/renderer/app.js', 'utf8');

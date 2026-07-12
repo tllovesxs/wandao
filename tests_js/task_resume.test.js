@@ -38,3 +38,14 @@ test('the renderer loads and uses the resume helper before app startup', () => {
   assert.match(appJs, /WandaoTaskResume\?\.buildResumeArgs/);
   assert.match(appJs, /WandaoTaskResume\?\.shouldRetryFailureItems/);
 });
+
+test('generic export treats the cooperative stop exit code as stopped, not a resource failure', () => {
+  const appJs = fs.readFileSync('wandao_electron/renderer/app.js', 'utf8');
+  const start = appJs.indexOf('async function handleExport');
+  const end = appJs.indexOf('// Handle stop', start);
+  const handler = appJs.slice(start, end);
+
+  assert.match(handler, /if \(result\.code === 130\)/);
+  assert.match(handler, /已停止/);
+  assert.ok(handler.indexOf('result.code === 130') < handler.indexOf('导出失败'));
+});

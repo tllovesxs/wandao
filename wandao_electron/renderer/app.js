@@ -4711,6 +4711,9 @@ async function handleExport(toolId) {
         log(JSON.stringify(result.data, null, 2), 'success');
       }
       finishProgress(true, `${actionName}完成`);
+    } else if (result.code === 130) {
+      log(`${actionName}已停止，已完成项目会在下次继续时跳过。`, 'warn');
+      finishProgress(false, `${actionName}已停止`);
     } else {
       log(`${actionName}失败：${result.error}`, 'error');
       finishProgress(false, `${actionName}失败，请查看运行日志`);

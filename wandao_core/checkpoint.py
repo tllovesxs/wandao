@@ -422,6 +422,9 @@ class WandaoCheckpoint:
             )
         }
 
+    def completed_items(self) -> list[dict[str, Any]]:
+        return self._items_by_status({"completed"})
+
     def pending_items(self) -> list[dict[str, Any]]:
         return self._items_by_status({"pending", "failed", "interrupted"})
 

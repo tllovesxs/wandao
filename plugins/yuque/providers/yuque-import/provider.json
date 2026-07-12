@@ -12,6 +12,7 @@
   "status": "stable",
   "templateId": "template-yuque-import",
   "capabilities": { "export": false, "import": true, "guide": false, "login": true, "scanToc": false, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
   "retryFailures": { "arg": "--retry-failures", "label": "只重试失败项" },
   "fields": [
     { "name": "target_book_url", "label": "目标语雀知识库 URL", "type": "text", "arg": "--target-book-url", "required": true, "actions": ["login", "saveConfig", "plan", "importOne", "import"] },

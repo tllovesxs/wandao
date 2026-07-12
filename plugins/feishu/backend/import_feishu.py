@@ -66,6 +66,7 @@ from export_feishu import (
 )
 from wandao_core.report import finalize_report
 from wandao_core.credentials import write_private_json
+from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_args
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -2009,6 +2010,7 @@ def ensure_folder_parent_token(
     folder_tokens: dict[str, str],
     root_parent_token: str,
     folder_pages: list[dict[str, str]],
+    checkpoint: Any | None = None,
 ) -> str:
     parent = Path(relative_path).parent
     if parent.as_posix() in ("", "."):
@@ -2027,6 +2029,7 @@ def ensure_folder_parent_token(
         if candidate_md in imported_by_relative_path:
             current_parent_token = imported_by_relative_path[candidate_md]
             folder_tokens[folder_key] = current_parent_token
+            save_folder_tokens(checkpoint, folder_tokens)
             continue
 
         if folder_key in folder_tokens:
@@ -2050,6 +2053,7 @@ def ensure_folder_parent_token(
             if not wiki_token:
                 raise ExportError(f"目录页创建成功但没有返回 Wiki token：{folder_key}")
             folder_tokens[folder_key] = wiki_token
+            save_folder_tokens(checkpoint, folder_tokens)
             current_parent_token = wiki_token
             folder_pages.append(
                 {
@@ -2076,6 +2080,57 @@ def find_import_parent_token(relative_path: str, imported_by_relative_path: dict
     return root_parent_token
 
 
+def checkpoint_item_key(doc: dict[str, Any]) -> str:
+    return f"feishu-import:{doc['relativePath']}"
+
+
+def select_checkpoint_docs(
+    docs: list[dict[str, Any]],
+    checkpoint: Any,
+    *,
+    resume: bool,
+    retry_failed: bool,
+) -> list[dict[str, Any]]:
+    if not checkpoint:
+        return docs
+    if retry_failed:
+        return [doc for doc in docs if checkpoint.item_status(checkpoint_item_key(doc)) == "failed"]
+    if resume:
+        return [doc for doc in docs if checkpoint.item_status(checkpoint_item_key(doc)) != "completed"]
+    return docs
+
+
+def restore_completed_import_tokens(checkpoint: Any) -> dict[str, str]:
+    restored: dict[str, str] = {}
+    for item in checkpoint.completed_items():
+        item_key = str(item.get("item_key") or "")
+        if not item_key.startswith("feishu-import:"):
+            continue
+        metadata = json.loads(str(item.get("metadata_json") or "{}"))
+        wiki_token = str(metadata.get("wikiToken") or "")
+        if wiki_token:
+            restored[item_key.removeprefix("feishu-import:")] = wiki_token
+    return restored
+
+
+def save_folder_tokens(checkpoint: Any | None, folder_tokens: dict[str, str]) -> None:
+    if checkpoint:
+        checkpoint.save_cursor("folder_tokens", folder_tokens)
+
+
+def restore_folder_tokens(checkpoint: Any | None) -> dict[str, str]:
+    if not checkpoint:
+        return {}
+    saved_tokens = checkpoint.load_cursor("folder_tokens", {})
+    if not isinstance(saved_tokens, dict):
+        return {}
+    return {
+        str(folder_key): str(wiki_token)
+        for folder_key, wiki_token in saved_tokens.items()
+        if str(folder_key) and str(wiki_token)
+    }
+
+
 def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
     if not getattr(args, "yes", False):
         raise ExportError("这是写入操作。命令行执行时必须增加 --yes 明确确认。")
@@ -2091,9 +2146,24 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         raise ExportError("无法获取目标 Wiki 的 spaceId")
 
     docs = scan_markdown_source(Path(args.source_dir), limit=max(0, int(getattr(args, "max_import", 0) or 0))).get("docs") or []
-    root_parent_token = (get_config_value(args, "parent_wiki_token") or target_wiki_token).strip()
     imported_by_relative_path: dict[str, str] = {}
     folder_tokens: dict[str, str] = {}
+    checkpoint = open_checkpoint_from_args(args, "feishu-import", "import")
+    if checkpoint:
+        checkpoint.start_task({"source": str(Path(args.source_dir).resolve()), "target": args.wiki_url, "totalDocs": len(docs)})
+        for doc in docs:
+            relative_path = str(doc.get("relativePath") or "")
+            checkpoint.upsert_item(checkpoint_item_key(doc), title=relative_path, source_id=relative_path)
+        if getattr(args, "resume", False) or getattr(args, "retry_failed", False):
+            imported_by_relative_path = restore_completed_import_tokens(checkpoint)
+            folder_tokens = restore_folder_tokens(checkpoint)
+        docs = select_checkpoint_docs(
+            docs,
+            checkpoint,
+            resume=bool(getattr(args, "resume", False)),
+            retry_failed=bool(getattr(args, "retry_failed", False)),
+        )
+    root_parent_token = (get_config_value(args, "parent_wiki_token") or target_wiki_token).strip()
     folder_pages: list[dict[str, str]] = []
     imported: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
@@ -2107,9 +2177,14 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         sourceDir=str(Path(args.source_dir).resolve()),
     )
     for index, doc in enumerate(docs, start=1):
-        if stop_requested(args):
-            raise ExportStopped("用户停止了飞书批量导入任务")
         relative_path = str(doc.get("relativePath") or "")
+        item_key = checkpoint_item_key(doc)
+        if stop_requested(args):
+            if checkpoint:
+                checkpoint.fail_item(item_key, "stopped")
+                checkpoint.fail_task("stopped", status="stopped")
+                checkpoint.close()
+            raise ExportStopped("用户停止了飞书批量导入任务")
         emit(
             args,
             f"[{index}/{len(docs)}] 导入：{relative_path}",
@@ -2117,6 +2192,8 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
             doc={"path": relative_path, "index": index},
         )
         try:
+            if checkpoint:
+                checkpoint.start_item(item_key, "import")
             parent_token = ensure_folder_parent_token(
                 args,
                 relative_path=relative_path,
@@ -2124,6 +2201,7 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
                 folder_tokens=folder_tokens,
                 root_parent_token=root_parent_token,
                 folder_pages=folder_pages,
+                checkpoint=checkpoint,
             )
             child_args = argparse.Namespace(**vars(args))
             child_args.source_file = str(doc["path"])
@@ -2145,6 +2223,8 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
                     "imageRepairError": result.get("imageRepairError") or "",
                 }
             )
+            if checkpoint:
+                checkpoint.complete_item(item_key, metadata={"wikiToken": wiki_token, "docToken": result.get("docToken") or ""})
             emit(
                 args,
                 f"文档导入完成：{relative_path}",
@@ -2156,7 +2236,15 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
                     "imageRepairError": result.get("imageRepairError") or "",
                 },
             )
+        except ExportStopped:
+            if checkpoint:
+                checkpoint.fail_item(item_key, "stopped")
+                checkpoint.fail_task("stopped", status="stopped")
+                checkpoint.close()
+            raise
         except Exception as exc:
+            if checkpoint:
+                checkpoint.fail_item(item_key, str(exc))
             failures.append({"relativePath": relative_path, "error": str(exc)})
             emit(
                 args,
@@ -2191,6 +2279,9 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         "failures": failures,
     }
     result = finalize_report(result, provider="feishu-import-openapi-batch", mode="import", output=Path(args.source_dir).resolve())
+    if checkpoint:
+        checkpoint.complete_task(result)
+        checkpoint.close()
     emit(
         args,
         "飞书 Markdown 批量导入完成",
@@ -2199,6 +2290,36 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         stats={"importedDocs": len(imported), "failureCount": len(failures), "folderPageCount": len(folder_pages)},
     )
     return result
+
+
+def import_one_with_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
+    checkpoint = open_checkpoint_from_args(args, "feishu-import", "import")
+    source_file = str(Path(args.source_file).resolve())
+    item_key = f"feishu-import:{source_file}"
+    if not checkpoint:
+        return import_one_with_openapi(args)
+
+    checkpoint.start_task({"source": source_file, "target": args.wiki_url, "totalDocs": 1})
+    checkpoint.upsert_item(item_key, title=Path(source_file).name, source_id=source_file)
+    checkpoint.start_item(item_key, "import")
+    try:
+        result = import_one_with_openapi(args)
+        checkpoint.complete_item(
+            item_key,
+            metadata={"wikiToken": wiki_token_from_move_result(result), "docToken": result.get("docToken") or ""},
+        )
+        checkpoint.complete_task(result)
+        return result
+    except ExportStopped:
+        checkpoint.fail_item(item_key, "stopped")
+        checkpoint.fail_task("stopped", status="stopped")
+        raise
+    except Exception as exc:
+        checkpoint.fail_item(item_key, str(exc))
+        checkpoint.fail_task(str(exc))
+        raise
+    finally:
+        checkpoint.close()
 
 
 def login_and_save_auth(args: argparse.Namespace) -> dict[str, Any]:
@@ -2706,6 +2827,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--poll-interval", type=float, default=2.0, help="Seconds between async task polls")
     parser.add_argument("--no-auto-open-permission", action="store_true", help="Do not automatically open Feishu permission request pages")
     parser.add_argument("--yes", action="store_true", help="Confirm write operation for API import commands")
+    add_checkpoint_args(parser)
     return parser.parse_args(argv)
 
 
@@ -2720,7 +2842,7 @@ def main(argv: list[str]) -> int:
         elif args.save_config:
             result = save_import_config_from_args(args)
         elif args.api_import_one:
-            result = import_one_with_openapi(args)
+            result = import_one_with_checkpoint(args)
         elif args.api_import_all:
             result = import_all_with_openapi(args)
         elif args.setup_openapi_permissions:

@@ -55,6 +55,7 @@ from export_yuque import (
 )
 from wandao_core.report import finalize_report
 from wandao_core.credentials import write_private_json
+from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_args
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -954,6 +955,26 @@ def import_one_doc(
     )
 
 
+def checkpoint_item_key(doc: dict[str, Any]) -> str:
+    return f"yuque-import:{doc['relativePath']}"
+
+
+def select_checkpoint_docs(
+    docs: list[dict[str, Any]],
+    checkpoint: Any,
+    *,
+    resume: bool,
+    retry_failed: bool,
+) -> list[dict[str, Any]]:
+    if not checkpoint:
+        return docs
+    if retry_failed:
+        return [doc for doc in docs if checkpoint.item_status(checkpoint_item_key(doc)) == "failed"]
+    if resume:
+        return [doc for doc in docs if checkpoint.item_status(checkpoint_item_key(doc)) != "completed"]
+    return docs
+
+
 def import_docs(args: argparse.Namespace) -> dict[str, Any]:
     configure_runtime(args)
     config = config_args(args)
@@ -967,7 +988,21 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
     remote_image_policy = str(getattr(args, "remote_image_policy", "link") or "link").strip().lower()
     if remote_image_policy not in REMOTE_IMAGE_POLICIES:
         raise ExportError(f"未知远程图片处理策略：{remote_image_policy}")
-    if getattr(args, "retry_failures", False):
+    checkpoint = None
+    if not (args.plan or args.dry_run):
+        checkpoint = open_checkpoint_from_args(args, "yuque-import", "import")
+    if checkpoint:
+        checkpoint.start_task({"source": str(source_dir), "target": book_url, "totalDocs": len(docs)})
+        for doc in docs:
+            relative_path = str(doc.get("relativePath") or "")
+            checkpoint.upsert_item(checkpoint_item_key(doc), title=relative_path, source_id=relative_path)
+        docs = select_checkpoint_docs(
+            docs,
+            checkpoint,
+            resume=bool(getattr(args, "resume", False)),
+            retry_failed=bool(getattr(args, "retry_failed", False)),
+        )
+    elif getattr(args, "retry_failed", False):
         if not report_path.exists():
             raise ExportError(f"没有找到上次导入报告，无法重试失败项：{report_path}")
         previous = json.loads(report_path.read_text(encoding="utf-8"))
@@ -1063,7 +1098,7 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
             "resourceWarnings": resource_warning_items,
             "remoteImages": remote_image_items,
             "reportFile": str(plan_report_path),
-            "retryFailures": bool(getattr(args, "retry_failures", False)),
+            "retryFailures": bool(getattr(args, "retry_failed", False)),
             "uploadConcurrency": UPLOAD_CONCURRENCY,
             "sampleDocs": [{k: doc[k] for k in ("relativePath", "title", "slug", "level", "size")} for doc in docs[:10]],
             "capabilities": ["create_update_markdown", "preserve_directory_tree", "upload_local_images", "upload_local_attachments"],
@@ -1104,7 +1139,7 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
             "abortReason": abort_reason,
             "failures": failures,
             "reportFile": str(report_path),
-            "retryFailures": bool(getattr(args, "retry_failures", False)),
+            "retryFailures": bool(getattr(args, "retry_failed", False)),
             "missingLocalResourceCount": missing_resource_count,
             "remoteImageCount": remote_image_count,
             "remoteImagePolicy": remote_image_policy,
@@ -1129,12 +1164,17 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
 
     for index, doc in enumerate(docs, start=1):
         processed = index
+        item_key = checkpoint_item_key(doc)
         if stop_requested(args):
             stopped = True
+            if checkpoint:
+                checkpoint.fail_item(item_key, "stopped")
             emit(args, "收到停止请求，正在结束。")
             break
-        check_stopped(args)
         try:
+            check_stopped(args)
+            if checkpoint:
+                checkpoint.start_item(item_key, "import")
             emit(
                 args,
                 f"开始导入文档：{doc.get('relativePath')}",
@@ -1153,6 +1193,12 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
                 args.skip_existing,
             )
             imported_docs.append({**doc, **result})
+            if checkpoint:
+                checkpoint.complete_item(
+                    item_key,
+                    target_id=str(result.get("id") or ""),
+                    metadata={"action": result.get("action") or ""},
+                )
             if result["action"] == "created":
                 created += 1
             elif result["action"] == "updated":
@@ -1171,10 +1217,14 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
             )
         except ExportStopped:
             stopped = True
+            if checkpoint:
+                checkpoint.fail_item(item_key, "stopped")
             emit(args, "收到停止请求，当前文档未完成，正在结束。")
             break
         except Exception as exc:
             error_text = compact_error(exc, 1200)
+            if checkpoint:
+                checkpoint.fail_item(item_key, error_text)
             fatal_message = fatal_yuque_error_message(error_text)
             failure: dict[str, str] = {"relativePath": doc["relativePath"], "title": doc.get("title", ""), "error": error_text}
             if fatal_message:
@@ -1237,6 +1287,14 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
 
     report = build_report()
     write_json_report(report_path, report)
+    if checkpoint:
+        if stopped:
+            checkpoint.fail_task("stopped", status="stopped")
+        else:
+            checkpoint.complete_task(report)
+        report["checkpoint"] = checkpoint.stats()
+        write_json_report(report_path, report)
+        checkpoint.close()
     emit(
         args,
         "语雀 Markdown 导入完成" if not stopped else "语雀 Markdown 导入已停止",
@@ -1484,7 +1542,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--yes", action="store_true", help="Confirm write operations")
     parser.add_argument("--update-existing", action="store_true", default=True, help="Update documents with the same generated slug")
     parser.add_argument("--skip-existing", action="store_true", help="Skip existing documents")
-    parser.add_argument("--retry-failures", action="store_true", help="Only retry documents listed in the last import report failures")
+    add_checkpoint_args(parser, retry_flag="--retry-failures")
     parser.add_argument("--request-timeout", type=int, default=DEFAULT_REQUEST_TIMEOUT, help="Yuque API request timeout seconds")
     parser.add_argument("--upload-timeout", type=int, default=DEFAULT_UPLOAD_TIMEOUT, help="Yuque resource upload timeout seconds")
     parser.add_argument("--retry-attempts", type=int, default=DEFAULT_RETRY_ATTEMPTS, help="Retry attempts for timeout/429/5xx requests")
@@ -1520,7 +1578,7 @@ def main(argv: list[str]) -> int:
             if args.api_import_one and not args.doc_path and not args.max_import:
                 args.max_import = 1
             report = import_docs(args)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExportStopped):
         emit(args, "语雀导入任务已停止。", event="task.stopped", level="warn")
         return 130
     except Exception as exc:
@@ -1563,7 +1621,7 @@ def main(argv: list[str]) -> int:
         "authFile",
     )
     print(json.dumps({key: report[key] for key in keys if key in report}, ensure_ascii=False, indent=2))
-    return 0
+    return 130 if report.get("stopped") else 0
 
 
 if __name__ == "__main__":

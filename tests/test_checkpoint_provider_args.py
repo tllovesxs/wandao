@@ -41,6 +41,24 @@ class CheckpointProviderArgsTests(unittest.TestCase):
                 self.assertTrue(args.resume)
                 self.assertTrue(args.retry_failed)
 
+    def test_yuque_import_accepts_checkpoint_args(self) -> None:
+        module = importlib.import_module("import_yuque")
+        args = module.parse_args(
+            [
+                "--target-book-url", "https://www.yuque.com/demo/book",
+                "--source-dir", "source",
+                "--api-import-all", "--yes",
+                "--checkpoint-file", "source/.wandao/yuque-import.sqlite",
+                "--checkpoint-task-id", "task-1",
+                "--resume", "--retry-failures",
+            ]
+        )
+
+        self.assertEqual(args.checkpoint_file, "source/.wandao/yuque-import.sqlite")
+        self.assertEqual(args.checkpoint_task_id, "task-1")
+        self.assertTrue(args.resume)
+        self.assertTrue(args.retry_failed)
+
     def test_directory_export_providers_accept_doc_id_file(self) -> None:
         cases = [
             ("export_yuque", ["--book-url", "https://www.yuque.com/demo/book", "--output", "out"], "selected_doc_ids"),

@@ -54,8 +54,8 @@ Set Yuque to `toc`, `uuid`, `doc_id`, `parent_uuid`, `type`, and `["DOC"]`. Set 
 
 - [ ] **Step 4: Run provider validation**
 
-Run: `python scripts/validate_providers.py`
-Expected: `Plugin validation passed`.
+Run: `python scripts/quality_check.py`
+Expected: provider validation and its focused suite pass.
 
 ### Task 2: Test Normalization And CLI Selection End To End
 
@@ -180,7 +180,7 @@ Expected: all stop/resume tests pass.
 
 - [ ] **Step 1: Run required checks**
 
-Run: `node --test tests_js/toc_tree.test.js`, `python -m unittest`, `python scripts/quality_check.py`, `git diff --check`, and `python scripts/validate_providers.py`.
+Run: `node --test tests_js/toc_tree.test.js`, `python -m unittest`, `python scripts/quality_check.py`, and `git diff --check`.
 Expected: all commands pass.
 
 - [ ] **Step 2: Review the diff for credentials and scope**

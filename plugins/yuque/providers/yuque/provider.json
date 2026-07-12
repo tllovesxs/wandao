@@ -15,7 +15,7 @@
   "capabilities": { "export": true, "import": false, "guide": false, "login": true, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
   "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
-  "toc": { "itemsPath": "ordered", "idKey": "uuid", "exportIdKey": "uuid", "titleKey": "title", "parentIdKey": "parent_uuid", "selectionArg": "--doc-id", "selectableWhenExportId": true },
+  "toc": { "itemsPath": "toc", "idKey": "uuid", "exportIdKey": "doc_id", "titleKey": "title", "parentIdKey": "parent_uuid", "typeKey": "type", "selectableTypes": ["DOC"], "selectionArg": "--doc-id", "selectableWhenExportId": true },
   "fields": [
     { "name": "book_url", "label": "语雀知识库 URL", "type": "text", "arg": "--book-url", "required": true, "actions": ["login", "scan", "export"] },
     { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },

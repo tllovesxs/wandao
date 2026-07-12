@@ -135,6 +135,39 @@ class ProviderValidationTests(unittest.TestCase):
 
             self.assertEqual([issue.message for issue in issues], [])
 
+    def test_rejects_invalid_toc_type_selection_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider_root = root / "providers" / "bad-toc"
+            provider_root.mkdir(parents=True)
+            (provider_root / "README.md").write_text("# Bad TOC\n", encoding="utf-8")
+            (provider_root / "actions.py").write_text("print('{}')\n", encoding="utf-8")
+            write_json(
+                provider_root / "provider.json",
+                {
+                    "schemaVersion": 1,
+                    "id": "bad-toc",
+                    "name": "Bad TOC",
+                    "title": "Bad TOC Provider",
+                    "description": "Bad toc provider",
+                    "type": "hybrid",
+                    "group": "export",
+                    "trustLevel": "community",
+                    "status": "experimental",
+                    "guide": "README.md",
+                    "capabilities": {"export": True, "guide": True, "scanToc": False},
+                    "toc": {"typeKey": False, "selectableTypes": "DOC"},
+                    "actions": [{"id": "export", "label": "导出", "script": "actions.py", "args": []}],
+                },
+            )
+
+            issues = validate_provider_manifest(provider_root / "provider.json", root)
+
+            self.assertEqual(
+                sorted(issue.message for issue in issues),
+                ["toc.selectableTypes 必须是字符串或数字数组", "toc.typeKey 必须是字符串"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

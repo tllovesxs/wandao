@@ -152,11 +152,16 @@ def validate_toc(data: dict[str, Any], path: Path) -> list[ValidationIssue]:
     if not isinstance(toc, dict):
         return [ValidationIssue(path, "toc 必须是对象")]
     issues = []
-    for key in ("itemsPath", "idKey", "titleKey"):
+    for key in ("itemsPath", "idKey", "titleKey", "typeKey"):
         if key in toc and not isinstance(toc[key], str):
             issues.append(ValidationIssue(path, f"toc.{key} 必须是字符串"))
     if "selectionArg" in toc and not isinstance(toc["selectionArg"], str):
         issues.append(ValidationIssue(path, "toc.selectionArg 必须是字符串"))
+    if "selectableTypes" in toc and (
+        not isinstance(toc["selectableTypes"], list)
+        or any(not isinstance(value, (str, int, float)) for value in toc["selectableTypes"])
+    ):
+        issues.append(ValidationIssue(path, "toc.selectableTypes 必须是字符串或数字数组"))
     return issues
 
 

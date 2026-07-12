@@ -15,7 +15,7 @@
   "capabilities": { "export": true, "import": false, "guide": false, "login": true, "scanToc": true, "images": true, "attachments": false, "tree": true, "batch": true, "retryFailures": true },
   "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
-  "toc": { "itemsPath": "ordered", "idKey": "id", "exportIdKey": "id", "titleKey": "title", "parentIdKey": "parentId", "selectionArg": "--doc-id", "selectableWhenExportId": true },
+  "toc": { "itemsPath": "nodes", "idKey": "id", "exportIdKey": "id", "titleKey": "title", "parentIdKey": "parent_id", "typeKey": "type", "selectableTypes": ["document"], "selectionArg": "--doc-id", "selectableWhenExportId": true },
   "fields": [
     { "name": "workspace_url", "label": "Thoughts 工作区 URL", "type": "text", "arg": "--workspace-url", "required": true, "actions": ["login", "scan", "export"] },
     { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },

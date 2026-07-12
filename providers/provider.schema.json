@@ -129,6 +129,11 @@
         "titleKey": { "type": "string" },
         "parentIdKey": { "type": "string" },
         "selectableKey": { "type": "string" },
+        "typeKey": { "type": "string" },
+        "selectableTypes": {
+          "type": "array",
+          "items": { "type": ["string", "number"] }
+        },
         "selectionArg": { "type": "string" },
         "note": { "type": "string" }
       }

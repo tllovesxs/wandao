@@ -16,7 +16,7 @@
   "capabilities": { "export": true, "import": false, "guide": true, "login": true, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
   "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": true },
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
-  "toc": { "itemsPath": "ordered", "idKey": "wiki_token", "exportIdKey": "wiki_token", "titleKey": "title", "parentIdKey": "parent_wiki_token", "selectionArg": "--doc-id", "selectableWhenExportId": true },
+  "toc": { "itemsPath": "ordered", "idKey": "wiki_token", "exportIdKey": "wiki_token", "titleKey": "title", "parentIdKey": "parent_wiki_token", "selectableKey": "selectable", "selectionArg": "--doc-id", "selectableWhenExportId": false },
   "fields": [
     { "name": "wiki_url", "label": "飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["login", "scan", "export"] },
     { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },

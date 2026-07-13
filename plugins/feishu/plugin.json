@@ -4,7 +4,7 @@
   "id": "feishu",
   "name": "飞书",
   "description": "飞书 Wiki Markdown 导出与导入，包含目录、图片、权限检测和断点续跑。",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "Wandao Official",
   "homepage": "https://www.feishu.cn/",
   "license": "AGPL-3.0-only",

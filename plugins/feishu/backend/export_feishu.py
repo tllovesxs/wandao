@@ -510,11 +510,18 @@ def annotate_selectable_toc(ordered: list[dict[str, Any]]) -> list[dict[str, Any
 def select_exportable_docs(
     ordered: list[dict[str, Any]], selected_doc_ids: set[str] | None = None
 ) -> list[dict[str, Any]]:
-    docs = [item for item in ordered if item.get("url") and item.get("obj_type") == 22]
-    if not docs:
-        docs = [item for item in ordered if item.get("url")]
-    if selected_doc_ids:
-        docs = [item for item in docs if item.get("wiki_token") in selected_doc_ids]
+    exportable_docs = [item for item in ordered if item.get("url") and item.get("obj_type") == 22]
+    if not exportable_docs:
+        exportable_docs = [item for item in ordered if item.get("url")]
+    if not selected_doc_ids:
+        return exportable_docs
+    docs = [item for item in exportable_docs if item.get("wiki_token") in selected_doc_ids]
+    if exportable_docs and not docs:
+        preview = ", ".join(sorted(selected_doc_ids)[:5])
+        raise ExportError(
+            "选择的飞书文档未匹配当前目录，"
+            "请重新读取目录后再试。未匹配 ID：" + preview
+        )
     return docs
 
 
@@ -551,11 +558,11 @@ def order_tree(tree: dict[str, Any]) -> list[dict[str, Any]]:
 FEISHU_CONVERTER_JS = r"""
 async (fallbackTitle) => {
   const images = [];
-  const ZERO = /[\u200b\u200c\u200d\ufeff]/g;
+  const ZERO = /[​‌‍﻿]/g;
   function clean(value) {
     return (value || "")
       .replace(ZERO, "")
-      .replace(/\u00a0/g, " ")
+      .replace(/ /g, " ")
       .replace(/[ \t]+\n/g, "\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim();

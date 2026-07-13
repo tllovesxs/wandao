@@ -106,7 +106,7 @@ class FeishuImportResumeTests(unittest.TestCase):
 
             checkpoint = WandaoCheckpoint.open(checkpoint_file, "single", "feishu-import", "import")
             try:
-                self.assertEqual(checkpoint.item_status(f"feishu-import:{source_file}"), "completed")
+                self.assertEqual(checkpoint.item_status(f"feishu-import:{source_file.resolve()}"), "completed")
             finally:
                 checkpoint.close()
 

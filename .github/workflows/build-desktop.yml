@@ -121,7 +121,6 @@ jobs:
           path: |
             wandao_electron/dist/*.exe
             wandao_electron/dist/*.zip
-            wandao_electron/dist/*.blockmap
           if-no-files-found: error
 
   release:
@@ -167,4 +166,10 @@ jobs:
           name: Wandao ${{ github.ref_name }}
           generate_release_notes: true
           make_latest: true
-          files: release-artifacts/*
+          # Keep the public release simple: only the Windows installer and
+          # macOS package are attached. Checksums, SBOM and provenance remain
+          # available through the workflow/attestation rather than cluttering
+          # the download list.
+          files: |
+            release-artifacts/*.exe
+            release-artifacts/*.zip

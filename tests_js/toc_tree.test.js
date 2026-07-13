@@ -54,6 +54,12 @@ test('maps Yuque toc DOC nodes to doc_id selection arguments', () => {
   assert.deepEqual(selectionArgs(provider, [nodes[1].exportId]), ['--doc-id', '277273010']);
 });
 
+test('does not emit a dangling selection argument for empty export IDs', () => {
+  const provider = require('../plugins/yuque/providers/yuque/provider.json');
+
+  assert.deepEqual(selectionArgs(provider, ['', null, undefined, '277273010']), ['--doc-id', '277273010']);
+});
+
 test('maps Aliyun nodes and parent_id to document selection arguments', () => {
   const provider = require('../plugins/aliyun_thoughts/providers/aliyun/provider.json');
   const nodes = normalizeStandardTocNodes(provider, { nodes: [

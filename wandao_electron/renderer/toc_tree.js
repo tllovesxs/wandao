@@ -62,7 +62,9 @@
 
   function selectionArgs(provider, exportIds) {
     const selectionArg = provider?.toc?.selectionArg || '--doc-id';
-    return (exportIds || []).flatMap((exportId) => [selectionArg, String(exportId)]);
+    return (exportIds || [])
+      .filter((exportId) => exportId !== null && exportId !== undefined && String(exportId).trim())
+      .flatMap((exportId) => [selectionArg, String(exportId)]);
   }
 
   return { normalizeStandardTocNodes, tocNodeMaps, selectionArgs, valueAtPath };

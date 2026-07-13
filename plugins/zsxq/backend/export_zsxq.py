@@ -405,8 +405,8 @@ ZSXQ_CONVERTER_JS = r"""
   const links = [];
   function clean(s) {
     return (s || "")
-      .replace(/ /g, " ")
-      .replace(/[​‌‍﻿]/g, "")
+      .replace(/\u00a0/g, " ")
+      .replace(/[\u200b\u200c\u200d\ufeff]/g, "")
       .replace(/[ \t]+\n/g, "\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
@@ -450,7 +450,7 @@ ZSXQ_CONVERTER_JS = r"""
   }
   function inline(node) {
     if (!node) return "";
-    if (node.nodeType === 3) return node.nodeValue.replace(/[​‌‍﻿]/g, "");
+    if (node.nodeType === 3) return node.nodeValue.replace(/[\u200b\u200c\u200d\ufeff]/g, "");
     if (node.nodeType !== 1) return "";
     if (hidden(node)) return "";
     const tag = node.tagName.toLowerCase();
@@ -579,8 +579,8 @@ ZSXQ_COMMENTS_JS = r"""
 async () => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const clean = s => (s || "")
-    .replace(/ /g, " ")
-    .replace(/[​‌‍﻿]/g, "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u200b\u200c\u200d\ufeff]/g, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -694,7 +694,7 @@ async () => {
 ZSXQ_TOC_JS = r"""
 async () => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const clean = s => (s || "").replace(/ /g, " ").replace(/\s+/g, " ").trim();
+  const clean = s => (s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
   const activate = async el => {
     if (!el) return;
     el.scrollIntoView({block: "center", inline: "nearest"});
@@ -848,7 +848,7 @@ async () => {
 ZSXQ_OPEN_TOC_ITEM_JS = r"""
 async (target) => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const clean = s => (s || "").replace(/ /g, " ").replace(/\s+/g, " ").trim();
+  const clean = s => (s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
   const visible = el => {
     if (!el || el.nodeType !== 1 || el.hidden || el.getAttribute("aria-hidden") === "true") return false;
     const style = window.getComputedStyle ? window.getComputedStyle(el) : null;

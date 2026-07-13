@@ -15,7 +15,7 @@
   "capabilities": { "export": true, "import": false, "guide": false, "login": true, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
   "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": true },
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
-  "toc": { "itemsPath": "ordered", "idKey": "key", "exportIdKey": "key", "titleKey": "title", "parentIdKey": "parentKey", "selectionArg": "--toc-key", "selectableWhenExportId": true },
+  "toc": { "adapter": "zsxq-column-groups", "itemsPath": "groups", "selectionPrefixArgs": ["--toc-mode", "toc"], "selectionArg": "--toc-key" },
   "fields": [
     { "name": "entry_url", "label": "知识星球专栏 URL", "type": "text", "arg": "--entry-url", "required": true, "actions": ["login", "scan", "export"] },
     { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },

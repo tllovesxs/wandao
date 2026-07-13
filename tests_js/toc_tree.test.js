@@ -1,6 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeStandardTocNodes, tocNodeMaps, selectionArgs } = require('../wandao_electron/renderer/toc_tree.js');
+const {
+  normalizeProviderTocNodes,
+  normalizeStandardTocNodes,
+  tocNodeMaps,
+  selectionArgs
+} = require('../wandao_electron/renderer/toc_tree.js');
 
 test('restores Aliyun parent_id hierarchy when a legacy manifest still points at ordered', () => {
   const provider = { id: 'aliyun', toc: { itemsPath: 'ordered', idKey: 'id', exportIdKey: 'id', titleKey: 'title', parentIdKey: 'parentId' } };
@@ -88,4 +93,89 @@ test('maps Feishu ordered nodes with explicit document selectability', () => {
   assert.deepEqual(tree.children.get('feishu-export:folder').map((node) => node.nodeId), ['feishu-export:non-url', 'feishu-export:doc']);
   assert.deepEqual(nodes.filter((node) => node.selectable).map((node) => node.exportId), ['doc']);
   assert.deepEqual(selectionArgs(provider, ['doc']), ['--doc-id', 'doc']);
+});
+
+test('maps the standard Plugin v1 nodes contracts for ima, OneNote, and Youdao', () => {
+  const fixtures = [
+    {
+      provider: require('../plugins/ima/providers/ima-export/provider.json'),
+      root: { nodeId: 'ima-kb:demo', exportId: '', title: 'Knowledge base', parentNodeId: '', selectable: false },
+      doc: { nodeId: 'ima-media:demo:doc', exportId: 'ima-export-id', title: 'Document', parentNodeId: 'ima-kb:demo', selectable: true }
+    },
+    {
+      provider: require('../plugins/onenote/providers/onenote/provider.json'),
+      root: { nodeId: 'onenote-notebook:demo', exportId: '', title: 'Notebook', parentNodeId: '', selectable: false },
+      doc: { nodeId: 'onenote-page:demo', exportId: 'onenote-page-id', title: 'Page', parentNodeId: 'onenote-notebook:demo', selectable: true }
+    },
+    {
+      provider: require('../plugins/youdao/providers/youdao/provider.json'),
+      root: { nodeId: 'youdao-folder:demo', exportId: '', title: 'Folder', parentNodeId: '', selectable: false, type: 'folder' },
+      doc: { nodeId: 'youdao-doc:demo', exportId: 'youdao-doc-id', title: 'Note', parentNodeId: 'youdao-folder:demo', selectable: true, type: 'document' }
+    }
+  ];
+
+  fixtures.forEach(({ provider, root, doc }) => {
+    assert.equal(provider.toc.itemsPath, 'nodes');
+    assert.equal(provider.toc.idKey, 'nodeId');
+    assert.equal(provider.toc.exportIdKey, 'exportId');
+    assert.equal(provider.toc.parentIdKey, 'parentNodeId');
+    assert.equal(provider.toc.selectableKey, 'selectable');
+    assert.equal(provider.toc.selectionArg, '--doc-id');
+
+    const nodes = normalizeProviderTocNodes(provider, { nodes: [root, doc] });
+    const tree = tocNodeMaps(nodes);
+    assert.deepEqual(tree.children.get('').map((node) => node.nodeId), [root.nodeId]);
+    assert.deepEqual(tree.children.get(root.nodeId).map((node) => node.nodeId), [doc.nodeId]);
+    assert.equal(nodes[0].selectable, false);
+    assert.equal(nodes[1].selectable, true);
+    assert.equal(nodes[1].exportId, doc.exportId);
+    assert.deepEqual(selectionArgs(provider, [nodes[1].exportId]), ['--doc-id', doc.exportId]);
+  });
+});
+
+test('maps Yinxiang notebook scan results through its explicit adapter', () => {
+  const provider = require('../plugins/yinxiang/providers/yinxiang/provider.json');
+  assert.equal(provider.toc.adapter, 'yinxiang-notebooks');
+  assert.equal(provider.toc.itemsPath, 'notebooks');
+  assert.equal(provider.toc.selectionArg, '--doc-id');
+
+  const nodes = normalizeProviderTocNodes(provider, { notebooks: [
+    {
+      guid: 'notebook-guid',
+      name: 'Notebook',
+      stack: 'Stack',
+      notes: [{ guid: 'note-guid', title: 'Selected note' }]
+    }
+  ] });
+  const tree = tocNodeMaps(nodes);
+
+  assert.deepEqual(tree.children.get('').map((node) => node.nodeId), ['yinxiang-stack:Stack']);
+  assert.deepEqual(tree.children.get('yinxiang-stack:Stack').map((node) => node.nodeId), ['yinxiang-notebook:notebook-guid']);
+  assert.deepEqual(tree.children.get('yinxiang-notebook:notebook-guid').map((node) => node.nodeId), ['yinxiang-note:note-guid']);
+  assert.equal(nodes.at(-1).selectable, true);
+  assert.equal(nodes.at(-1).exportId, 'note-guid');
+  assert.deepEqual(selectionArgs(provider, [nodes.at(-1).exportId]), ['--doc-id', 'note-guid']);
+});
+
+test('maps ZSXQ column groups through its explicit adapter', () => {
+  const provider = require('../plugins/zsxq/providers/zsxq-column/provider.json');
+  assert.equal(provider.toc.adapter, 'zsxq-column-groups');
+  assert.equal(provider.toc.itemsPath, 'groups');
+  assert.equal(provider.toc.selectionArg, '--toc-key');
+
+  const nodes = normalizeProviderTocNodes(provider, { groups: [
+    {
+      groupIndex: 3,
+      groupTitle: 'Section',
+      topics: [{ key: 'toc:3:0', title: 'Article' }]
+    }
+  ] });
+  const tree = tocNodeMaps(nodes);
+
+  assert.deepEqual(tree.children.get('').map((node) => node.nodeId), ['zsxq-column-group:3']);
+  assert.deepEqual(tree.children.get('zsxq-column-group:3').map((node) => node.nodeId), ['zsxq-column:toc:3:0']);
+  assert.equal(nodes[0].selectable, false);
+  assert.equal(nodes[1].selectable, true);
+  assert.equal(nodes[1].exportId, 'toc:3:0');
+  assert.deepEqual(selectionArgs(provider, [nodes[1].exportId]), ['--toc-mode', 'toc', '--toc-key', 'toc:3:0']);
 });

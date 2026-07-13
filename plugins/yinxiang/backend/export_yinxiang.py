@@ -502,6 +502,12 @@ def note_markdown(note_el: ET.Element, md_path: Path) -> tuple[str, str]:
     return "\n".join(lines), guid
 
 
+def select_enex_notes(notes: list[ET.Element], selected_doc_ids: set[str]) -> list[ET.Element]:
+    if not selected_doc_ids:
+        return notes
+    return [note_el for note_el in notes if (note_el.findtext("guid") or "") in selected_doc_ids]
+
+
 def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
@@ -568,13 +574,14 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
                     checkpoint.skip_item(item_key, "empty-enex")
                 skipped += 1
                 continue
-            note_el = notes[0]
-            guid = note_el.findtext("guid") or ""
-            if selected and guid not in selected:
+            selected_notes = select_enex_notes(notes, selected)
+            if not selected_notes:
                 if checkpoint:
                     checkpoint.skip_item(item_key, "not-selected")
                 skipped += 1
                 continue
+            note_el = selected_notes[0]
+            guid = note_el.findtext("guid") or ""
             if args.incremental and md_path.exists():
                 if checkpoint:
                     checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"guid": guid, "skippedExisting": True})

@@ -15,7 +15,7 @@
   "capabilities": { "export": true, "import": false, "guide": false, "login": true, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
   "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
-  "toc": { "itemsPath": "ordered", "idKey": "guid", "exportIdKey": "guid", "titleKey": "title", "parentIdKey": "parentGuid", "selectionArg": "--doc-id", "selectableWhenExportId": true },
+  "toc": { "adapter": "yinxiang-notebooks", "itemsPath": "notebooks", "selectionArg": "--doc-id" },
   "fields": [
     { "name": "username", "label": "印象笔记账号", "type": "text", "arg": "--username", "actions": ["initAuth"] },
     { "name": "database", "label": "本地同步库", "type": "file", "arg": "--database", "advanced": true, "actions": ["scan", "export"] },

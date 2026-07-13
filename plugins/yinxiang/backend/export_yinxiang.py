@@ -508,6 +508,17 @@ def select_enex_notes(notes: list[ET.Element], selected_doc_ids: set[str]) -> li
     return [note_el for note_el in notes if (note_el.findtext("guid") or "") in selected_doc_ids]
 
 
+def validate_enex_selection(
+    selected_doc_ids: set[str], source_note_count: int, matched_selected_count: int
+) -> None:
+    if selected_doc_ids and source_note_count and not matched_selected_count:
+        preview = ", ".join(sorted(selected_doc_ids)[:5])
+        raise ExportError(
+            "选择的印象笔记文档未匹配当前目录，"
+            "请重新读取目录后再试。未匹配 ID：" + preview
+        )
+
+
 def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
@@ -539,6 +550,8 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
     skipped = 0
     failures: list[dict[str, str]] = []
     md_files: list[Path] = []
+    source_note_count = 0
+    matched_selected_count = 0
     total = len(enex_files)
     emit(
         f"开始转换印象笔记 ENEX：共 {total} 篇。",
@@ -555,6 +568,11 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
         md_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            root = ET.parse(enex_file).getroot()
+            notes = list(root.findall("note"))
+            source_note_count += len(notes)
+            selected_notes = select_enex_notes(notes, selected)
+            matched_selected_count += len(selected_notes)
             if checkpoint and getattr(args, "resume", False) and checkpoint.item_status(item_key) == "completed":
                 skipped += 1
                 if md_path.exists():
@@ -567,14 +585,11 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
                 event="document.export.started",
                 doc={"path": relative.as_posix(), "index": index, "output": str(md_path)},
             )
-            root = ET.parse(enex_file).getroot()
-            notes = list(root.findall("note"))
             if not notes:
                 if checkpoint:
                     checkpoint.skip_item(item_key, "empty-enex")
                 skipped += 1
                 continue
-            selected_notes = select_enex_notes(notes, selected)
             if not selected_notes:
                 if checkpoint:
                     checkpoint.skip_item(item_key, "not-selected")
@@ -620,6 +635,7 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
                 stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures)},
             )
 
+    validate_enex_selection(selected, source_note_count, matched_selected_count)
     write_index(output, md_files)
     report = {
         "provider": "yinxiang",

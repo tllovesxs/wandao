@@ -580,7 +580,14 @@ def selected_entries(entries: list[KnowledgeEntry], doc_ids: list[str]) -> list[
     if not doc_ids:
         return media_entries
     selected = set(doc_ids)
-    return [entry for entry in media_entries if entry.export_id in selected or entry.media_id in selected]
+    selected_media = [entry for entry in media_entries if entry.export_id in selected or entry.media_id in selected]
+    if media_entries and not selected_media:
+        preview = ", ".join(sorted(selected)[:5])
+        raise ImaError(
+            "选择的 ima 文档未匹配当前目录，"
+            "请重新读取目录后再试。未匹配 ID：" + preview
+        )
+    return selected_media
 
 
 def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, Any]:

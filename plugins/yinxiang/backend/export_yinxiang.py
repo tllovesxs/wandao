@@ -635,7 +635,13 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
                 stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures)},
             )
 
-    validate_enex_selection(selected, source_note_count, matched_selected_count)
+    try:
+        validate_enex_selection(selected, source_note_count, matched_selected_count)
+    except ExportError as exc:
+        if checkpoint:
+            checkpoint.fail_task(str(exc), status="failed")
+            checkpoint.close()
+        raise
     write_index(output, md_files)
     report = {
         "provider": "yinxiang",

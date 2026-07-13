@@ -2,7 +2,7 @@ import unittest
 
 from plugins.aliyun_thoughts.backend.export_aliyun_thoughts import Node, select_document_nodes
 from plugins.feishu.backend.export_feishu import select_exportable_docs
-from plugins.yuque.backend.export_yuque import select_export_docs
+from plugins.yuque.backend.export_yuque import require_selected_docs, select_export_docs
 
 
 class BackendSelectionContractTests(unittest.TestCase):
@@ -17,6 +17,10 @@ class BackendSelectionContractTests(unittest.TestCase):
         )
 
         self.assertEqual([doc["doc_id"] for doc in docs], [277273010])
+
+    def test_yuque_rejects_nonempty_selection_that_matches_no_document(self) -> None:
+        with self.assertRaisesRegex(Exception, "没有匹配到任何可导出文档"):
+            require_selected_docs([], {"tree-node-id"})
 
     def test_aliyun_filters_document_node_ids(self) -> None:
         docs = select_document_nodes(

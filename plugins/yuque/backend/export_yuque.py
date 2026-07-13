@@ -547,6 +547,12 @@ def select_export_docs(toc: list[dict[str, Any]], selected_doc_ids: set[str] | N
     ]
 
 
+def require_selected_docs(docs: list[dict[str, Any]], selected_doc_ids: set[str]) -> list[dict[str, Any]]:
+    if selected_doc_ids and not docs:
+        raise ExportError("所选文档 ID 没有匹配到任何可导出文档，请重新读取目录后再试。")
+    return docs
+
+
 def localize_resources(
     markdown: str,
     resources: list[dict[str, Any]],
@@ -722,7 +728,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         book = data["book"]
         toc = data["toc"]
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
-        docs = select_export_docs(toc, selected_doc_ids)
+        docs = require_selected_docs(select_export_docs(toc, selected_doc_ids), selected_doc_ids)
         doc_paths, _ = build_doc_paths(toc, output, selected_doc_ids or None)
         existing = scan_exported_docs(output)
         for doc_id, old_path in existing.items():

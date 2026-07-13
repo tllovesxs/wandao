@@ -119,6 +119,11 @@ class RemoteNode:
             return None
 
 
+def select_export_documents(nodes: list[RemoteNode], selected_doc_ids: list[str] | set[str] | None) -> list[RemoteNode]:
+    selected = set(selected_doc_ids or [])
+    return [node for node in nodes if not node.is_dir and (not selected or node.id in selected)]
+
+
 @dataclass
 class DownloadedContent:
     content: bytes
@@ -1052,14 +1057,13 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
     checkpoint = open_checkpoint_from_args(args, "youdao", "export")
     client = YoudaoClient(auth_path_from_args(args), args)
     nodes, root_id = build_remote_tree(client)
-    selected = set(args.selected_doc_ids or [])
     counters: dict[str, int] = {}
     local_paths = {
         node.id: path_for_node(output, node, counters, create_dirs=False)
         for node in nodes
         if not node.is_dir
     }
-    docs = [node for node in nodes if not node.is_dir and (not selected or node.id in selected)]
+    docs = select_export_documents(nodes, args.selected_doc_ids)
     if checkpoint:
         checkpoint.start_task(
             {

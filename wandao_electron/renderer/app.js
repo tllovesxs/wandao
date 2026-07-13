@@ -4354,7 +4354,7 @@ function buildExportArgs(toolId, options = {}) {
 }
 
 function normalizeStandardTocNodes(provider, data) {
-  return window.WandaoTocTree.normalizeStandardTocNodes(provider, data);
+  return window.WandaoTocTree.normalizeProviderTocNodes(provider, data);
 }
 
 function normalizeTocNodes(toolId, data) {
@@ -4634,14 +4634,7 @@ function selectedTocArgs(toolId) {
   if (!selected.length) {
     throw new Error('目录已读取，但没有选择任何文档。请至少勾选一篇，或重新读取目录。');
   }
-  const args = [];
-  if (toolId === 'zsxq-column') {
-    args.push('--toc-mode', 'toc');
-    selected.forEach((id) => args.push('--toc-key', id));
-  } else {
-    args.push(...window.WandaoTocTree.selectionArgs(TOOLS[toolId], selected));
-  }
-  return args;
+  return window.WandaoTocTree.selectionArgs(TOOLS[toolId], selected);
 }
 
 async function handleScanToc(toolId) {

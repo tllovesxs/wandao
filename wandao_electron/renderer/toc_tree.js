@@ -49,6 +49,74 @@
     });
   }
 
+  function normalizeYinxiangTocNodes(data) {
+    const nodes = [];
+    (data?.notebooks || []).forEach((notebook, notebookIndex) => {
+      const stack = String(notebook.stack || '');
+      let parentNodeId = '';
+      if (stack) {
+        parentNodeId = `yinxiang-stack:${stack}`;
+        if (!nodes.some((node) => node.nodeId === parentNodeId)) {
+          nodes.push({ nodeId: parentNodeId, exportId: '', title: stack, parentNodeId: '', selectable: false });
+        }
+      }
+      const notebookId = String(notebook.guid || `notebook-${notebookIndex}`);
+      const notebookNodeId = `yinxiang-notebook:${notebookId}`;
+      nodes.push({
+        nodeId: notebookNodeId,
+        exportId: '',
+        title: notebook.name || `Notebook ${notebookIndex + 1}`,
+        parentNodeId,
+        selectable: false
+      });
+      (notebook.notes || []).forEach((note, noteIndex) => {
+        const guid = String(note.guid || '');
+        if (!guid) return;
+        nodes.push({
+          nodeId: `yinxiang-note:${guid}`,
+          exportId: guid,
+          title: note.title || `Untitled note ${noteIndex + 1}`,
+          parentNodeId: notebookNodeId,
+          selectable: true
+        });
+      });
+    });
+    return nodes;
+  }
+
+  function normalizeZsxqColumnTocNodes(data) {
+    const nodes = [];
+    (data?.groups || []).forEach((group, groupIndex) => {
+      const groupIndexValue = group.groupIndex ?? groupIndex;
+      const groupId = `zsxq-column-group:${groupIndexValue}`;
+      nodes.push({
+        nodeId: groupId,
+        exportId: '',
+        title: group.groupTitle || `Group ${groupIndex + 1}`,
+        parentNodeId: '',
+        selectable: false
+      });
+      (group.topics || []).forEach((topic, topicIndex) => {
+        const key = String(topic.key || `toc:${groupIndexValue}:${topic.topicIndex ?? topicIndex}`);
+        nodes.push({
+          nodeId: `zsxq-column:${key}`,
+          exportId: key,
+          title: topic.title || `Untitled article ${topicIndex + 1}`,
+          parentNodeId: groupId,
+          selectable: true
+        });
+      });
+    });
+    return nodes;
+  }
+
+  function normalizeProviderTocNodes(provider, data) {
+    const adapter = provider?.toc?.adapter;
+    if (adapter === 'yinxiang-notebooks') return normalizeYinxiangTocNodes(data);
+    if (adapter === 'zsxq-column-groups') return normalizeZsxqColumnTocNodes(data);
+    return normalizeStandardTocNodes(provider, data);
+  }
+
   function tocNodeMaps(nodes) {
     const byId = new Map(nodes.map((node) => [node.nodeId, node]));
     const children = new Map();
@@ -61,11 +129,21 @@
   }
 
   function selectionArgs(provider, exportIds) {
-    const selectionArg = provider?.toc?.selectionArg || '--doc-id';
-    return (exportIds || [])
+    const toc = provider?.toc || {};
+    const selectionArg = toc.selectionArg || '--doc-id';
+    const prefixArgs = Array.isArray(toc.selectionPrefixArgs) ? toc.selectionPrefixArgs.map(String) : [];
+    return prefixArgs.concat((exportIds || [])
       .filter((exportId) => exportId !== null && exportId !== undefined && String(exportId).trim())
-      .flatMap((exportId) => [selectionArg, String(exportId)]);
+      .flatMap((exportId) => [selectionArg, String(exportId)]));
   }
 
-  return { normalizeStandardTocNodes, tocNodeMaps, selectionArgs, valueAtPath };
+  return {
+    normalizeProviderTocNodes,
+    normalizeStandardTocNodes,
+    normalizeYinxiangTocNodes,
+    normalizeZsxqColumnTocNodes,
+    tocNodeMaps,
+    selectionArgs,
+    valueAtPath
+  };
 });

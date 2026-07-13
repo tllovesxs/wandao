@@ -19,6 +19,13 @@
     return 0;
   }
 
+  function maxCount(...values) {
+    return values.reduce((maximum, value) => {
+      const number = Number(value);
+      return Number.isFinite(number) && number > maximum ? number : maximum;
+    }, 0);
+  }
+
   function asArray(value) {
     return Array.isArray(value) ? value : [];
   }
@@ -75,10 +82,48 @@
     return items;
   }
 
+  function countResourceFailureEntries(value, kind = '') {
+    let count = 0;
+    const visit = (item) => {
+      if (!item) return;
+      if (Array.isArray(item)) {
+        item.forEach(visit);
+        return;
+      }
+      if (typeof item !== 'object') return;
+      if (Array.isArray(item.failures)) {
+        item.failures.forEach(visit);
+        return;
+      }
+      if (item.url || item.error || item.reason || item.message) {
+        if (!kind || item.kind === kind) count += 1;
+      }
+    };
+    visit(value);
+    return count;
+  }
+
   function normalizeTaskReport(data, options = {}) {
     const source = data && typeof data === 'object' ? data : {};
     const failureItems = collectFailureItems(source);
     const resourceFailures = asArray(source.resourceFailures);
+    const imageFailures = asArray(source.imageFailures);
+    const attachmentFailures = asArray(source.attachmentFailures);
+    const resourceFailureEntries = countResourceFailureEntries(resourceFailures);
+    const imageFailureEntries = countResourceFailureEntries(resourceFailures, 'image');
+    const attachmentFailureEntries = countResourceFailureEntries(resourceFailures, 'attachment');
+    const imageFailed = maxCount(
+      source.imageFailureCount,
+      imageFailureEntries,
+      countResourceFailureEntries(imageFailures),
+      imageFailures.length
+    );
+    const attachmentFailed = maxCount(
+      source.attachmentFailureCount,
+      attachmentFailureEntries,
+      countResourceFailureEntries(attachmentFailures),
+      attachmentFailures.length
+    );
     const stats = {
       total: numberValue(source.totalDocs, source.total, source.selectedDocs, source.docCount, source.fileCount, source.totalFiles),
       success: numberValue(source.successCount, source.successfulDocs, source.successfulFiles),
@@ -89,13 +134,13 @@
       skipped: numberValue(source.skippedDocs, source.skipped, source.skippedCount),
       failed: numberValue(source.failureCount, source.failedDocs, source.failed, source.errorCount),
       imageSuccess: numberValue(source.imageSuccess, source.imageUploads, source.imageUploadsCount),
-      imageFailed: numberValue(source.imageFailureCount, asArray(source.imageFailures).length),
+      imageFailed,
       attachmentSuccess: numberValue(source.attachmentSuccess, source.attachmentUploads),
-      attachmentFailed: numberValue(source.attachmentFailureCount, asArray(source.attachmentFailures).length),
-      resourceFailed: numberValue(source.resourceFailureCount, resourceFailures.length)
+      attachmentFailed,
+      resourceFailed: maxCount(source.resourceFailureCount, resourceFailureEntries, imageFailed + attachmentFailed)
     };
     if (!stats.success) stats.success = stats.exported || stats.imported || stats.created + stats.updated;
-    if (!stats.failed && failureItems.length) stats.failed = failureItems.length;
+    if (!stats.failed && asArray(source.failures).length) stats.failed = asArray(source.failures).length;
     if (!stats.failed && options.errorText) stats.failed = 1;
     return {
       schemaVersion: 1,
@@ -120,6 +165,9 @@
     if (stats.skipped) parts.push(`跳过 ${stats.skipped}`);
     if (stats.imageSuccess) parts.push(`图片 ${stats.imageSuccess}`);
     if (stats.attachmentSuccess) parts.push(`附件 ${stats.attachmentSuccess}`);
+    if (stats.imageFailed) parts.push(`\u56fe\u7247\u5931\u8d25 ${stats.imageFailed}`);
+    if (stats.attachmentFailed) parts.push(`\u9644\u4ef6\u5931\u8d25 ${stats.attachmentFailed}`);
+    if (stats.resourceFailed) parts.push(`\u8d44\u6e90\u5931\u8d25 ${stats.resourceFailed}`);
     if (stats.failed) parts.push(`失败 ${stats.failed}`);
     if (!parts.length && errorText) parts.push(compact(errorText, 120));
     return parts.join('，') || '暂无统计信息';
@@ -151,6 +199,9 @@
     if (report.stats.imageFailed > 0 && !lines.some((line) => line.includes('图片'))) {
       pushLine('图片失败统计', `imageFailureCount=${report.stats.imageFailed}，脚本没有返回逐项图片失败原因。`);
     }
+    if (report.stats.attachmentFailed > 0 && !lines.some((line) => line.includes('\u9644\u4ef6'))) {
+      pushLine('\u9644\u4ef6\u5931\u8d25\u7edf\u8ba1', `attachmentFailureCount=${report.stats.attachmentFailed}\uff0c\u811a\u672c\u6ca1\u6709\u8fd4\u56de\u9010\u9879\u9644\u4ef6\u5931\u8d25\u539f\u56e0\u3002`);
+    }
     if (lines.length >= limit) {
       lines.push(`还有更多失败项未展示，请打开报告文件查看完整内容：${report.reportFile || report.output || ''}`.trim());
     }
@@ -159,14 +210,25 @@
 
   function statusText(status) {
     const map = {
-      running: '进行中',
-      stopping: '正在停止',
-      interrupted: '已中断',
-      completed: '已完成',
-      failed: '失败',
-      stopped: '已停止'
+      running: '\u8fdb\u884c\u4e2d',
+      stopping: '\u6b63\u5728\u505c\u6b62',
+      interrupted: '\u5df2\u4e2d\u65ad',
+      completed: '\u5df2\u5b8c\u6210',
+      failed: '\u5931\u8d25',
+      stopped: '\u5df2\u505c\u6b62'
     };
-    return map[status] || status || '未知';
+    return map[status] || status || '\u672a\u77e5';
+  }
+
+  function hasResourceWarnings(stats = {}) {
+    return maxCount(stats.resourceFailed, stats.imageFailed, stats.attachmentFailed) > 0;
+  }
+
+  function taskStatusText(task) {
+    if (task?.status === 'completed' && hasResourceWarnings(task?.report?.stats || task?.stats || {})) {
+      return '\u5df2\u5b8c\u6210\uff08\u6709\u8d44\u6e90\u8b66\u544a\uff09';
+    }
+    return statusText(task?.status);
   }
 
   function formatDuration(ms) {
@@ -224,7 +286,7 @@
       `任务 ID：${task.id}`,
       `平台：${task.providerTitle || provider.title || task.providerId || '-'}`,
       `任务：${task.title || '-'}`,
-      `状态：${statusText(task.status)}`,
+      `状态：${taskStatusText(task)}`,
       `开始时间：${formatTaskTime(task.startedAt)}`,
       `结束时间：${formatTaskTime(task.finishedAt)}`,
       task.elapsedMs ? `耗时：${formatDuration(task.elapsedMs)}` : '',
@@ -301,6 +363,7 @@
     collectFailureItems,
     describeFailureItem,
     statusText,
+    taskStatusText,
     formatDuration,
     maskArgs,
     createMarkdownTaskReport,

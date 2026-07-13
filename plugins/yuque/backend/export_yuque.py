@@ -349,7 +349,7 @@ YUQUE_CONVERTER_JS = r"""
     }
     if (tag === "table") {
       const rows = [...el.querySelectorAll("tr")]
-        .map(tr => [...tr.children].map(td => text(td.innerText).replace(/\n+/g, "<br>")))
+        .map(tr => [...tr.children].map(td => text(inline(td)).replace(/\n+/g, "<br>").replace(/\|/g, "\\|")))
         .filter(r => r.length);
       if (!rows.length) return "";
       const max = Math.max(...rows.map(r => r.length));
@@ -538,17 +538,57 @@ def normalize_resources(resources: list[dict[str, Any]] | list[str], images: lis
     return normalized
 
 
+def resource_failure_counts(resource_failures: list[dict[str, Any]]) -> dict[str, int]:
+    image_failures = 0
+    attachment_failures = 0
+    total_failures = 0
+    for item in resource_failures:
+        if not isinstance(item, dict):
+            continue
+        for failure in item.get("failures") or []:
+            if not isinstance(failure, dict):
+                continue
+            total_failures += 1
+            if failure.get("kind") == "image":
+                image_failures += 1
+            elif failure.get("kind") == "attachment":
+                attachment_failures += 1
+    return {
+        "imageFailureCount": image_failures,
+        "attachmentFailureCount": attachment_failures,
+        "resourceFailureCount": total_failures,
+    }
+
+
+def document_selection_ids(item: dict[str, Any]) -> set[str]:
+    return {
+        str(value)
+        for value in (item.get("doc_id"), item.get("uuid"))
+        if value is not None and str(value).strip()
+    }
+
+
+def matches_selected_document(item: dict[str, Any], selected_doc_ids: set[str] | None) -> bool:
+    if not selected_doc_ids:
+        return True
+    return bool(document_selection_ids(item) & {str(value) for value in selected_doc_ids})
+
+
 def select_export_docs(toc: list[dict[str, Any]], selected_doc_ids: set[str] | None = None) -> list[dict[str, Any]]:
     return [
         item
         for item in toc
-        if item.get("type") == "DOC"
-        and (not selected_doc_ids or str(item.get("doc_id") or item.get("uuid")) in selected_doc_ids)
+        if item.get("type") == "DOC" and matches_selected_document(item, selected_doc_ids)
     ]
 
 
-def require_selected_docs(docs: list[dict[str, Any]], selected_doc_ids: set[str]) -> list[dict[str, Any]]:
-    if selected_doc_ids and not docs:
+def require_selected_docs(
+    docs: list[dict[str, Any]],
+    selected_doc_ids: set[str],
+    *,
+    has_exportable_docs: bool = True,
+) -> list[dict[str, Any]]:
+    if selected_doc_ids and has_exportable_docs and not docs:
         raise ExportError("所选文档 ID 没有匹配到任何可导出文档，请重新读取目录后再试。")
     return docs
 
@@ -609,8 +649,7 @@ def build_doc_paths(
         for item in toc:
             if item.get("type") != "DOC":
                 continue
-            key = str(item.get("doc_id") or item["uuid"])
-            if key not in selected_doc_ids:
+            if not matches_selected_document(item, selected_doc_ids):
                 continue
             parent_uuid = item.get("parent_uuid") or "ROOT"
             while parent_uuid and parent_uuid != "ROOT":
@@ -638,7 +677,7 @@ def build_doc_paths(
     doc_paths: dict[str, Path] = {}
     for fallback_index, item in enumerate([x for x in toc if x.get("type") == "DOC"], start=1):
         key = str(item.get("doc_id") or item["uuid"])
-        if selected_doc_ids and key not in selected_doc_ids:
+        if not matches_selected_document(item, selected_doc_ids):
             continue
         parent_dir = ensure_container(item.get("parent_uuid") or "ROOT")
         index = index_in_parent.get(item["uuid"], fallback_index)
@@ -676,7 +715,7 @@ def write_index(
             lines.append(f"{indent}- **{item.get('title') or '未命名'}**")
         elif item.get("type") == "DOC":
             key = str(item.get("doc_id") or item["uuid"])
-            if selected_doc_ids and key not in selected_doc_ids:
+            if not matches_selected_document(item, selected_doc_ids):
                 continue
             doc_path = doc_paths.get(key)
             rel_path = os.path.relpath(doc_path, index_path.parent).replace("\\", "/") if doc_path else ""
@@ -728,7 +767,11 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         book = data["book"]
         toc = data["toc"]
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
-        docs = require_selected_docs(select_export_docs(toc, selected_doc_ids), selected_doc_ids)
+        docs = require_selected_docs(
+            select_export_docs(toc, selected_doc_ids),
+            selected_doc_ids,
+            has_exportable_docs=any(item.get("type") == "DOC" for item in toc),
+        )
         doc_paths, _ = build_doc_paths(toc, output, selected_doc_ids or None)
         existing = scan_exported_docs(output)
         for doc_id, old_path in existing.items():
@@ -900,8 +943,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
             "stopped": stopped,
             "imageSuccess": image_success,
             "attachmentSuccess": attachment_success,
-            "imageFailureCount": sum(1 for item in resource_failures for failure in item["failures"] if failure.get("kind") == "image"),
-            "attachmentFailureCount": sum(1 for item in resource_failures for failure in item["failures"] if failure.get("kind") == "attachment"),
+            **resource_failure_counts(resource_failures),
             "requestCount": int(getattr(args, "_request_count", 0) or 0),
             "requestDelaySeconds": float(getattr(args, "request_delay", 0.8) or 0),
             "requestJitterSeconds": float(getattr(args, "request_jitter", 0.4) or 0),
@@ -935,9 +977,20 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                 )
             else:
                 checkpoint.complete_task(report)
+        if stopped:
+            completion_message = "语雀导出已停止"
+        elif failures or report.get("resourceFailureCount", 0):
+            warning_parts = []
+            if failures:
+                warning_parts.append(f"{len(failures)} 个文档失败")
+            if report.get("resourceFailureCount", 0):
+                warning_parts.append(f"{report['resourceFailureCount']} 个资源下载失败")
+            completion_message = f"语雀导出完成，但有{'，'.join(warning_parts)}，请查看导出报告"
+        else:
+            completion_message = "语雀导出完成"
         emit(
             args,
-            "语雀导出完成" if not stopped else "语雀导出已停止",
+            completion_message,
             event="task.completed" if not stopped else "task.stopped",
             level="success" if not stopped and not failures and not resource_failures else "warn",
             reportFile=str(report_path),
@@ -949,6 +1002,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                 "failureCount": len(failures),
                 "imageFailureCount": report.get("imageFailureCount", 0),
                 "attachmentFailureCount": report.get("attachmentFailureCount", 0),
+                "resourceFailureCount": report.get("resourceFailureCount", 0),
             },
         )
         return report

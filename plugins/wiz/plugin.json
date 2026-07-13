@@ -4,7 +4,7 @@
   "id": "wiz",
   "name": "为知笔记",
   "description": "导出为知笔记网页版内容，保留目录、正文和本地图片。",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "Wandao Official",
   "homepage": "https://www.wiz.cn/",
   "license": "AGPL-3.0-only",

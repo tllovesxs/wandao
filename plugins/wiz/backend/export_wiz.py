@@ -932,6 +932,19 @@ def scan_wiz(args: argparse.Namespace) -> dict[str, Any]:
             chrome_proc.terminate()
 
 
+def select_wiz_documents(docs: list[WizDoc], selected_doc_ids: set[str] | None = None) -> list[WizDoc]:
+    if not selected_doc_ids:
+        return docs
+    selected = [doc for doc in docs if doc.doc_guid in selected_doc_ids]
+    if docs and not selected:
+        preview = ", ".join(sorted(selected_doc_ids)[:5])
+        raise ExportError(
+            "选择的为知笔记文档未匹配当前目录，"
+            "请重新读取目录后再试。未匹配 ID：" + preview
+        )
+    return selected
+
+
 def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
     started = time.time()
     output = Path(args.output).resolve()
@@ -943,8 +956,7 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
         snapshot = wait_for_login_state(cdp, timeout=30)
         docs = docs_from_snapshot(snapshot)
         selected_ids = set(args.selected_doc_ids or [])
-        if selected_ids:
-            docs = [doc for doc in docs if doc.doc_guid in selected_ids]
+        docs = select_wiz_documents(docs, selected_ids)
         planner = PathPlanner(output)
         doc_paths = {doc.doc_guid: planner.markdown_path(doc) for doc in docs}
         if checkpoint:

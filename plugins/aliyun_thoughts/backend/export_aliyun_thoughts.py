@@ -309,11 +309,17 @@ class Node:
 
 
 def select_document_nodes(nodes: list[Node], selected_doc_ids: set[str] | None = None) -> list[Node]:
-    return [
-        node
-        for node in nodes
-        if node.type == "document" and (not selected_doc_ids or node.id in selected_doc_ids)
-    ]
+    documents = [node for node in nodes if node.type == "document"]
+    if not selected_doc_ids:
+        return documents
+    selected = [node for node in documents if node.id in selected_doc_ids]
+    if documents and not selected:
+        preview = ", ".join(sorted(selected_doc_ids)[:5])
+        raise ExportError(
+            "选择的阿里云 Thoughts 文档未匹配当前目录，"
+            "请重新读取目录后再试。未匹配 ID：" + preview
+        )
+    return selected
 
 
 def http_json(url: str, timeout: int = 10) -> Any:
@@ -1378,7 +1384,7 @@ def extract_document_api(
 EXTRACTOR_JS = r"""
 (() => {
   function esc(s) {
-    return (s || "").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    return (s || "").replace(/ /g, " ").replace(/\n{3,}/g, "\n\n").trim();
   }
   function compact(md) {
     const lines = (md || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");

@@ -4,7 +4,13 @@ from pathlib import Path
 
 from plugins.aliyun_thoughts.backend.export_aliyun_thoughts import Node, select_document_nodes
 from plugins.feishu.backend.export_feishu import select_exportable_docs
-from plugins.yuque.backend.export_yuque import build_doc_paths, require_selected_docs, select_export_docs, write_index
+from plugins.yuque.backend.export_yuque import (
+    build_doc_paths,
+    normalize_resources,
+    require_selected_docs,
+    select_export_docs,
+    write_index,
+)
 
 
 class BackendSelectionContractTests(unittest.TestCase):
@@ -50,6 +56,16 @@ class BackendSelectionContractTests(unittest.TestCase):
 
     def test_yuque_empty_book_allows_explicit_selection_to_finish_with_zero_docs(self) -> None:
         self.assertEqual(require_selected_docs([], {"stale-id"}, has_exportable_docs=False), [])
+
+    def test_yuque_normalizes_duplicate_table_and_paragraph_resources_once(self) -> None:
+        resources = normalize_resources(
+            [
+                {"url": "https://cdn.example.test/table.png", "kind": "image", "title": "table image"},
+                {"url": "https://cdn.example.test/table.png", "kind": "image", "title": "paragraph image"},
+            ]
+        )
+
+        self.assertEqual(resources, [{"url": "https://cdn.example.test/table.png", "kind": "image", "title": "table image"}])
 
     def test_aliyun_filters_document_node_ids(self) -> None:
         docs = select_document_nodes(

@@ -349,7 +349,7 @@ YUQUE_CONVERTER_JS = r"""
     }
     if (tag === "table") {
       const rows = [...el.querySelectorAll("tr")]
-        .map(tr => [...tr.children].map(td => text(td.innerText).replace(/\n+/g, "<br>")))
+        .map(tr => [...tr.children].map(td => text(inline(td)).replace(/\n+/g, "<br>").replace(/\|/g, "\\|")))
         .filter(r => r.length);
       if (!rows.length) return "";
       const max = Math.max(...rows.map(r => r.length));

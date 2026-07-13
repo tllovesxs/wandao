@@ -538,17 +538,35 @@ def normalize_resources(resources: list[dict[str, Any]] | list[str], images: lis
     return normalized
 
 
+def document_selection_ids(item: dict[str, Any]) -> set[str]:
+    return {
+        str(value)
+        for value in (item.get("doc_id"), item.get("uuid"))
+        if value is not None and str(value).strip()
+    }
+
+
+def matches_selected_document(item: dict[str, Any], selected_doc_ids: set[str] | None) -> bool:
+    if not selected_doc_ids:
+        return True
+    return bool(document_selection_ids(item) & {str(value) for value in selected_doc_ids})
+
+
 def select_export_docs(toc: list[dict[str, Any]], selected_doc_ids: set[str] | None = None) -> list[dict[str, Any]]:
     return [
         item
         for item in toc
-        if item.get("type") == "DOC"
-        and (not selected_doc_ids or str(item.get("doc_id") or item.get("uuid")) in selected_doc_ids)
+        if item.get("type") == "DOC" and matches_selected_document(item, selected_doc_ids)
     ]
 
 
-def require_selected_docs(docs: list[dict[str, Any]], selected_doc_ids: set[str]) -> list[dict[str, Any]]:
-    if selected_doc_ids and not docs:
+def require_selected_docs(
+    docs: list[dict[str, Any]],
+    selected_doc_ids: set[str],
+    *,
+    has_exportable_docs: bool = True,
+) -> list[dict[str, Any]]:
+    if selected_doc_ids and has_exportable_docs and not docs:
         raise ExportError("所选文档 ID 没有匹配到任何可导出文档，请重新读取目录后再试。")
     return docs
 
@@ -609,8 +627,7 @@ def build_doc_paths(
         for item in toc:
             if item.get("type") != "DOC":
                 continue
-            key = str(item.get("doc_id") or item["uuid"])
-            if key not in selected_doc_ids:
+            if not matches_selected_document(item, selected_doc_ids):
                 continue
             parent_uuid = item.get("parent_uuid") or "ROOT"
             while parent_uuid and parent_uuid != "ROOT":
@@ -638,7 +655,7 @@ def build_doc_paths(
     doc_paths: dict[str, Path] = {}
     for fallback_index, item in enumerate([x for x in toc if x.get("type") == "DOC"], start=1):
         key = str(item.get("doc_id") or item["uuid"])
-        if selected_doc_ids and key not in selected_doc_ids:
+        if not matches_selected_document(item, selected_doc_ids):
             continue
         parent_dir = ensure_container(item.get("parent_uuid") or "ROOT")
         index = index_in_parent.get(item["uuid"], fallback_index)
@@ -676,7 +693,7 @@ def write_index(
             lines.append(f"{indent}- **{item.get('title') or '未命名'}**")
         elif item.get("type") == "DOC":
             key = str(item.get("doc_id") or item["uuid"])
-            if selected_doc_ids and key not in selected_doc_ids:
+            if not matches_selected_document(item, selected_doc_ids):
                 continue
             doc_path = doc_paths.get(key)
             rel_path = os.path.relpath(doc_path, index_path.parent).replace("\\", "/") if doc_path else ""
@@ -728,7 +745,11 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         book = data["book"]
         toc = data["toc"]
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
-        docs = require_selected_docs(select_export_docs(toc, selected_doc_ids), selected_doc_ids)
+        docs = require_selected_docs(
+            select_export_docs(toc, selected_doc_ids),
+            selected_doc_ids,
+            has_exportable_docs=any(item.get("type") == "DOC" for item in toc),
+        )
         doc_paths, _ = build_doc_paths(toc, output, selected_doc_ids or None)
         existing = scan_exported_docs(output)
         for doc_id, old_path in existing.items():

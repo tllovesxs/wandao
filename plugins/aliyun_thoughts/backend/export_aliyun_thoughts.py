@@ -1384,7 +1384,7 @@ def extract_document_api(
 EXTRACTOR_JS = r"""
 (() => {
   function esc(s) {
-    return (s || "").replace(/ /g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    return (s || "").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trim();
   }
   function compact(md) {
     const lines = (md || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");

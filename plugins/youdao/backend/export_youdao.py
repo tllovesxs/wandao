@@ -122,8 +122,18 @@ class RemoteNode:
 
 
 def select_export_documents(nodes: list[RemoteNode], selected_doc_ids: list[str] | set[str] | None) -> list[RemoteNode]:
+    documents = [node for node in nodes if not node.is_dir]
     selected = set(selected_doc_ids or [])
-    return [node for node in nodes if not node.is_dir and (not selected or node.id in selected)]
+    if not selected:
+        return documents
+    matched = [node for node in documents if node.id in selected]
+    if documents and not matched:
+        preview = ", ".join(sorted(selected)[:5])
+        raise YoudaoError(
+            "选择的有道云笔记文档未匹配当前目录，"
+            "请重新读取目录后再试。未匹配 ID：" + preview
+        )
+    return matched
 
 
 @dataclass

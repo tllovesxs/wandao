@@ -84,4 +84,3 @@ test('Yuque converter collects table images and attachments through its live Chr
   assert.ok(result.resources.some((item) => item.url === 'https://cdn.example.test/paragraph.png' && item.kind === 'image'));
   assert.match(result.markdown, /A \\| B/);
 });
-

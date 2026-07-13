@@ -1,7 +1,7 @@
 # Yuque Table Resources and Export Contract Design
 
-**Issue:** #47  
-**Base:** `origin/main` at `dabcf4c` (2026-07-13)  
+**Issue:** #47
+**Base:** `origin/main` at `dabcf4c` (2026-07-13)
 **Status:** Approved for implementation
 
 ## Context

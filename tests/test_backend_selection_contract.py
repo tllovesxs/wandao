@@ -7,6 +7,7 @@ from plugins.feishu.backend.export_feishu import select_exportable_docs
 from plugins.yuque.backend.export_yuque import (
     build_doc_paths,
     normalize_resources,
+    resource_failure_counts,
     require_selected_docs,
     select_export_docs,
     write_index,
@@ -66,6 +67,28 @@ class BackendSelectionContractTests(unittest.TestCase):
         )
 
         self.assertEqual(resources, [{"url": "https://cdn.example.test/table.png", "kind": "image", "title": "table image"}])
+
+    def test_yuque_resource_failure_counts_keep_images_and_attachments_separate(self) -> None:
+        counts = resource_failure_counts(
+            [
+                {
+                    "document": "A",
+                    "failures": [
+                        {"kind": "image", "url": "https://cdn.example.test/image.png", "error": "HTTP 500"},
+                        {"kind": "attachment", "url": "https://files.example.test/guide.pdf", "error": "HTTP 403"},
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual(
+            counts,
+            {
+                "imageFailureCount": 1,
+                "attachmentFailureCount": 1,
+                "resourceFailureCount": 2,
+            },
+        )
 
     def test_aliyun_filters_document_node_ids(self) -> None:
         docs = select_document_nodes(

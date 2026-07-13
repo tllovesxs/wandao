@@ -538,6 +538,28 @@ def normalize_resources(resources: list[dict[str, Any]] | list[str], images: lis
     return normalized
 
 
+def resource_failure_counts(resource_failures: list[dict[str, Any]]) -> dict[str, int]:
+    image_failures = 0
+    attachment_failures = 0
+    total_failures = 0
+    for item in resource_failures:
+        if not isinstance(item, dict):
+            continue
+        for failure in item.get("failures") or []:
+            if not isinstance(failure, dict):
+                continue
+            total_failures += 1
+            if failure.get("kind") == "image":
+                image_failures += 1
+            elif failure.get("kind") == "attachment":
+                attachment_failures += 1
+    return {
+        "imageFailureCount": image_failures,
+        "attachmentFailureCount": attachment_failures,
+        "resourceFailureCount": total_failures,
+    }
+
+
 def document_selection_ids(item: dict[str, Any]) -> set[str]:
     return {
         str(value)
@@ -921,8 +943,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
             "stopped": stopped,
             "imageSuccess": image_success,
             "attachmentSuccess": attachment_success,
-            "imageFailureCount": sum(1 for item in resource_failures for failure in item["failures"] if failure.get("kind") == "image"),
-            "attachmentFailureCount": sum(1 for item in resource_failures for failure in item["failures"] if failure.get("kind") == "attachment"),
+            **resource_failure_counts(resource_failures),
             "requestCount": int(getattr(args, "_request_count", 0) or 0),
             "requestDelaySeconds": float(getattr(args, "request_delay", 0.8) or 0),
             "requestJitterSeconds": float(getattr(args, "request_jitter", 0.4) or 0),
@@ -956,9 +977,20 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                 )
             else:
                 checkpoint.complete_task(report)
+        if stopped:
+            completion_message = "语雀导出已停止"
+        elif failures or report.get("resourceFailureCount", 0):
+            warning_parts = []
+            if failures:
+                warning_parts.append(f"{len(failures)} 个文档失败")
+            if report.get("resourceFailureCount", 0):
+                warning_parts.append(f"{report['resourceFailureCount']} 个资源下载失败")
+            completion_message = f"语雀导出完成，但有{'，'.join(warning_parts)}，请查看导出报告"
+        else:
+            completion_message = "语雀导出完成"
         emit(
             args,
-            "语雀导出完成" if not stopped else "语雀导出已停止",
+            completion_message,
             event="task.completed" if not stopped else "task.stopped",
             level="success" if not stopped and not failures and not resource_failures else "warn",
             reportFile=str(report_path),
@@ -970,6 +1002,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                 "failureCount": len(failures),
                 "imageFailureCount": report.get("imageFailureCount", 0),
                 "attachmentFailureCount": report.get("attachmentFailureCount", 0),
+                "resourceFailureCount": report.get("resourceFailureCount", 0),
             },
         )
         return report

@@ -631,7 +631,11 @@ function makeTaskId() {
 }
 
 function statusText(status) {
-  return window.WandaoTaskReport?.statusText(status) || status || '未知';
+  return window.WandaoTaskReport?.statusText(status) || status || '\u672a\u77e5';
+}
+
+function taskHistoryStatusText(task) {
+  return window.WandaoTaskReport?.taskStatusText(task) || statusText(task?.status);
 }
 
 function formatDuration(ms) {
@@ -810,7 +814,7 @@ function renderTaskHistory() {
           <div>
             <div class="task-history-title">${escapeHtml(task.title || task.providerTitle || '未命名任务')}</div>
             <div class="task-history-meta">
-              <span class="task-status ${escapeHtml(task.status || '')}">${escapeHtml(statusText(task.status))}</span>
+              <span class="task-status ${escapeHtml(task.status || '')}">${escapeHtml(taskHistoryStatusText(task))}</span>
               <span>${escapeHtml(startedAt)}${escapeHtml(elapsed)}</span>
             </div>
           </div>

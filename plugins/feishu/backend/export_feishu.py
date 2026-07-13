@@ -558,11 +558,11 @@ def order_tree(tree: dict[str, Any]) -> list[dict[str, Any]]:
 FEISHU_CONVERTER_JS = r"""
 async (fallbackTitle) => {
   const images = [];
-  const ZERO = /[​‌‍﻿]/g;
+  const ZERO = /[\u200b\u200c\u200d\ufeff]/g;
   function clean(value) {
     return (value || "")
       .replace(ZERO, "")
-      .replace(/ /g, " ")
+      .replace(/\u00a0/g, " ")
       .replace(/[ \t]+\n/g, "\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim();

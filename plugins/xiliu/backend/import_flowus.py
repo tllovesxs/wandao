@@ -542,7 +542,7 @@ def search_resource(client: FlowUsClient, file_path: Path) -> str | None:
     }
     data = client.request("POST", SEARCH_RESOURCE_API, data=payload, timeout=30)
     result = json.loads(data.decode("utf-8", errors="replace"))
-    emit(f"  search/resource 响应: {json.dumps(result, ensure_ascii=False)[:300]}", level="debug")
+    emit(f"  search/resource: code={result.get('code')}", level="debug")
 
     if result.get("code") != 200:
         return None
@@ -571,7 +571,7 @@ def create_signed_urls(client: FlowUsClient, block_id: str, oss_name: str, is_pu
     for attempt in range(1, max_retries + 1):
         data = client.request("POST", CREATE_URLS_API, data=payload, timeout=30)
         result = json.loads(data.decode("utf-8", errors="replace"))
-        emit(f"  create_urls 响应 (attempt {attempt}): {json.dumps(result, ensure_ascii=False)[:500]}", level="debug")
+        emit(f"  create_urls (attempt {attempt}): code={result.get('code')}", level="debug")
 
         if not isinstance(result, dict):
             raise FlowUsError(f"获取签名 URL 失败：响应格式异常 - {result}")
@@ -620,15 +620,15 @@ def upload_local_image(client: FlowUsClient, space_id: str, image_path: Path) ->
         url = f"{IMPORT_TEMP_FILE_API}?source=wandao"
         data = client.request("POST", url, data=payload, timeout=120)
         result = json.loads(data.decode("utf-8", errors="replace"))
-        emit(f"  import_temp_file 响应: {json.dumps(result, ensure_ascii=False)[:300]}", level="debug")
+        emit(f"  import_temp_file: code={result.get('code')}", level="debug")
 
         if result.get("code") == 200:
             oss_name = result.get("data", {}).get("ossName", "")
             if oss_name:
-                emit(f"图片上传成功(import_temp_file): {file_name} -> ossName={oss_name}", level="debug")
+                emit(f"图片上传成功(import_temp_file): {file_name}", level="debug")
                 return oss_name, ""
-    except Exception as e:
-        emit(f"  import_temp_file 失败，回退到 COS: {e}", level="debug")
+    except Exception:
+        emit("  import_temp_file 失败，回退到 COS", level="debug")
 
     # Fallback: COS upload
     file_size = image_path.stat().st_size
@@ -642,7 +642,7 @@ def upload_local_image(client: FlowUsClient, space_id: str, image_path: Path) ->
     appid = extract_appid_from_token(token.get("accessKeyId", ""))
     upload_to_cos(upload_info, image_path, appid=appid)
 
-    emit(f"图片上传成功(COS): {file_name} -> ossName={oss_name}", level="debug")
+    emit(f"图片上传成功(COS): {file_name}", level="debug")
     return oss_name, file_secret
 
 
@@ -1086,10 +1086,17 @@ def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
     if not source_dir.exists():
         raise FlowUsError(f"源目录不存在：{source_dir}")
 
+    resolved_source = source_dir.resolve()
+
     for md_path in sorted(source_dir.rglob("*")):
         if not md_path.is_file():
             continue
         if md_path.suffix.lower() not in MARKDOWN_DOC_EXTENSIONS:
+            continue
+
+        # Symlink / boundary check: reject files that resolve outside source_dir
+        if not md_path.resolve().is_relative_to(resolved_source):
+            emit(f"跳过目录外文件（符号链接逃逸）: {md_path}", level="warn")
             continue
 
         # Calculate relative path for folder structure

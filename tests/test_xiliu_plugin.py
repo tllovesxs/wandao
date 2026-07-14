@@ -167,5 +167,60 @@ class TaskTimeoutConfigTests(unittest.TestCase):
         self.assertNotIn("poll_task_result(client, task_id, timeout=120", source)
 
 
+class LogSanitizationTests(unittest.TestCase):
+    """Verify import_flowus.py does not leak raw API responses in logs."""
+
+    def test_no_raw_json_dumps_in_emit_calls(self) -> None:
+        source = (REPO_ROOT / "plugins/xiliu/backend/import_flowus.py").read_text(encoding="utf-8")
+        import re
+        # Find all emit() calls that contain json.dumps (raw response dumping)
+        pattern = r'emit\(f?["\'].*json\.dumps\(result'
+        matches = re.findall(pattern, source)
+        self.assertEqual(matches, [], f"Found emit calls still dumping raw JSON: {matches}")
+
+    def test_no_oss_name_in_emit_calls(self) -> None:
+        source = (REPO_ROOT / "plugins/xiliu/backend/import_flowus.py").read_text(encoding="utf-8")
+        import re
+        # Check that emit calls don't leak ossName/oss_name values
+        pattern = r'emit\(.*ossName=\{|emit\(.*oss_name\b'
+        matches = re.findall(pattern, source)
+        self.assertEqual(matches, [], f"Found emit calls leaking ossName: {matches}")
+
+
+class SymlinkBoundaryTests(unittest.TestCase):
+    """Test that scan_markdown_docs rejects symlinks pointing outside source_dir."""
+
+    def test_scan_rejects_symlink_escape(self) -> None:
+        module = _load_module("import_flowus")
+        with tempfile.TemporaryDirectory() as tmp:
+            source_dir = Path(tmp) / "source"
+            source_dir.mkdir()
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "secret.md").write_text("# Secret", encoding="utf-8")
+
+            # Create symlink inside source pointing outside
+            link = source_dir / "link.md"
+            try:
+                link.symlink_to(outside / "secret.md")
+            except OSError:
+                self.skipTest("Platform does not support symlinks")
+
+            docs = module.scan_markdown_docs(source_dir)
+            # Should skip the symlink that escapes source_dir
+            self.assertEqual(len(docs), 0)
+
+    def test_scan_accepts_normal_files(self) -> None:
+        module = _load_module("import_flowus")
+        with tempfile.TemporaryDirectory() as tmp:
+            source_dir = Path(tmp) / "source"
+            source_dir.mkdir()
+            (source_dir / "doc.md").write_text("# Hello", encoding="utf-8")
+
+            docs = module.scan_markdown_docs(source_dir)
+            self.assertEqual(len(docs), 1)
+            self.assertEqual(docs[0]["title"], "Hello")
+
+
 if __name__ == "__main__":
     unittest.main()

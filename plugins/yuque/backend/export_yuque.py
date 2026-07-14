@@ -595,6 +595,29 @@ def resource_failure_counts(resource_failures: list[dict[str, Any]]) -> dict[str
     }
 
 
+def safe_resource_reference(value: Any) -> str:
+    """Keep diagnostic resource references useful without leaking URL tokens."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(text)
+    except ValueError:
+        return text.split("?", 1)[0]
+    if parts.scheme in {"http", "https"} and parts.netloc:
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    return text.split("?", 1)[0]
+
+
+def safe_resource_error(value: Any) -> str:
+    """Remove signed URLs from transport errors before they enter task logs."""
+    return re.sub(
+        r"https?://[^\s'\"<>]+",
+        lambda match: safe_resource_reference(match.group(0)),
+        str(value or ""),
+    )
+
+
 def document_selection_ids(item: dict[str, Any]) -> set[str]:
     return {
         str(value)
@@ -653,7 +676,13 @@ def localize_resources(
         url = resource.get("url") or ""
         kind = "attachment" if resource.get("kind") == "attachment" else "image"
         title = resource.get("title") or kind
-        progress = {"index": index, "total": total, "kind": kind, "title": title, "url": url}
+        progress = {
+            "index": index,
+            "total": total,
+            "kind": kind,
+            "title": title,
+            "url": safe_resource_reference(url),
+        }
         if progress_callback:
             progress_callback({**progress, "status": "started"})
         target_dir = md_path.parent / ("attachments" if kind == "attachment" else "assets")
@@ -664,8 +693,8 @@ def localize_resources(
             if progress_callback:
                 progress_callback({**progress, "status": "succeeded"})
         except Exception as exc:
-            error = str(exc)
-            failures.append({"url": url, "kind": kind, "title": title, "error": error})
+            error = safe_resource_error(exc)
+            failures.append({"url": safe_resource_reference(url), "kind": kind, "title": title, "error": error})
             if progress_callback:
                 progress_callback({**progress, "status": "failed", "error": error})
             if not keep_remote:
@@ -1019,8 +1048,8 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
             "attachmentSuccess": attachment_success,
             **resource_failure_counts(resource_failures),
             "requestCount": int(getattr(args, "_request_count", 0) or 0),
-            "requestDelaySeconds": float(getattr(args, "request_delay", 0.55) or 0),
-            "requestJitterSeconds": float(getattr(args, "request_jitter", 0.25) or 0),
+            "requestDelaySeconds": float(getattr(args, "request_delay", 0.8) or 0),
+            "requestJitterSeconds": float(getattr(args, "request_jitter", 0.4) or 0),
             "downloadAttachments": bool(getattr(args, "download_attachments", True)),
             "failures": failures,
             "resourceFailures": resource_failures,
@@ -1134,8 +1163,8 @@ def run_gui() -> int:
     profile_var = tk.StringVar(value=str(default_profile_path()))
     browser_path_var = tk.StringVar(value="")
     port_var = tk.StringVar(value=str(DEFAULT_PORT))
-    request_delay_var = tk.StringVar(value="0.55")
-    request_jitter_var = tk.StringVar(value="0.25")
+    request_delay_var = tk.StringVar(value="0.8")
+    request_jitter_var = tk.StringVar(value="0.4")
     close_chrome_var = tk.BooleanVar(value=False)
     download_attachments_var = tk.BooleanVar(value=True)
     log_queue: queue.Queue[str] = queue.Queue()
@@ -1229,8 +1258,8 @@ def run_gui() -> int:
             selected_doc_ids=selected_doc_ids,
             download_timeout=30,
             progress_every=20,
-            request_delay=max(0.0, float(request_delay_var.get().strip() or "0.55")),
-            request_jitter=max(0.0, float(request_jitter_var.get().strip() or "0.25")),
+            request_delay=max(0.0, float(request_delay_var.get().strip() or "0.8")),
+            request_jitter=max(0.0, float(request_jitter_var.get().strip() or "0.4")),
             keep_remote_images=True,
             download_attachments=download_attachments_var.get(),
             close_started_chrome=close_chrome_var.get(),
@@ -1550,8 +1579,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--doc-id-file", default="", help="Read selected document ids from a JSON array/object or line-based text file")
     parser.add_argument("--download-timeout", type=int, default=30, help="Seconds to wait for each image download")
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress after N documents")
-    parser.add_argument("--request-delay", type=float, default=0.55, help="Fixed seconds to wait before each document/API request")
-    parser.add_argument("--request-jitter", type=float, default=0.25, help="Extra random seconds added before each document/API request")
+    parser.add_argument("--request-delay", type=float, default=0.8, help="Fixed seconds to wait before each document/API request")
+    parser.add_argument("--request-jitter", type=float, default=0.4, help="Extra random seconds added before each document/API request")
     parser.add_argument("--keep-remote-images", action="store_true", default=True, help="Keep remote image URLs when download fails")
     parser.add_argument("--drop-failed-images", dest="keep_remote_images", action="store_false", help="Remove image URL when download fails")
     parser.add_argument("--download-attachments", action="store_true", default=True, help="Download Yuque file attachments locally")

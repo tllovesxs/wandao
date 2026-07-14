@@ -22,8 +22,8 @@
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
     { "name": "update_existing", "label": "更新已有文档", "type": "checkbox", "arg": "--update-existing", "default": false, "advanced": true, "actions": ["export"] },
     { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },
-    { "name": "request_delay", "label": "请求延迟秒", "type": "number", "arg": "--request-delay", "default": 0.55, "min": 0, "step": 0.1, "advanced": true, "actions": ["export"] },
-    { "name": "request_jitter", "label": "随机浮动秒", "type": "number", "arg": "--request-jitter", "default": 0.25, "min": 0, "step": 0.1, "advanced": true, "actions": ["export"] }
+    { "name": "request_delay", "label": "请求延迟秒", "type": "number", "arg": "--request-delay", "default": 0.8, "min": 0, "step": 0.1, "advanced": true, "actions": ["export"] },
+    { "name": "request_jitter", "label": "随机浮动秒", "type": "number", "arg": "--request-jitter", "default": 0.4, "min": 0, "step": 0.1, "advanced": true, "actions": ["export"] }
   ],
   "actions": [
     { "id": "login", "kind": "login", "label": "登录并保存凭证", "script": "../../backend/export_yuque.py", "args": ["--login"], "track": false, "secondary": true },

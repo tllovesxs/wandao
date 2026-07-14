@@ -96,7 +96,7 @@ class BackendSelectionContractTests(unittest.TestCase):
             },
         )
 
-    def test_yuque_cli_uses_modest_default_detail_request_pacing(self) -> None:
+    def test_yuque_cli_keeps_conservative_default_detail_request_pacing(self) -> None:
         args = export_yuque.parse_args(
             [
                 "--book-url", "https://www.yuque.com/example/book",
@@ -104,16 +104,16 @@ class BackendSelectionContractTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(args.request_delay, 0.55)
-        self.assertEqual(args.request_jitter, 0.25)
+        self.assertEqual(args.request_delay, 0.8)
+        self.assertEqual(args.request_jitter, 0.4)
 
-    def test_yuque_provider_defaults_match_modest_cli_detail_request_pacing(self) -> None:
+    def test_yuque_provider_defaults_match_conservative_cli_detail_request_pacing(self) -> None:
         manifest_path = Path(__file__).resolve().parents[1] / "plugins" / "yuque" / "providers" / "yuque" / "provider.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         options = {item["name"]: item for item in manifest["fields"]}
 
-        self.assertEqual(options["request_delay"]["default"], 0.55)
-        self.assertEqual(options["request_jitter"]["default"], 0.25)
+        self.assertEqual(options["request_delay"]["default"], 0.8)
+        self.assertEqual(options["request_jitter"]["default"], 0.4)
 
     def test_yuque_doc_api_missing_data_raises_safe_api_error(self) -> None:
         class MissingDataCdp:

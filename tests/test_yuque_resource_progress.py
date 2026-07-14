@@ -69,6 +69,31 @@ class YuqueResourceProgressTests(unittest.TestCase):
 
         self.assertEqual([(event["index"], event["total"], event["kind"]) for event in events], [(1, 1, "image"), (1, 1, "image")])
 
+    def test_progress_and_failures_redact_signed_resource_urls(self) -> None:
+        signed_url = "https://cdn.example.com/file.png?X-Amz-Signature=secret&X-Amz-Credential=token"
+        events = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "plugins.yuque.backend.export_yuque.download_resource",
+                side_effect=RuntimeError(f"request failed: {signed_url}"),
+            ):
+                _markdown, _success, failures = localize_resources(
+                    signed_url,
+                    [{"url": signed_url, "kind": "image", "title": "private"}],
+                    root / "doc.md",
+                    timeout=30,
+                    keep_remote=True,
+                    cookies=[],
+                    download_attachments=True,
+                    progress_callback=events.append,
+                )
+
+        serialized = repr([*events, *failures])
+        self.assertNotIn("X-Amz-Signature", serialized)
+        self.assertNotIn("secret", serialized)
+        self.assertIn("https://cdn.example.com/file.png", serialized)
+
 
 if __name__ == "__main__":
     unittest.main()

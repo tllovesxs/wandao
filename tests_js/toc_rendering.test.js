@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -14,14 +15,53 @@ const renderTocSource = appSource.slice(
 const tocItemRule = cssSource.match(/\.toc-item\s*\{[\s\S]*?\n\}/)?.[0] || '';
 const guideBaseRule = cssSource.match(/\.toc-item:not\(\.toc-depth-0\)::before,\s*\.toc-item:not\(\.toc-depth-0\)::after\s*\{[\s\S]*?\n\}/)?.[0] || '';
 const tocGuideRules = cssSource.slice(cssSource.indexOf('.toc-item:not(.toc-depth-0)::before'));
+const tocNodeMapsSource = appSource.slice(
+  appSource.indexOf('function tocNodeMaps(nodes) {'),
+  appSource.indexOf('\nfunction descendantExportIds(nodes, nodeId) {')
+);
+const descendantExportIdsSource = appSource.slice(
+  appSource.indexOf('function descendantExportIds(nodes, nodeId) {'),
+  appSource.indexOf('\nfunction selectableTocIds(nodes) {')
+);
+const descendantExportIds = vm.runInNewContext(
+  `${tocNodeMapsSource}\n${descendantExportIdsSource}\ndescendantExportIds;`,
+  { window: { WandaoTocTree: require(path.join(repoRoot, 'wandao_electron', 'renderer', 'toc_tree.js')) } }
+);
 
 test('shared TOC renderer emits explicit depth markers and pixel indentation', () => {
-  assert.match(renderTocSource, /class="toc-item toc-depth-\$\{depth\}"/);
+  assert.match(renderTocSource, /class="toc-item toc-depth-\$\{depth\}/);
   assert.match(
     renderTocSource,
     /data-node-id="\$\{escapeHtml\(node\.nodeId\)\}"\s+data-depth="\$\{depth\}"/
   );
-  assert.match(renderTocSource, /style="--depth:\$\{depth\};--toc-indent:\$\{depth \* 22\}px"/);
+  assert.match(renderTocSource, /style="--depth:\$\{depth\};--toc-indent:\$\{depth \* 30\}px"/);
+});
+
+test('TOC selection includes a document itself and all selectable descendants', () => {
+  const nodes = [
+    { nodeId: 'folder', exportId: '', selectable: false, parentNodeId: '' },
+    { nodeId: 'leaf', exportId: 'leaf-export-id', selectable: true, parentNodeId: 'folder' },
+    { nodeId: 'nested-folder', exportId: '', selectable: false, parentNodeId: 'folder' },
+    { nodeId: 'nested-leaf', exportId: 'nested-export-id', selectable: true, parentNodeId: 'nested-folder' }
+  ];
+
+  assert.deepEqual(Array.from(descendantExportIds(nodes, 'leaf')), ['leaf-export-id']);
+  assert.deepEqual(Array.from(descendantExportIds(nodes, 'folder')), ['leaf-export-id', 'nested-export-id']);
+
+  const selectableParentNodes = [
+    { nodeId: 'document-with-children', exportId: 'parent-export-id', selectable: true, parentNodeId: '' },
+    { nodeId: 'child-document', exportId: 'child-export-id', selectable: true, parentNodeId: 'document-with-children' }
+  ];
+  assert.deepEqual(
+    Array.from(descendantExportIds(selectableParentNodes, 'document-with-children')),
+    ['parent-export-id', 'child-export-id']
+  );
+});
+
+test('TOC clearly disables modules without exportable documents', () => {
+  assert.match(renderTocSource, /const hasSelectableItems = ids\.length > 0;/);
+  assert.match(renderTocSource, /const selectionAttributes = hasSelectableItems \? '' : ' disabled aria-disabled="true" title=/);
+  assert.match(renderTocSource, /<button class="toc-item toc-depth-\$\{depth\}\$\{hasSelectableItems \? '' : ' toc-item-empty'\}"[^>]*\$\{selectionAttributes\}>/);
 });
 
 test('TOC stylesheet applies valid indentation and non-interactive hierarchy guides', () => {

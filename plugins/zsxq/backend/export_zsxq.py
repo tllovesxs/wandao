@@ -1683,6 +1683,7 @@ def resolve_toc_item(cdp: CDPClient, source: dict[str, Any], args: argparse.Name
             f"({ZSXQ_CONVERTER_JS})({js_string(source.get('title') or '知识星球文章')}, {js_string('.content.ql-editor')})",
             timeout=90,
         )
+        content = ensure_converter_content(content, source.get("title") or source.get("key") or "目录文章")
         if content_is_rate_limited(content):
             raise ExportError(f"目录条目触发请求频率限制：{source.get('title') or source.get('key')}")
         attach_comments_to_content(content, topic_comments, bool(getattr(args, "include_comments", False)))
@@ -1699,6 +1700,7 @@ def resolve_toc_item(cdp: CDPClient, source: dict[str, Any], args: argparse.Name
         f"({ZSXQ_CONVERTER_JS})({js_string(source.get('title') or '知识星球文档')}, {js_string('.column-topic-detail .talk-content-container, .column-topic-detail .answer-content-container, .column-topic-detail, #topic-detail-container, .topic-detail, [class*=TopicDetail], [class*=topic-detail], .talk-content-container, .answer-content-container')})",
         timeout=90,
     )
+    content = ensure_converter_content(content, source.get("title") or source.get("key") or "目录文章")
     if content_is_rate_limited(content):
         raise ExportError(f"目录条目触发请求频率限制：{source.get('title') or source.get('key')}")
     comments = collect_current_comments(cdp, args)
@@ -2249,6 +2251,7 @@ def collect_article_content(
             f"({ZSXQ_CONVERTER_JS})({js_string(fallback_title or '知识星球文章')}, {js_string('.content.ql-editor')})",
             timeout=90,
         )
+        content = ensure_converter_content(content, fallback_title or article_url)
         if content_is_rate_limited(content):
             pause_for_rate_limit(args, article_url, attempt, retries)
             continue
@@ -2336,6 +2339,14 @@ def should_skip_video_topic(cdp: CDPClient, topic_url: str, args: argparse.Names
         merged.update(dom_info)
         return merged
     return None
+
+
+def ensure_converter_content(value: Any, context: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ExportError(
+            f"知识星球正文解析结果异常：{context}。页面可能改版、未加载完成或当前账号无访问权限。"
+        )
+    return value
 
 
 def content_is_rate_limited(content: dict[str, Any]) -> bool:
@@ -2444,6 +2455,7 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
                 f"({ZSXQ_CONVERTER_JS})({js_string(link.get('text') or '知识星球文章')}, {js_string('.content.ql-editor')})",
                 timeout=90,
             )
+            content = ensure_converter_content(content, link.get("text") or href)
             if content_is_rate_limited(content):
                 pause_for_rate_limit(args, article_url, attempt, retries)
                 continue
@@ -2464,6 +2476,7 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
                 f"({ZSXQ_CONVERTER_JS})({js_string(link.get('text') or '知识星球帖子')}, {js_string('.talk-content-container, .answer-content-container')})",
                 timeout=60,
             )
+            content = ensure_converter_content(content, link.get("text") or href)
             if content_is_rate_limited(content):
                 pause_for_rate_limit(args, topic_url, attempt, retries)
                 continue

@@ -104,6 +104,7 @@ def run_node_checks() -> None:
             "tests_js/time_format.test.js",
             "tests_js/task_resume.test.js",
             "tests_js/toc_tree.test.js",
+            "tests_js/toc_rendering.test.js",
         ],
         cwd=REPO_ROOT,
         check=True,

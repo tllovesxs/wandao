@@ -1420,17 +1420,40 @@ select:focus-visible,
 }
 
 .toc-item {
+  position: relative;
   display: flex;
   width: 100%;
   min-height: 40px;
   align-items: center;
   gap: 9px;
-  padding: 7px 10px 7px calc(10px + var(--depth, 0) * 18px);
+  padding: 7px 10px 7px calc(10px + var(--toc-indent, 0px));
   border: 0;
   border-radius: 10px;
   background: transparent;
   color: var(--text);
   text-align: left;
+}
+
+.toc-item:not(.toc-depth-0)::before,
+.toc-item:not(.toc-depth-0)::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+.toc-item:not(.toc-depth-0)::before {
+  top: 0;
+  bottom: 0;
+  left: calc(10px + var(--toc-indent, 0px) - 11px);
+  width: 1px;
+  background: var(--border);
+}
+
+.toc-item:not(.toc-depth-0)::after {
+  top: 50%;
+  left: calc(10px + var(--toc-indent, 0px) - 11px);
+  width: 11px;
+  border-top: 1px solid var(--border);
 }
 
 .toc-item:hover:not(:disabled) {

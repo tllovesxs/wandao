@@ -1049,6 +1049,7 @@ def collect_entry_links(
         f"({ZSXQ_CONVERTER_JS})({js_string('知识星球专栏正文')}, {js_string('.column-topic-detail .talk-content-container, .column-topic-detail .answer-content-container, .talk-content-container, .answer-content-container')})",
         timeout=60,
     )
+    result = ensure_converter_content(result, "知识星球专栏正文")
     comments = collect_current_comments(cdp, args)
     attach_comments_to_content(result, comments, bool(getattr(args, "include_comments", False)))
     links = result.get("zsxqLinks") or []

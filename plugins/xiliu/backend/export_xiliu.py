@@ -43,6 +43,7 @@ from typing import Any
 
 from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_core.logging import emit_legacy
+from wandao_core.credentials import write_private_json
 from wandao_core.report import finalize_report
 
 from wandao_core.browser import (
@@ -213,7 +214,7 @@ def save_auth_state(cdp: CDPClient, auth_file: Path) -> dict[str, Any]:
         "cookies": cookies,
     }
     auth_file.parent.mkdir(parents=True, exist_ok=True)
-    auth_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_private_json(auth_file, payload)
     return {"provider": "flowus", "hasToken": bool(token), "authFile": str(auth_file)}
 
 
@@ -868,6 +869,11 @@ def export_flowus(args: argparse.Namespace) -> dict[str, Any]:
     if selected_ids:
         selected_set = set(selected_ids)
         nodes = [n for n in nodes if n.id in selected_set]
+        if not nodes:
+            raise FlowUsError(
+                f"选中的文档 ID 均未在目录中找到（共 {len(selected_set)} 个）。"
+                "请重新读取目录后重试。"
+            )
         emit(f"已选择 {len(nodes)} 个文档进行导出")
 
     emit(f"共发现 {len(nodes)} 个文档节点")

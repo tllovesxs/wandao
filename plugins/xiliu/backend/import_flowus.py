@@ -419,7 +419,6 @@ def extract_appid_from_token(token: str) -> str:
             payload_bytes = base64.urlsafe_b64decode(payload_b64)
             payload = json.loads(payload_bytes)
             emit(f"JWT payload keys: {list(payload.keys())}", level="debug")
-            emit(f"JWT payload: {json.dumps(payload, ensure_ascii=False)[:500]}", level="debug")
             return str(payload.get("key", ""))
     except Exception as e:
         emit(f"Failed to parse JWT: {e}", level="debug")
@@ -433,7 +432,6 @@ def upload_to_cos(upload_info: dict[str, Any], file_path: Path, appid: str = "")
     """
     import urllib.request
     import urllib.error
-    import ssl
 
     oss_name = upload_info.get("ossName", "")
     token = upload_info.get("token", {})
@@ -460,8 +458,7 @@ def upload_to_cos(upload_info: dict[str, Any], file_path: Path, appid: str = "")
             cos_host = f"{bucket}.cos.{region}.myqcloud.com"
             upload_url = f"https://{cos_host}/{current_key}"
 
-            emit(f"COS upload尝试: bucket={bucket}, key={current_key}, region={region}", level="debug")
-            emit(f"COS upload URL: {upload_url}", level="debug")
+            emit(f"COS upload尝试: region={region}", level="debug")
 
             # Generate timestamp
             now = int(time.time())
@@ -509,17 +506,12 @@ def upload_to_cos(upload_info: dict[str, Any], file_path: Path, appid: str = "")
                 "x-cos-security-token": security_token,
             }
 
-            # SSL context for debugging
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
             req = urllib.request.Request(upload_url, data=file_content, headers=headers, method="PUT")
 
             try:
-                with urllib.request.urlopen(req, timeout=60, context=ctx) as response:
+                with urllib.request.urlopen(req, timeout=60) as response:
                     if response.status in (200, 204):
-                        emit(f"COS 上传成功: region={region}, key={current_key}", level="debug")
+                        emit(f"COS 上传成功: region={region}", level="debug")
                         return oss_name
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:500]
@@ -662,6 +654,7 @@ def extract_local_images(md_content: str, source_dir: Path) -> list[tuple[str, P
     # Match markdown images: ![alt](path)
     image_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
     images = []
+    resolved_source = source_dir.resolve()
 
     for match in image_pattern.finditer(md_content):
         path_str = match.group(2).strip()
@@ -670,11 +663,14 @@ def extract_local_images(md_content: str, source_dir: Path) -> list[tuple[str, P
         if path_str.startswith(("http://", "https://")):
             continue
 
-        # Resolve relative path
+        # Reject absolute paths (potential directory escape)
         if path_str.startswith("/"):
-            abs_path = Path(path_str)
-        else:
-            abs_path = (source_dir / path_str).resolve()
+            continue
+
+        # Resolve relative path and check boundary
+        abs_path = (source_dir / path_str).resolve()
+        if not abs_path.is_relative_to(resolved_source):
+            continue
 
         if abs_path.exists() and abs_path.is_file():
             images.append((path_str, abs_path))
@@ -944,11 +940,14 @@ def _resolve_image_src(raw_url: str, source_dir: Path | None = None) -> str:
     if source_dir is None:
         return raw_url
 
-    # Resolve relative path
+    # Reject absolute paths (potential directory escape)
     if raw_url.startswith("/"):
-        image_path = Path(raw_url)
-    else:
-        image_path = (source_dir / raw_url).resolve()
+        return raw_url
+
+    # Resolve relative path and check boundary
+    image_path = (source_dir / raw_url).resolve()
+    if not image_path.is_relative_to(source_dir.resolve()):
+        return raw_url
 
     if not image_path.exists() or not image_path.is_file():
         return raw_url
@@ -1248,7 +1247,8 @@ def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
             task_id = enqueue_import_task(client, page_id, space_id, oss_name)
 
             # Poll for completion
-            poll_task_result(client, task_id, timeout=120, interval=3.0)
+            task_timeout = int(getattr(args, "task_timeout", 120) or 120)
+            poll_task_result(client, task_id, timeout=task_timeout, interval=3.0)
 
             # Update title (import task may overwrite it)
             update_page_title(client, space_id, page_id, title)

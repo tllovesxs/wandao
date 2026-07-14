@@ -383,16 +383,51 @@ def fetch_doc_markdown(
     title = doc.get("title") or "未命名"
     expression = (
         "(async () => {"
-        f"const j = await fetch('/api/docs/{slug}?include_contributors=true&include_like=true&include_hits=true"
-        f"&merge_dynamic_data=false&book_id={book_id}').then(r => r.json());"
-        f"const conv = ({YUQUE_CONVERTER_JS})(j.data.content || '', {js_string(title)});"
-        "return { data: { id: j.data.id, title: j.data.title, slug: j.data.slug, "
-        "content_updated_at: j.data.content_updated_at, word_count: j.data.word_count }, ...conv };"
+        f"const url = '/api/docs/{slug}?include_contributors=true&include_like=true&include_hits=true"
+        f"&merge_dynamic_data=false&book_id={book_id}';"
+        "let response; let payload = null;"
+        "try { response = await fetch(url); payload = await response.json(); }"
+        "catch (error) { return { apiError: { status: response?.status ?? null, "
+        "statusText: response?.statusText ?? '', code: null, "
+        "message: String(error?.message || error || 'fetch failed'), dataPresent: false, topLevelKeys: [] } }; }"
+        "const hasDocumentData = Boolean(payload?.data) && typeof payload.data === 'object' && !Array.isArray(payload.data);if (!response.ok || !hasDocumentData) { return { apiError: { "
+        "status: response.status, statusText: response.statusText || '', "
+        "code: payload?.code ?? null, message: payload?.message ?? payload?.msg ?? null, "
+        "dataPresent: Boolean(payload?.data), "
+        "topLevelKeys: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 12) : [] } }; }"
+        "const data = payload.data;"
+        f"const conv = ({YUQUE_CONVERTER_JS})(data.content || '', {js_string(title)});"
+        "return { data: { id: data.id, title: data.title, slug: data.slug, "
+        "content_updated_at: data.content_updated_at, word_count: data.word_count }, ...conv };"
         "})()"
     )
     value = cdp.evaluate(expression, timeout=120)
     if not isinstance(value, dict):
         raise ExportError(f"Unexpected Yuque doc response: {title}")
+    api_error = value.get("apiError")
+    if isinstance(api_error, dict):
+        status = api_error.get("status")
+        status_text = str(api_error.get("statusText") or "").strip()
+        code = api_error.get("code")
+        message = str(api_error.get("message") or "").strip()
+        data_present = bool(api_error.get("dataPresent"))
+        keys = api_error.get("topLevelKeys")
+        safe_keys = ", ".join(str(item) for item in keys[:12]) if isinstance(keys, list) else ""
+        parts = [f"Yuque document detail API did not return data for {title}"]
+        if status is not None:
+            parts.append(f"HTTP {status}{f' {status_text}' if status_text else ''}")
+        elif status_text:
+            parts.append(status_text)
+        if code not in (None, ""):
+            parts.append(f"code={code}")
+        if message:
+            parts.append(message)
+        parts.append(f"dataPresent={data_present}")
+        if safe_keys:
+            parts.append(f"topLevelKeys={safe_keys}")
+        raise ExportError("; ".join(parts))
+    if not isinstance(value.get("data"), dict):
+        raise ExportError(f"Unexpected Yuque doc response without data: {title}")
     return value
 
 
@@ -560,6 +595,29 @@ def resource_failure_counts(resource_failures: list[dict[str, Any]]) -> dict[str
     }
 
 
+def safe_resource_reference(value: Any) -> str:
+    """Keep diagnostic resource references useful without leaking URL tokens."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(text)
+    except ValueError:
+        return text.split("?", 1)[0]
+    if parts.scheme in {"http", "https"} and parts.netloc:
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    return text.split("?", 1)[0]
+
+
+def safe_resource_error(value: Any) -> str:
+    """Remove signed URLs from transport errors before they enter task logs."""
+    return re.sub(
+        r"https?://[^\s'\"<>]+",
+        lambda match: safe_resource_reference(match.group(0)),
+        str(value or ""),
+    )
+
+
 def document_selection_ids(item: dict[str, Any]) -> set[str]:
     return {
         str(value)
@@ -603,22 +661,42 @@ def localize_resources(
     download_attachments: bool,
     referer: str | None = None,
     args: argparse.Namespace | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[str, dict[str, int], list[dict[str, str]]]:
     success = {"image": 0, "attachment": 0}
     failures: list[dict[str, str]] = []
-    for resource in resources:
+    downloadable_resources = [
+        resource
+        for resource in resources
+        if resource.get("kind") != "attachment" or download_attachments
+    ]
+    total = len(downloadable_resources)
+    for index, resource in enumerate(downloadable_resources, start=1):
         check_stopped(args)
         url = resource.get("url") or ""
         kind = "attachment" if resource.get("kind") == "attachment" else "image"
-        if kind == "attachment" and not download_attachments:
-            continue
+        title = resource.get("title") or kind
+        progress = {
+            "index": index,
+            "total": total,
+            "kind": kind,
+            "title": title,
+            "url": safe_resource_reference(url),
+        }
+        if progress_callback:
+            progress_callback({**progress, "status": "started"})
         target_dir = md_path.parent / ("attachments" if kind == "attachment" else "assets")
         try:
-            target = download_resource(url, target_dir, timeout, cookies, resource.get("title") or kind, referer)
+            target = download_resource(url, target_dir, timeout, cookies, title, referer)
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
             success[kind] += 1
+            if progress_callback:
+                progress_callback({**progress, "status": "succeeded"})
         except Exception as exc:
-            failures.append({"url": url, "kind": kind, "title": resource.get("title") or "", "error": str(exc)})
+            error = safe_resource_error(exc)
+            failures.append({"url": safe_resource_reference(url), "kind": kind, "title": title, "error": error})
+            if progress_callback:
+                progress_callback({**progress, "status": "failed", "error": error})
             if not keep_remote:
                 markdown = markdown.replace(url, "")
     return markdown, success, failures
@@ -851,6 +929,40 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                     f"语雀文档ID: {key}\n"
                 )
                 resources = normalize_resources(result.get("resources") or [], result.get("images") or [])
+
+                def emit_resource_progress(progress: dict[str, Any]) -> None:
+                    kind_label = "附件" if progress["kind"] == "attachment" else "图片"
+                    label = f"{kind_label}（{progress['title']}）"
+                    position = f"{progress['index']}/{progress['total']}"
+                    status = progress["status"]
+                    if status == "started":
+                        message = f"语雀资源下载 {position}：{label}"
+                        event = "resource.download.started"
+                        level = "info"
+                    elif status == "succeeded":
+                        message = f"语雀资源下载完成 {position}：{label}"
+                        event = "resource.download.completed"
+                        level = "info"
+                    else:
+                        message = f"语雀资源下载失败 {position}：{label}：{progress.get('error') or progress['url']}"
+                        event = "resource.download.failed"
+                        level = "error"
+                    emit(
+                        args,
+                        message,
+                        event=event,
+                        level=level,
+                        doc={"id": key, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
+                        resource={
+                            "type": progress["kind"],
+                            "url": progress["url"],
+                            "title": progress["title"],
+                            "index": progress["index"],
+                            "total": progress["total"],
+                        },
+                        error={"message": progress.get("error", "")} if status == "failed" else None,
+                    )
+
                 markdown, resource_counts, resource_errors = localize_resources(
                     markdown,
                     resources,
@@ -861,21 +973,12 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                     args.download_attachments,
                     source_url,
                     args,
+                    emit_resource_progress,
                 )
                 image_success += resource_counts.get("image", 0)
                 attachment_success += resource_counts.get("attachment", 0)
                 if resource_errors:
                     resource_failures.append({"document": doc.get("title"), "path": str(md_path), "failures": resource_errors})
-                    for failure in resource_errors:
-                        emit(
-                            args,
-                            f"语雀资源下载失败：{doc.get('title') or key}：{failure.get('error') or failure.get('url') or ''}",
-                            event="resource.download.failed",
-                            level="error",
-                            doc={"id": key, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
-                            resource={"type": failure.get("kind") or "resource", "url": failure.get("url", "")},
-                            error={"message": failure.get("error", "")},
-                        )
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 md_path.write_text(markdown, encoding="utf-8")
                 if checkpoint:
@@ -1505,6 +1608,9 @@ def main(argv: list[str]) -> int:
             if not args.output:
                 raise ExportError("--output is required unless --login is used")
             report = export_book(args)
+    except ExportStopped:
+        emit(args, "语雀导出已停止。", event="task.stopped", level="warn")
+        report = {"stopped": True}
     except KeyboardInterrupt:
         emit(args, "语雀导出已停止。", event="task.stopped", level="warn")
         print("Interrupted.", file=sys.stderr)
@@ -1534,9 +1640,16 @@ def main(argv: list[str]) -> int:
             "imageFailureCount",
             "attachmentSuccess",
             "attachmentFailureCount",
+            "resourceFailureCount",
+            "failureCount",
+            "resourceFailures",
+            "imageFailures",
+            "attachmentFailures",
+            "failures",
+            "reportFile",
         )
         print(json.dumps({k: report[k] for k in keys if k in report}, ensure_ascii=False, indent=2))
-    return 0
+    return 130 if report.get("stopped") else 0
 
 
 if __name__ == "__main__":

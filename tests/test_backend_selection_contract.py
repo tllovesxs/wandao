@@ -1,9 +1,15 @@
+﻿import argparse
+import contextlib
+import io
+import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from plugins.aliyun_thoughts.backend.export_aliyun_thoughts import Node, select_document_nodes
 from plugins.feishu.backend.export_feishu import select_exportable_docs
+from plugins.yuque.backend import export_yuque
 from plugins.yuque.backend.export_yuque import (
     build_doc_paths,
     normalize_resources,
@@ -89,6 +95,112 @@ class BackendSelectionContractTests(unittest.TestCase):
                 "resourceFailureCount": 2,
             },
         )
+
+    def test_yuque_cli_keeps_conservative_default_detail_request_pacing(self) -> None:
+        args = export_yuque.parse_args(
+            [
+                "--book-url", "https://www.yuque.com/example/book",
+                "--output", "output",
+            ]
+        )
+
+        self.assertEqual(args.request_delay, 0.8)
+        self.assertEqual(args.request_jitter, 0.4)
+
+    def test_yuque_provider_defaults_match_conservative_cli_detail_request_pacing(self) -> None:
+        manifest_path = Path(__file__).resolve().parents[1] / "plugins" / "yuque" / "providers" / "yuque" / "provider.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        options = {item["name"]: item for item in manifest["fields"]}
+
+        self.assertEqual(options["request_delay"]["default"], 0.8)
+        self.assertEqual(options["request_jitter"]["default"], 0.4)
+
+    def test_yuque_doc_api_missing_data_raises_safe_api_error(self) -> None:
+        class MissingDataCdp:
+            expression = ""
+
+            def evaluate(self, expression: str, timeout: int) -> dict[str, object]:
+                assert timeout == 120
+                self.expression = expression
+                return {
+                    "apiError": {
+                        "status": 403,
+                        "statusText": "Forbidden",
+                        "code": "NoPermission",
+                        "message": "forbidden",
+                        "dataPresent": False,
+                    }
+                }
+
+        cdp = MissingDataCdp()
+        with self.assertRaisesRegex(export_yuque.ExportError, r"HTTP 403.*forbidden"):
+            export_yuque.fetch_doc_markdown(
+                cdp,
+                1,
+                {"url": "private-doc", "title": "Private document"},
+            )
+
+        self.assertIn("response.ok", cdp.expression)
+        self.assertIn("payload?.data", cdp.expression)
+        self.assertIn("typeof payload.data === 'object'", cdp.expression)
+        self.assertIn("Array.isArray(payload.data)", cdp.expression)
+
+    def test_yuque_cli_startup_stop_returns_130_with_stopped_payload(self) -> None:
+        args = argparse.Namespace(
+            book_url="https://www.yuque.com/example/book",
+            login=False,
+            scan_toc=False,
+            output=Path("output"),
+        )
+        stdout = io.StringIO()
+
+        with (
+            mock.patch.object(export_yuque, "parse_args", return_value=args),
+            mock.patch.object(
+                export_yuque,
+                "export_book",
+                side_effect=export_yuque.ExportStopped("?????????"),
+            ),
+            mock.patch.object(export_yuque, "emit"),
+            contextlib.redirect_stdout(stdout),
+        ):
+            self.assertEqual(export_yuque.main(["--book-url", args.book_url, "--output", "output"]), 130)
+
+        self.assertTrue(json.loads(stdout.getvalue())["stopped"])
+
+    def test_yuque_cli_stopped_result_returns_130_and_keeps_resource_failure_details(self) -> None:
+        args = argparse.Namespace(book_url="https://www.yuque.com/example/book", login=False, scan_toc=False, output=Path("output"))
+        resource_failures = [
+            {
+                "document": "doc.md",
+                "failures": [
+                    {"kind": "image", "url": "https://cdn.example.test/image.png", "error": "HTTP 404"}
+                ],
+            }
+        ]
+        report = {
+            "stopped": True,
+            "exportedDocs": 200,
+            "skippedDocs": 316,
+            "imageFailureCount": 1,
+            "attachmentFailureCount": 0,
+            "resourceFailureCount": 1,
+            "resourceFailures": resource_failures,
+            "imageFailures": resource_failures,
+            "attachmentFailures": [],
+            "failures": [],
+            "reportFile": "output/00-Yuque-export-report.json",
+        }
+        stdout = io.StringIO()
+
+        with mock.patch.object(export_yuque, "parse_args", return_value=args), mock.patch.object(export_yuque, "export_book", return_value=report), contextlib.redirect_stdout(stdout):
+            self.assertEqual(export_yuque.main(["--book-url", args.book_url, "--output", "output"]), 130)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["stopped"])
+        self.assertEqual(payload["resourceFailures"], resource_failures)
+        self.assertEqual(payload["imageFailures"], resource_failures)
+        self.assertEqual(payload["reportFile"], "output/00-Yuque-export-report.json")
 
     def test_aliyun_filters_document_node_ids(self) -> None:
         docs = select_document_nodes(

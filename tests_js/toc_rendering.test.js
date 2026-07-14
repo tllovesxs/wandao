@@ -6,6 +6,7 @@ const test = require('node:test');
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'app.js'), 'utf8');
 const cssSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'styles.css'), 'utf8');
+const qualityCheckSource = fs.readFileSync(path.join(repoRoot, 'scripts', 'quality_check.py'), 'utf8');
 const renderTocSource = appSource.slice(
   appSource.indexOf('function renderToc(toolId) {'),
   appSource.indexOf('\nfunction selectedTocArgs(toolId) {')
@@ -33,5 +34,16 @@ test('TOC stylesheet applies valid indentation and non-interactive hierarchy gui
   assert.match(guideBaseRule, /content:\s*""/);
   assert.match(guideBaseRule, /position:\s*absolute/);
   assert.match(guideBaseRule, /pointer-events:\s*none/);
-  assert.match(tocGuideRules, /::before\s*\{[^}]*var\(--toc-indent,\s*0px\)/);
+  assert.match(
+    tocGuideRules,
+    /\.toc-item:not\(\.toc-depth-0\)::before\s*\{[^}]*top:\s*0;[^}]*bottom:\s*0;[^}]*left:\s*calc\(10px\s*\+\s*var\(--toc-indent,\s*0px\)\s*-\s*11px\);[^}]*width:\s*1px;[^}]*background:\s*var\(--border\);/
+  );
+  assert.match(
+    tocGuideRules,
+    /\.toc-item:not\(\.toc-depth-0\)::after\s*\{[^}]*top:\s*50%;[^}]*left:\s*calc\(10px\s*\+\s*var\(--toc-indent,\s*0px\)\s*-\s*11px\);[^}]*width:\s*11px;[^}]*border-top:\s*1px\s+solid\s+var\(--border\);/
+  );
+});
+
+test('quality checks run the shared TOC rendering regression', () => {
+  assert.match(qualityCheckSource, /"tests_js\/toc_rendering\.test\.js"/);
 });

@@ -4,8 +4,8 @@
 Reads a local Obsidian Vault, copies Markdown files and referenced images
 or attachments into an output directory while preserving the original folder
 hierarchy.  Wiki-style embeds (![[...]]) and standard Markdown relative-path
-references are resolved against the vault; unresolved resources are logged
-in the final JSON report.
+references are resolved against the vault and rewritten to point to the
+actual copied resource locations under _resources/.
 
 The script never modifies the source Vault.
 """
@@ -34,14 +34,66 @@ IMAGE_EXTENSIONS = frozenset(
     }
 )
 
+_RESOURCES_SUBDIR = "_resources"
+
 # Matches: ![[path|optional-size]]  or  [[path|optional-alias]]
 _WIKI_LINK_RE = re.compile(r"!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
 
 # Matches: ![alt](url)
 _MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
-# Matches: [text](url)  (regular link)
+# Matches: [text](url)  (regular link, not image)
 _MD_LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\(([^)]+)\)")
+
+
+# ---------------------------------------------------------------------------
+# Path validation
+# ---------------------------------------------------------------------------
+
+def _validate_vault_path(target: Path, vault: Path) -> Path:
+    """Resolve target and verify it lies inside vault.
+
+    Rejects:
+      - Raw path containing .. components.
+      - Resolved paths outside the vault directory.
+      - Symlink / junction escapes from the vault.
+
+    Returns the resolved absolute path.
+    """
+    raw = str(target)
+    if ".." in Path(raw).parts:
+        raise ValueError(f"Path contains forbidden .. traversal: {raw}")
+
+    resolved = target.resolve()
+
+    try:
+        vault_resolved = vault.resolve()
+        resolved.relative_to(vault_resolved)
+    except ValueError:
+        raise ValueError(f"Path outside vault: {resolved}")
+
+    # Walk from vault to target verifying no component is an escaping symlink.
+    rel = resolved.relative_to(vault_resolved)
+    cursor = vault_resolved
+    for part in rel.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            real = cursor.resolve()
+            try:
+                real.relative_to(vault_resolved)
+            except ValueError:
+                raise ValueError(f"Symlink escapes vault: {cursor} -> {real}")
+
+    return resolved
+
+
+def _validate_output_not_in_vault(output: Path, vault: Path) -> None:
+    """Raise if output directory is inside (or equal to) vault."""
+    try:
+        output.resolve().relative_to(vault.resolve())
+    except ValueError:
+        return  # output is outside vault
+    raise ValueError("Output directory must not be inside the vault")
 
 
 # ---------------------------------------------------------------------------
@@ -86,36 +138,35 @@ def _resolve_resource(
       1. Relative to the source .md directory.
       2. Relative to the vault root.
       3. Filename-only lookup against pre-built index (best-effort).
+
+    Every candidate is validated to be within the vault before returning.
     """
     # 1. relative to source .md
-    candidate = (source_dir / ref).resolve()
-    if candidate.is_file() and _is_under_vault(candidate, vault):
-        return candidate
+    try:
+        candidate = _validate_vault_path(source_dir / ref, vault)
+        if candidate.is_file():
+            return candidate
+    except ValueError:
+        pass
 
     # 2. relative to vault root
-    candidate = (vault / ref).resolve()
-    if candidate.is_file():
-        return candidate
+    try:
+        candidate = _validate_vault_path(vault / ref, vault)
+        if candidate.is_file():
+            return candidate
+    except ValueError:
+        pass
 
-    # 3. filename-only lookup
+    # 3. filename-only lookup (only candidates already inside vault)
     key = Path(ref).name.lower()
-    hits = file_index.get(key, [])
+    hits = [h for h in file_index.get(key, [])]
     if len(hits) == 1:
         return hits[0]
     if len(hits) > 1:
-        # Prefer one in the same directory tree as source .md
         same_dir_hits = [h for h in hits if source_dir in h.parents or h.parent == source_dir]
         if len(same_dir_hits) == 1:
             return same_dir_hits[0]
     return None
-
-
-def _is_under_vault(target: Path, vault: Path) -> bool:
-    try:
-        target.resolve().relative_to(vault.resolve())
-        return True
-    except ValueError:
-        return False
 
 
 def _find_resource_refs(md_text: str) -> List[Tuple[str, Optional[str]]]:
@@ -145,6 +196,74 @@ def _find_resource_refs(md_text: str) -> List[Tuple[str, Optional[str]]]:
 
 
 # ---------------------------------------------------------------------------
+# Markdown reference rewriting
+# ---------------------------------------------------------------------------
+
+def _rewrite_markdown_refs(
+    md_text: str,
+    ref_to_new_path: Dict[str, str],
+) -> str:
+    """Replace every resource reference in *md_text* with a path that points
+    to the actual copied resource location.
+
+    Wiki embeds (![[...]]) are converted to standard Markdown image syntax.
+    """
+    replacements: List[Tuple[int, int, str]] = []
+
+    # Wiki embeds: ![[ref|...]] -> ![name](new_path)
+    for m in _WIKI_LINK_RE.finditer(md_text):
+        full = m.group(1).strip()
+        base_ref = full.split("|")[0].strip()
+        if base_ref in ref_to_new_path:
+            new_path = ref_to_new_path[base_ref]
+            alt = Path(base_ref).name
+            replacement = f"![{alt}]({new_path})"
+            replacements.append((m.start(), m.end(), replacement))
+
+    # Standard md images: ![alt](ref) -> ![alt](new_path)
+    for m in _MD_IMAGE_RE.finditer(md_text):
+        ref = m.group(1)
+        if ref in ref_to_new_path:
+            new_path = ref_to_new_path[ref]
+            prefix_end = m.group(0).index("](") + 1
+            alt_start = 2
+            alt = m.group(0)[alt_start:prefix_end - 1]
+            replacement = f"![{alt}]({new_path})"
+            replacements.append((m.start(), m.end(), replacement))
+
+    # Standard md links: [text](ref) -> [text](new_path)
+    for m in _MD_LINK_RE.finditer(md_text):
+        ref = m.group(2)
+        if ref in ref_to_new_path:
+            new_path = ref_to_new_path[ref]
+            text = m.group(1)
+            replacement = f"[{text}]({new_path})"
+            replacements.append((m.start(), m.end(), replacement))
+
+    # Apply replacements from end to start to preserve positions
+    replacements.sort(key=lambda x: x[0], reverse=True)
+    result = md_text
+    for start, end, repl in replacements:
+        result = result[:start] + repl + result[end:]
+
+    return result
+
+
+def _resource_dest_path(
+    resolved_src: Path,
+    vault: Path,
+    output_root: Path,
+) -> Path:
+    """Compute destination path for a resource under output/_resources/.
+
+    Uses the vault-relative path to guarantee uniqueness across directories.
+    """
+    vault_abs = vault.resolve()
+    rel = resolved_src.resolve().relative_to(vault_abs)
+    return output_root / _RESOURCES_SUBDIR / rel
+
+
+# ---------------------------------------------------------------------------
 # Scan TOC
 # ---------------------------------------------------------------------------
 
@@ -155,7 +274,6 @@ def scan_toc_cmd(vault: Path) -> Dict[str, Any]:
     folder_count = 0
     folder_ids: set = set()
 
-    # root pseudo-node
     nodes.append(
         {
             "nodeId": "folder:",
@@ -173,7 +291,6 @@ def scan_toc_cmd(vault: Path) -> Dict[str, Any]:
             continue
         rel_dir = dirpath_p.relative_to(vault_abs)
 
-        # Register folders
         parts = rel_dir.parts
         for depth in range(1, len(parts) + 1):
             sub_rel = Path(*parts[:depth])
@@ -192,7 +309,6 @@ def scan_toc_cmd(vault: Path) -> Dict[str, Any]:
                 folder_ids.add(folder_id)
                 folder_count += 1
 
-        # Register Markdown files
         md_files = sorted(f for f in filenames if f.lower().endswith(".md"))
         for fname in md_files:
             rel_file = (rel_dir / fname).as_posix()
@@ -232,17 +348,42 @@ def export_cmd(
     vault_abs = vault.resolve()
     output_abs = output.resolve()
 
-    # Build selection set
+    # Security: reject output directory inside vault
+    _validate_output_not_in_vault(output, vault)
+
+    # Build and validate selection set
     if doc_ids:
-        selected = set(doc_ids)
+        selected = set()
+        for raw_id in doc_ids:
+            try:
+                validated = _validate_vault_path(vault_abs / raw_id, vault_abs)
+                if not validated.is_file():
+                    raise ValueError(f"File not found: {raw_id}")
+                selected.add(validated.relative_to(vault_abs).as_posix())
+            except ValueError as exc:
+                return {
+                    "provider": "obsidian-export",
+                    "mode": "export",
+                    "totalDocs": len(doc_ids),
+                    "exportedDocs": 0,
+                    "successCount": 0,
+                    "skippedDocs": 0,
+                    "failureCount": 1,
+                    "failures": [
+                        {
+                            "docId": raw_id,
+                            "title": Path(raw_id).stem,
+                            "error": str(exc),
+                        }
+                    ],
+                    "resourceFailures": [],
+                }
     else:
-        # Export all .md files in vault
         selected = set()
         for entry in vault_abs.rglob("*.md"):
             if not _is_hidden(entry, vault_abs):
                 selected.add(entry.relative_to(vault_abs).as_posix())
 
-    # Build file index for resource resolution
     file_index = _build_file_index(vault_abs)
 
     total_docs = len(selected)
@@ -261,7 +402,7 @@ def export_cmd(
                 {
                     "docId": rel_path,
                     "title": Path(rel_path).stem,
-                    "error": "源文件不存在",
+                    "error": "Source file not found",
                 }
             )
             continue
@@ -269,7 +410,6 @@ def export_cmd(
         dest_file = output_abs / rel_path
         output_dir = dest_file.parent
 
-        # Incremental: skip if output exists and is newer
         if incremental and dest_file.exists() and dest_file.stat().st_mtime >= source_file.stat().st_mtime:
             skipped_docs += 1
             processed_count += 1
@@ -280,10 +420,10 @@ def export_cmd(
 
         try:
             md_text = source_file.read_text(encoding="utf-8", errors="replace")
-            resolved: Dict[str, Path] = {}  # ref -> resolved file path
+            resolved: Dict[str, Path] = {}
+            ref_to_new_path: Dict[str, str] = {}
             resource_errors: List[Dict[str, Any]] = []
 
-            # Resolve embedded resources
             for ref, _ in _find_resource_refs(md_text):
                 if ref in resolved:
                     continue
@@ -291,15 +431,24 @@ def export_cmd(
                 if result is not None:
                     resolved[ref] = result
                 else:
-                    resource_errors.append({"ref": ref, "error": "未找到引用文件"})
+                    resource_errors.append({"ref": ref, "error": "Resource not found"})
 
-            # Copy resources
+            # Copy resources and build ref map
             for ref, src_path in resolved.items():
-                dest_resource = output_dir / Path(ref).name
+                dest_resource = _resource_dest_path(src_path, vault_abs, output_abs)
                 dest_resource.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path, dest_resource)
 
-            # Write the Markdown file
+                try:
+                    new_rel = Path(os.path.relpath(dest_resource, output_dir))
+                except ValueError:
+                    new_rel = Path(dest_resource.name)
+                ref_to_new_path[ref] = new_rel.as_posix()
+
+            # Rewrite markdown references
+            if ref_to_new_path:
+                md_text = _rewrite_markdown_refs(md_text, ref_to_new_path)
+
             dest_file.write_text(md_text, encoding="utf-8")
 
             exported_docs += 1
@@ -356,27 +505,27 @@ def _emit_progress(current: int, total: int, every: int) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Obsidian Vault 归档导出")
-    parser.add_argument("--vault", default=None, help="Obsidian Vault 根目录")
-    parser.add_argument("--output", help="输出目录 (--export 时必需)")
-    parser.add_argument("--scan-toc", action="store_true", help="扫描 Vault 目录并输出 JSON 目录树")
-    parser.add_argument("--export", action="store_true", help="开始批量导出")
-    parser.add_argument("--doc-id", action="append", default=None, help="要导出的文件相对路径（可多次传入）")
-    parser.add_argument("--incremental", action="store_true", help="跳过比输出目录更新的文件")
-    parser.add_argument("--progress-every", type=int, default=1, help="每隔 N 篇文档输出一次进度（0=不输出）")
+    parser = argparse.ArgumentParser(description="Obsidian Vault export")
+    parser.add_argument("--vault", default=None, help="Obsidian Vault root directory")
+    parser.add_argument("--output", help="Output directory (required for --export)")
+    parser.add_argument("--scan-toc", action="store_true", help="Scan vault and output JSON TOC")
+    parser.add_argument("--export", action="store_true", help="Start batch export")
+    parser.add_argument("--doc-id", action="append", default=None, help="Relative path of file to export (repeatable)")
+    parser.add_argument("--incremental", action="store_true", help="Skip files newer than output")
+    parser.add_argument("--progress-every", type=int, default=1, help="Emit progress every N docs (0=off)")
 
     args = parser.parse_args()
 
     if not args.vault:
-        print(json.dumps({"error": "--vault 未指定，请在界面中选择 Vault 根目录（文件夹）."}, ensure_ascii=False), flush=True)
+        print(json.dumps({"error": "--vault not specified"}, ensure_ascii=False), flush=True)
         sys.exit(1)
 
     vault = Path(args.vault).resolve()
     if not vault.is_dir():
         if vault.is_file():
-            msg = f"--vault 需要选择 Vault 根目录（文件夹），而不是单个文件。当前传入的是文件：{vault}"
+            msg = f"--vault must be a directory, not a file: {vault}"
         else:
-            msg = f"Vault 目录不存在：{vault}"
+            msg = f"Vault directory not found: {vault}"
         print(json.dumps({"error": msg}, ensure_ascii=False), flush=True)
         sys.exit(1)
 
@@ -387,20 +536,37 @@ def main() -> None:
 
     if args.export:
         if not args.output:
-            print(json.dumps({"error": "--export 需要 --output 参数"}, ensure_ascii=False), flush=True)
+            print(json.dumps({"error": "--export requires --output"}, ensure_ascii=False), flush=True)
             sys.exit(1)
         output = Path(args.output).resolve()
-        result = export_cmd(
-            vault=vault,
-            output=output,
-            doc_ids=args.doc_id,
-            incremental=args.incremental,
-            progress_every=args.progress_every,
-        )
+        try:
+            result = export_cmd(
+                vault=vault,
+                output=output,
+                doc_ids=args.doc_id,
+                incremental=args.incremental,
+                progress_every=args.progress_every,
+            )
+        except ValueError as exc:
+            result = {
+                "provider": "obsidian-export",
+                "mode": "export",
+                "totalDocs": 0,
+                "exportedDocs": 0,
+                "successCount": 0,
+                "skippedDocs": 0,
+                "failureCount": 1,
+                "failures": [{"docId": "", "title": "", "error": str(exc)}],
+                "resourceFailures": [],
+            }
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+            sys.exit(1)
         print(json.dumps(result, ensure_ascii=False), flush=True)
+        if result.get("failureCount", 0) > 0 or result.get("failures"):
+            sys.exit(1)
         return
 
-    print(json.dumps({"error": "请指定 --scan-toc 或 --export 操作."}, ensure_ascii=False), flush=True)
+    print(json.dumps({"error": "Specify --scan-toc or --export"}, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

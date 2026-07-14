@@ -1,4 +1,4 @@
-{
+﻿{
   "$schema": "../plugin.schema.json",
   "schemaVersion": 1,
   "id": "obsidian",
@@ -23,7 +23,6 @@
   },
   "permissions": [
     "filesystem:read",
-    "filesystem:write",
-    "process"
+    "filesystem:write"
   ]
 }

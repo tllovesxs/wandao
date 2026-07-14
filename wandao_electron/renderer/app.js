@@ -4613,11 +4613,15 @@ function renderToc(toolId) {
     const ids = descendantExportIds(state.nodes, node.nodeId);
     const selectedCount = ids.filter((id) => state.selected.has(id)).length;
     const checkClass = selectedCount === ids.length && ids.length ? 'checked' : (selectedCount ? 'partial' : '');
-    const count = node.selectable ? '' : `<span class="toc-count">${selectedCount}/${ids.length}</span>`;
+    const hasSelectableItems = ids.length > 0;
+    const selectionAttributes = hasSelectableItems ? '' : ' disabled aria-disabled="true" title="该目录不包含可导出的文档"';
+    const count = node.selectable ? '' : (hasSelectableItems
+      ? `<span class="toc-count">${selectedCount}/${ids.length}</span>`
+      : `<span class="toc-count">无可导出文档</span>`);
     const childHtml = (children.get(node.nodeId) || []).map((child) => renderNode(child, depth + 1)).join('');
     return `
       <div class="toc-node">
-        <button class="toc-item toc-depth-${depth}" type="button" data-node-id="${escapeHtml(node.nodeId)}" data-depth="${depth}" style="--depth:${depth};--toc-indent:${depth * 22}px">
+        <button class="toc-item toc-depth-${depth}${hasSelectableItems ? '' : ' toc-item-empty'}" type="button" data-node-id="${escapeHtml(node.nodeId)}" data-depth="${depth}" style="--depth:${depth};--toc-indent:${depth * 30}px"${selectionAttributes}>
           <span class="toc-box ${checkClass}"></span>
           <span class="toc-title">${escapeHtml(node.title)}</span>
           ${count}

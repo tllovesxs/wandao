@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "xiliu",
+  "name": "息流",
+  "description": "导出/导入 FlowUs (息流) 文档，保留目录结构。",
+  "version": "1.0.0",
+  "publisher": "tllovesxs",
+  "core": { "minVersion": "1.2.9" },
+  "entrypoints": {
+    "providers": [
+      "providers/xiliu/provider.json",
+      "providers/xiliu-import/provider.json"
+    ]
+  },
+  "permissions": ["browser-automation", "credentials", "filesystem:write", "network", "process"]
+}

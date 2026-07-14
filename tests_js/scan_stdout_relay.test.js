@@ -34,3 +34,14 @@ test('flushes a non-result trailing log fragment', () => {
 
   assert.deepEqual(forwarded, ['Waiting for remote directory']);
 });
+
+test('does not hide JSON-looking logs that are followed by normal diagnostics', () => {
+  const forwarded = [];
+  const relay = createScanStdoutRelay((text) => forwarded.push(text));
+
+  relay.push('{"event":"scan-progress"}\n');
+  relay.push('Directory scan failed: retry later\n');
+  relay.flush();
+
+  assert.deepEqual(forwarded, ['{"event":"scan-progress"}\nDirectory scan failed: retry later\n']);
+});

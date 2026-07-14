@@ -5,16 +5,19 @@
 
 function createScanStdoutRelay(send) {
   let pending = '';
-  let resultStarted = false;
+  let candidate = '';
 
   function forwardCompleteLines() {
-    while (!resultStarted) {
+    while (!candidate) {
       const newlineIndex = pending.indexOf('\n');
       if (newlineIndex < 0) return;
       const line = pending.slice(0, newlineIndex + 1);
       pending = pending.slice(newlineIndex + 1);
       if (isTerminalJsonObjectStart(line)) {
-        resultStarted = true;
+        // A scan result is normally the final JSON object, but an arbitrary
+        // provider log can also begin with "{". Keep a candidate until the
+        // process closes so a JSON-looking log never hides later diagnostics.
+        candidate = line + pending;
         pending = '';
         return;
       }
@@ -24,17 +27,26 @@ function createScanStdoutRelay(send) {
 
   return {
     push(chunk) {
-      if (resultStarted) return;
+      if (candidate) {
+        candidate += String(chunk || '');
+        return;
+      }
       pending += String(chunk || '');
       forwardCompleteLines();
     },
     flush() {
-      if (resultStarted || !pending) return;
-      if (isTerminalJsonObjectStart(pending)) {
-        resultStarted = true;
-        pending = '';
+      if (candidate) {
+        try {
+          const parsed = JSON.parse(candidate.trim());
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return;
+        } catch (_) {
+          // Not the terminal result: preserve it as an ordinary renderer log.
+        }
+        send(candidate);
+        candidate = '';
         return;
       }
+      if (!pending) return;
       send(pending);
       pending = '';
     }

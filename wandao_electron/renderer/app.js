@@ -4621,7 +4621,7 @@ function renderToc(toolId) {
     const childHtml = (children.get(node.nodeId) || []).map((child) => renderNode(child, depth + 1)).join('');
     return `
       <div class="toc-node">
-        <button class="toc-item toc-depth-${depth}${hasSelectableItems ? '' : ' toc-item-empty'}" type="button" data-node-id="${escapeHtml(node.nodeId)}" data-depth="${depth}" style="--depth:${depth};--toc-indent:${depth * 30}px"${selectionAttributes}>
+        <button class="toc-item toc-depth-${depth}${hasSelectableItems ? '' : ' toc-item-empty'}" type="button" data-node-id="${escapeHtml(node.nodeId)}" data-depth="${depth}" style="--depth:${depth};--toc-indent:${depth * 48}px"${selectionAttributes}>
           <span class="toc-box ${checkClass}"></span>
           <span class="toc-title">${escapeHtml(node.title)}</span>
           ${count}

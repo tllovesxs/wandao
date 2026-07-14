@@ -34,7 +34,7 @@ test('shared TOC renderer emits explicit depth markers and pixel indentation', (
     renderTocSource,
     /data-node-id="\$\{escapeHtml\(node\.nodeId\)\}"\s+data-depth="\$\{depth\}"/
   );
-  assert.match(renderTocSource, /style="--depth:\$\{depth\};--toc-indent:\$\{depth \* 30\}px"/);
+  assert.match(renderTocSource, /style="--depth:\$\{depth\};--toc-indent:\$\{depth \* 48\}px"/);
 });
 
 test('TOC selection includes a document itself and all selectable descendants', () => {
@@ -76,11 +76,11 @@ test('TOC stylesheet applies valid indentation and non-interactive hierarchy gui
   assert.match(guideBaseRule, /pointer-events:\s*none/);
   assert.match(
     tocGuideRules,
-    /\.toc-item:not\(\.toc-depth-0\)::before\s*\{[^}]*top:\s*0;[^}]*bottom:\s*0;[^}]*left:\s*calc\(10px\s*\+\s*var\(--toc-indent,\s*0px\)\s*-\s*11px\);[^}]*width:\s*1px;[^}]*background:\s*var\(--border\);/
+    /\.toc-item:not\(\.toc-depth-0\)::before\s*\{[^}]*top:\s*0;[^}]*bottom:\s*0;[^}]*left:\s*calc\(10px\s*\+\s*var\(--toc-indent,\s*0px\)\s*-\s*11px\);[^}]*width:\s*1px;[^}]*background:\s*var\(--border-strong\);/
   );
   assert.match(
     tocGuideRules,
-    /\.toc-item:not\(\.toc-depth-0\)::after\s*\{[^}]*top:\s*50%;[^}]*left:\s*calc\(10px\s*\+\s*var\(--toc-indent,\s*0px\)\s*-\s*11px\);[^}]*width:\s*11px;[^}]*border-top:\s*1px\s+solid\s+var\(--border\);/
+    /\.toc-item:not\(\.toc-depth-0\)::after\s*\{[^}]*top:\s*50%;[^}]*left:\s*calc\(10px\s*\+\s*var\(--toc-indent,\s*0px\)\s*-\s*11px\);[^}]*width:\s*11px;[^}]*border-top:\s*1px\s+solid\s+var\(--border-strong\);/
   );
 });
 

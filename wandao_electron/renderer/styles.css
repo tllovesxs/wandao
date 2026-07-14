@@ -1446,14 +1446,14 @@ select:focus-visible,
   bottom: 0;
   left: calc(10px + var(--toc-indent, 0px) - 11px);
   width: 1px;
-  background: var(--border);
+  background: var(--border-strong);
 }
 
 .toc-item:not(.toc-depth-0)::after {
   top: 50%;
   left: calc(10px + var(--toc-indent, 0px) - 11px);
   width: 11px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-strong);
 }
 
 .toc-item:hover:not(:disabled) {

@@ -4621,7 +4621,7 @@ function renderToc(toolId) {
     const childHtml = (children.get(node.nodeId) || []).map((child) => renderNode(child, depth + 1)).join('');
     return `
       <div class="toc-node">
-        <button class="toc-item toc-depth-${depth}${hasSelectableItems ? '' : ' toc-item-empty'}" type="button" data-node-id="${escapeHtml(node.nodeId)}" data-depth="${depth}" style="--depth:${depth};--toc-indent:${depth * 48}px"${selectionAttributes}>
+        <button class="toc-item toc-depth-${depth}${hasSelectableItems ? '' : ' toc-item-empty'}" type="button" data-node-id="${escapeHtml(node.nodeId)}" data-depth="${depth}"${selectionAttributes}>
           <span class="toc-box ${checkClass}"></span>
           <span class="toc-title">${escapeHtml(node.title)}</span>
           ${count}
@@ -4633,6 +4633,12 @@ function renderToc(toolId) {
 
   const html = (children.get('') || []).map((node) => renderNode(node, 0)).join('');
   list.innerHTML = html || '<div class="toc-empty">没有读取到可选择的目录。</div>';
+  // CSP forbids inline styles, so set the shared depth variable through CSSOM.
+  list.querySelectorAll('.toc-item[data-depth]').forEach((item) => {
+    const depth = Number.parseInt(item.dataset.depth, 10);
+    const indent = Number.isFinite(depth) && depth > 0 ? depth * 40 : 0;
+    item.style.setProperty('--toc-indent', `${indent}px`);
+  });
 }
 
 function selectedTocArgs(toolId) {

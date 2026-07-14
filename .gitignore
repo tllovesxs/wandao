@@ -60,3 +60,5 @@ wiki-*.png
 
 # Local Git worktrees
 .worktrees/
+# Local Codex runtime captures and logs
+.codex-runtime-logs/

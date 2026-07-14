@@ -2679,7 +2679,7 @@ def main(argv: list[str]) -> int:
             "imageFailureCount",
         )
         print(json.dumps({k: report[k] for k in keys if k in report}, ensure_ascii=False, indent=2))
-    return 0
+    return 130 if report.get("stopped") else 0
 
 
 if __name__ == "__main__":

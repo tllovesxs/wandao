@@ -57,3 +57,6 @@ wandao_electron/out/
 browser_import_docx_result*.png
 openplatform-*.png
 wiki-*.png
+
+# Local Git worktrees
+.worktrees/

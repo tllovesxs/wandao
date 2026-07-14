@@ -6,6 +6,7 @@ const https = require('https');
 const { PluginManager } = require('./plugin_manager');
 const { assertSafeRelativePath, validatePluginManifest } = require('./plugin_format');
 const { parseLastJson, parseProcessResult } = require('./process_result');
+const { createScanStdoutRelay } = require('./scan_stdout_relay');
 const { extractSensitiveArguments } = require('./command_security');
 const { resolveProviderScript } = require('./provider_script_routing');
 const { resolveLegacyTemplateConfig } = require('./provider_legacy_compat');
@@ -1578,15 +1579,24 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     let stderr = '';
     let stdoutOmitted = 0;
     let stderrOmitted = 0;
+    const sendPythonLog = (text) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('python-log', text);
+      }
+    };
+    const scanStdoutRelay = commandArgs.includes('--scan-toc')
+      ? createScanStdoutRelay(sendPythonLog)
+      : null;
 
     proc.stdout.on('data', (data) => {
       const text = data.toString();
       const next = appendOutputTail(stdout, text);
       stdout = next.text;
       stdoutOmitted += next.omitted;
-      // 实时发送日志到渲染进程
-      if (mainWindow) {
-        mainWindow.webContents.send('python-log', text);
+      if (scanStdoutRelay) {
+        scanStdoutRelay.push(text);
+      } else {
+        sendPythonLog(text);
       }
     });
 
@@ -1595,12 +1605,11 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
       const next = appendOutputTail(stderr, text);
       stderr = next.text;
       stderrOmitted += next.omitted;
-      if (mainWindow) {
-        mainWindow.webContents.send('python-log', text);
-      }
+      sendPythonLog(text);
     });
 
     proc.on('close', (code) => {
+      scanStdoutRelay?.flush();
       cleanupTemporaryDocIdFile(commandArgs);
       if (pythonProcess === proc) {
         pythonProcess = null;

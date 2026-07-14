@@ -59,6 +59,7 @@
       "plugin_format.js",
       "plugin_manager.js",
       "process_result.js",
+      "scan_stdout_relay.js",
       "command_security.js",
       "assets/**/*",
       "provider_script_routing.js",

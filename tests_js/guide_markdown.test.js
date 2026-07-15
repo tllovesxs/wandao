@@ -75,7 +75,7 @@ test('Feishu import tutorial bundles all referenced screenshots', () => {
   });
 });
 
-test('legacy Feishu import providers append their bundled guide after rendering the form', () => {
-  const feishuImportBranch = sourceBetween("  } else if (currentTool === 'feishu-import'", "  } else {");
+test('Feishu import providers append their bundled guide after rendering the form', () => {
+  const feishuImportBranch = sourceBetween("  if (currentTool === 'feishu-import'", "  } else if (config.type === 'guide'");
   assert.match(feishuImportBranch, /appendProviderGuideSection\(contentArea, config\);/);
 });

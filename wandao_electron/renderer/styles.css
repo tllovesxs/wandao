@@ -1505,6 +1505,14 @@ select:focus-visible,
   margin-top: 5px;
 }
 
+.guide-content img.guide-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 0 14px;
+  border-radius: var(--r-sm);
+}
+
 .guide-content code {
   padding: 2px 6px;
   border-radius: 6px;

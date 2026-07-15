@@ -3093,18 +3093,34 @@ function markdownInline(value) {
   return text;
 }
 
+function safeGuideImagePath(value) {
+  const imagePath = String(value || '').trim();
+  if (!imagePath || imagePath.startsWith('/') || imagePath.startsWith('\\')) return '';
+  if (/^[a-z][a-z0-9+.-]*:/i.test(imagePath) || /[<>"'&\x00-\x1f]/.test(imagePath)) return '';
+  const segments = imagePath.replace(/\\/g, '/').split('/');
+  if (segments.includes('..')) return '';
+  return imagePath;
+}
+
 function markdownToHtml(markdown) {
   const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
   const html = [];
   let inCode = false;
   let codeLines = [];
-  let inList = false;
+  let listType = '';
 
   const closeList = () => {
-    if (inList) {
-      html.push('</ul>');
-      inList = false;
+    if (listType) {
+      html.push(`</${listType}>`);
+      listType = '';
     }
+  };
+
+  const openList = (type) => {
+    if (listType === type) return;
+    closeList();
+    html.push(`<${type}>`);
+    listType = type;
   };
 
   lines.forEach((line) => {
@@ -3135,12 +3151,24 @@ function markdownToHtml(markdown) {
       html.push(`<h${level}>${markdownInline(heading[2])}</h${level}>`);
       return;
     }
+    const image = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+    if (image) {
+      const imagePath = safeGuideImagePath(image[2]);
+      if (imagePath) {
+        closeList();
+        html.push(`<img class="guide-image" alt="${escapeHtml(image[1])}" data-guide-image="${escapeHtml(imagePath)}" loading="lazy">`);
+        return;
+      }
+    }
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      openList('ol');
+      html.push(`<li>${markdownInline(ordered[1])}</li>`);
+      return;
+    }
     const bullet = trimmed.match(/^[-*]\s+(.+)$/);
     if (bullet) {
-      if (!inList) {
-        html.push('<ul>');
-        inList = true;
-      }
+      openList('ul');
       html.push(`<li>${markdownInline(bullet[1])}</li>`);
       return;
     }

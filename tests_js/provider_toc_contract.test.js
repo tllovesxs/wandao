@@ -71,6 +71,14 @@ const fixtures = {
     rootId: 'ima-kb:demo', docId: 'ima-media:demo:doc', parentId: 'ima-kb:demo', exportId: 'kb::doc',
     args: ['--doc-id', 'kb::doc']
   },
+  'obsidian-export': {
+    payload: { nodes: [
+      { nodeId: 'folder:notes', exportId: '', title: 'Notes', parentNodeId: '', selectable: false },
+      { nodeId: 'doc:notes/getting-started.md', exportId: 'notes/getting-started.md', title: 'Getting Started', parentNodeId: 'folder:notes', selectable: true }
+    ] },
+    rootId: 'folder:notes', docId: 'doc:notes/getting-started.md', parentId: 'folder:notes', exportId: 'notes/getting-started.md',
+    args: ['--doc-id', 'notes/getting-started.md']
+  },
   onenote: {
     payload: { nodes: [
       { nodeId: 'onenote-notebook:demo', exportId: '', title: 'Notebook', parentNodeId: '', selectable: false },

@@ -275,6 +275,7 @@ function restoreFormDraftForProvider(providerId) {
     providerId,
     actionId: restored.actionId || 'default'
   };
+  recordCurrentRecentInputs(providerId);
   if (restored.restored > 0) {
     const formSection = formDraftRoot()?.querySelector?.('.form-section');
     if (formSection && !formSection.querySelector('.draft-restore-notice')) {
@@ -333,7 +334,10 @@ function initializeFormDraftPersistence() {
     if (!isFormDraftAction(button)) return;
     activateFormDraftAction(currentTool, formDraftActionId(button));
   }, true);
-  window.addEventListener('beforeunload', () => saveCurrentFormDraft());
+  window.addEventListener('beforeunload', () => {
+    recordCurrentRecentInputs();
+    saveCurrentFormDraft();
+  });
 }
 
 function refreshProviderTools() {
@@ -3904,6 +3908,7 @@ function switchTool(toolId) {
     }
     return false;
   }
+  recordCurrentRecentInputs();
   saveCurrentFormDraft();
   if (formDraftSaveTimer) {
     window.clearTimeout(formDraftSaveTimer);

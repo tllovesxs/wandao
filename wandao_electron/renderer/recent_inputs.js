@@ -133,8 +133,9 @@
   }
 
   function saveStore(storage, store) {
+    if (typeof storage?.setItem !== 'function') return false;
     try {
-      storage?.setItem?.(STORAGE_KEY, JSON.stringify(store));
+      storage.setItem(STORAGE_KEY, JSON.stringify(store));
       return true;
     } catch (_) {
       return false;
@@ -223,8 +224,9 @@
   }
 
   function clearAll(storage) {
+    if (typeof storage?.removeItem !== 'function') return false;
     try {
-      storage?.removeItem?.(STORAGE_KEY);
+      storage.removeItem(STORAGE_KEY);
       return true;
     } catch (_) {
       return false;
@@ -298,8 +300,6 @@
           field.value = value;
           field.dispatchEvent(new Event('input', { bubbles: true }));
           field.dispatchEvent(new Event('change', { bubbles: true }));
-          recordValue(storage, scope, field, value);
-          render();
           field.focus();
         });
         row.appendChild(useButton);
@@ -319,8 +319,14 @@
       }
       panel.appendChild(options);
     };
+
+    const recordCommittedValue = () => {
+      const result = recordValue(storage, scope, field, field.value);
+      if (result.saved) render();
+    };
+    field.addEventListener('change', recordCommittedValue);
     render();
-    return { field, panel, render };
+    return { field, panel, render, recordCommittedValue };
   }
 
   function enhanceRoot(storage, scope, rootNode) {

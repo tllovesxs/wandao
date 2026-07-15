@@ -34,6 +34,61 @@ function field(options = {}) {
   };
 }
 
+function fakeElement(tagName, ownerDocument) {
+  const attributes = {};
+  const listeners = new Map();
+  return {
+    tagName: String(tagName || 'div').toUpperCase(),
+    ownerDocument,
+    children: [],
+    className: '',
+    hidden: false,
+    textContent: '',
+    setAttribute(name, value) { attributes[name] = String(value); },
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null; },
+    appendChild(child) { this.children.push(child); child.parentElement = this; return child; },
+    prepend(child) { this.children.unshift(child); child.parentElement = this; return child; },
+    replaceChildren(...children) {
+      this.children = children;
+      children.forEach((child) => { child.parentElement = this; });
+    },
+    addEventListener(type, listener) {
+      const handlers = listeners.get(type) || [];
+      handlers.push(listener);
+      listeners.set(type, handlers);
+    },
+    dispatchEvent(event) {
+      for (const listener of listeners.get(event?.type) || []) listener.call(this, event);
+      return true;
+    },
+    focus() { this.focused = true; },
+    closest() { return null; }
+  };
+}
+
+function interactiveHistoryField(options = {}) {
+  const documentRef = {
+    createElement(tagName) { return fakeElement(tagName, documentRef); }
+  };
+  const container = fakeElement('div', documentRef);
+  container.className = 'form-group';
+  const input = fakeElement('input', documentRef);
+  input.id = options.id || 'zsxq-group-url';
+  input.name = options.name || '';
+  input.type = options.type || 'url';
+  input.value = options.value || '';
+  input.disabled = false;
+  input.readOnly = false;
+  input.placeholder = '';
+  input.autocomplete = '';
+  input.setAttribute('data-history-kind', options.kind || 'url');
+  input.setAttribute('data-history-key', options.key || 'entry_url');
+  input.setAttribute('data-history-label', options.label || '知识星球 Group URL');
+  input.parentElement = container;
+  input.closest = (selector) => selector === '.form-group' ? container : null;
+  return { container, input };
+}
+
 test('keeps the latest three distinct values and moves a duplicate to the front', () => {
   const storage = memoryStorage();
   const url = field();
@@ -147,6 +202,42 @@ test('malformed local data is ignored without breaking the form', () => {
   assert.equal(recent.recordValue(storage, 'scope', url, 'https://example.com/recovered', 200).saved, true);
 });
 
+test('reports unavailable or failing local storage instead of claiming success', () => {
+  const url = field();
+  assert.equal(recent.recordValue(null, 'scope', url, 'https://example.com/one', 100).saved, false);
+  assert.equal(recent.clearAll(null), false);
+
+  const failingStorage = {
+    getItem() { return null; },
+    setItem() { throw new Error('quota exceeded'); },
+    removeItem() { throw new Error('storage unavailable'); }
+  };
+  assert.equal(recent.recordValue(failingStorage, 'scope', url, 'https://example.com/two', 200).saved, false);
+  assert.equal(recent.clearAll(failingStorage), false);
+});
+
+test('committing a URL reveals recent history without starting a task', () => {
+  const storage = memoryStorage();
+  const { input } = interactiveHistoryField();
+  const root = {
+    querySelectorAll(selector) {
+      return selector === 'input[data-history-kind]' ? [input] : [];
+    }
+  };
+  const [controller] = recent.enhanceRoot(storage, 'plugin:zsxq:zsxq-group', root);
+  assert.ok(controller);
+  assert.equal(controller.panel.hidden, true);
+
+  const value = 'https://wx.zsxq.com/group/48411118851818';
+  input.value = value;
+  input.dispatchEvent({ type: 'change' });
+
+  assert.deepEqual(recent.listValues(storage, 'plugin:zsxq:zsxq-group', input), [value]);
+  assert.equal(controller.panel.hidden, false);
+  assert.equal(controller.panel.children[0].children[0].textContent, '最近使用（仅保存在本机）');
+  assert.equal(controller.panel.children[1].children[0].children[0].title, value);
+});
+
 test('official reusable inputs opt in explicitly and credential fields never do', () => {
   const root = path.join(__dirname, '..');
   const manifests = fs.readdirSync(path.join(root, 'plugins'), { withFileTypes: true })
@@ -196,4 +287,26 @@ test('dedicated pages use the shared history contract and detailed import confir
   assert.match(app, /function confirmYinxiangImportWrite/);
   assert.match(app, /function confirmFeishuImportWrite/);
   assert.match(app, /clear-form-memory/);
+
+  const switchStart = app.indexOf('function switchTool(toolId)');
+  const switchEnd = app.indexOf('\nfunction ', switchStart + 1);
+  const switchSource = app.slice(switchStart, switchEnd);
+  const recordBeforeSwitch = switchSource.indexOf('recordCurrentRecentInputs();');
+  const saveBeforeSwitch = switchSource.indexOf('saveCurrentFormDraft();');
+  assert.ok(recordBeforeSwitch >= 0, 'switchTool should save recent inputs before leaving a provider');
+  assert.ok(saveBeforeSwitch > recordBeforeSwitch, 'recent inputs should be captured before the form is replaced');
+
+  assert.match(
+    app,
+    /window\.addEventListener\('beforeunload', \(\) => \{\s*recordCurrentRecentInputs\(\);\s*saveCurrentFormDraft\(\);\s*\}\);/,
+    'closing the application should save both recent inputs and the form draft'
+  );
+
+  const restoreStart = app.indexOf('function restoreFormDraftForProvider(providerId)');
+  const restoreEnd = app.indexOf('\nfunction ', restoreStart + 1);
+  const restoreSource = app.slice(restoreStart, restoreEnd);
+  const restoreDraft = restoreSource.indexOf('FORM_DRAFTS.restoreLatestDraft');
+  const migrateRecent = restoreSource.indexOf('recordCurrentRecentInputs(providerId);');
+  assert.ok(restoreDraft >= 0 && migrateRecent > restoreDraft,
+    'restored URL drafts should be migrated into recent history on reopen');
 });

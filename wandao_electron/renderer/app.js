@@ -3116,10 +3116,11 @@ function markdownToHtml(markdown) {
     }
   };
 
-  const openList = (type) => {
+  const openList = (type, start = 1) => {
     if (listType === type) return;
     closeList();
-    html.push(`<${type}>`);
+    const startAttribute = type === 'ol' && start > 1 ? ` start="${start}"` : '';
+    html.push(`<${type}${startAttribute}>`);
     listType = type;
   };
 
@@ -3160,10 +3161,10 @@ function markdownToHtml(markdown) {
         return;
       }
     }
-    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    const ordered = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
     if (ordered) {
-      openList('ol');
-      html.push(`<li>${markdownInline(ordered[1])}</li>`);
+      openList('ol', Number(ordered[1]));
+      html.push(`<li>${markdownInline(ordered[2])}</li>`);
       return;
     }
     const bullet = trimmed.match(/^[-*]\s+(.+)$/);

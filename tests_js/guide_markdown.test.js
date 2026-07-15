@@ -31,6 +31,12 @@ test('guide markdown renders ordered steps as an ordered list', () => {
   assert.equal(markdownToHtml('1. 第一步\n2. 第二步'), '<ol>\n<li>第一步</li>\n<li>第二步</li>\n</ol>');
 });
 
+test('guide markdown preserves a step number after an intervening image', () => {
+  const html = markdownToHtml('1. 第一步\n![截图](./images/1.png)\n2. 第二步');
+  assert.match(html, /<ol>\n<li>第一步<\/li>\n<\/ol>/);
+  assert.match(html, /<ol start=\"2\">\n<li>第二步<\/li>\n<\/ol>/);
+});
+
 test('guide markdown renders a local image placeholder without allowing raw HTML', () => {
   const html = markdownToHtml('![登录截图](./images/1.png)');
   assert.match(html, /<img/);
@@ -48,4 +54,22 @@ test('guide images are constrained to the tutorial panel width', () => {
   const imageRule = cssSource.match(/\.guide-content\s+img\.guide-image\s*\{[\s\S]*?\n\}/)?.[0] || '';
   assert.match(imageRule, /max-width:\s*100%/);
   assert.match(imageRule, /height:\s*auto/);
+});
+const tutorialRoot = path.join(repoRoot, 'plugins', 'feishu', 'providers', 'feishu-import');
+const tutorialPath = path.join(tutorialRoot, 'README.md');
+
+test('Feishu import tutorial bundles all referenced screenshots', () => {
+  const markdown = fs.readFileSync(tutorialPath, 'utf8');
+  assert.match(markdown, /^# 飞书文档导入教程/m);
+  assert.match(markdown, /^## 一、准备工作/m);
+  assert.match(markdown, /^## 二、正式导出/m);
+  const imageReferences = Array.from(markdown.matchAll(/!\[[^\]]*\]\((\.\/images\/(\d+)\.png)\)/g));
+  assert.equal(imageReferences.length, 17);
+  assert.deepEqual(
+    imageReferences.map((match) => Number(match[2])).sort((left, right) => left - right),
+    Array.from({ length: 17 }, (_, index) => index + 1)
+  );
+  imageReferences.forEach((match) => {
+    assert.equal(fs.existsSync(path.join(tutorialRoot, match[1])), true, `missing ${match[1]}`);
+  });
 });

@@ -122,10 +122,19 @@ def _build_file_index(vault: Path) -> Dict[str, List[Path]]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Obsidian system directories that should never be scanned
+_SYSTEM_DIRS = frozenset({".obsidian", ".trash", ".git"})
+
 def _is_hidden(entry: Path, vault: Path) -> bool:
-    """True if any path component starts with a dot (e.g. .obsidian)."""
+    """True if any path component is an Obsidian system directory.
+
+    Only excludes known system directories (.obsidian, .trash, .git).
+    User-created directories starting with a dot (e.g. .attachments)
+    are intentionally included so pasted images and attachments are
+    discoverable by the resource resolver.
+    """
     for part in entry.relative_to(vault).parts:
-        if part.startswith("."):
+        if part in _SYSTEM_DIRS:
             return True
     return False
 

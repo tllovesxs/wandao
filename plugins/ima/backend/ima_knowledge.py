@@ -730,7 +730,10 @@ def file_media_info(path: Path) -> tuple[int, str]:
 
 
 def should_skip_source_path(source_dir: Path, path: Path) -> bool:
-    relative_parts = path.relative_to(source_dir).parts
+    try:
+        relative_parts = path.resolve().relative_to(source_dir.resolve()).parts
+    except (OSError, RuntimeError, ValueError):
+        return True
     return any(part in SKIP_SOURCE_DIRS or part.startswith(".") for part in relative_parts[:-1])
 
 

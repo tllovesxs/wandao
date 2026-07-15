@@ -15,6 +15,7 @@ EXPECTED_PLUGINS = {
     "feishu": {"feishu-export", "feishu-import"},
     "ima": {"ima-export", "ima-import"},
     "notion": {"notion"},
+    "obsidian": {"obsidian-export"},
     "onenote": {"onenote"},
     "wiz": {"wiz"},
     "yinxiang": {"yinxiang", "yinxiang-import"},

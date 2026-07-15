@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "id": "obsidian-export",
+  "platform": "obsidian",
+  "name": "Obsidian",
+  "title": "Obsidian Vault 归档导出",
+  "navLabel": "Obsidian 导出",
+  "description": "扫描 Obsidian Vault 目录，批量归档 Markdown、图片和附件，保留原目录层级。不修改源 Vault。",
+  "type": "hybrid",
+  "group": "export",
+  "trustLevel": "community",
+  "status": "experimental",
+  "defaults": {
+    "output": "exports/obsidian"
+  },
+  "guide": "README.md",
+  "homepage": "https://obsidian.md/",
+  "tags": [
+    "导出",
+    "目录",
+    "图片",
+    "附件",
+    "Wiki链接"
+  ],
+  "capabilities": {
+    "export": true,
+    "import": false,
+    "guide": true,
+    "login": false,
+    "scanToc": true,
+    "images": true,
+    "attachments": true,
+    "tree": true,
+    "batch": true,
+    "retryFailures": false
+  },
+  "toc": {
+    "itemsPath": "nodes",
+    "idKey": "nodeId",
+    "exportIdKey": "exportId",
+    "titleKey": "title",
+    "parentIdKey": "parentNodeId",
+    "selectableKey": "selectable",
+    "selectionArg": "--doc-id",
+    "note": "扫描 Vault 目录后可按文件夹勾选 Markdown 文件，导出保留原目录结构。"
+  },
+  "fields": [
+    {
+      "name": "vault",
+      "label": "Obsidian Vault 目录",
+      "type": "directory",
+      "arg": "--vault",
+      "required": true,
+      "default": "",
+      "actions": [
+        "scan",
+        "export"
+      ]
+    },
+    {
+      "name": "output",
+      "label": "输出目录",
+      "type": "directory",
+      "arg": "--output",
+      "required": true,
+      "default": "",
+      "actions": [
+        "export"
+      ]
+    },
+    {
+      "name": "incremental",
+      "label": "跳过已存在的 Markdown",
+      "type": "checkbox",
+      "arg": "--incremental",
+      "default": false,
+      "advanced": true,
+      "actions": [
+        "export"
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "scan",
+      "kind": "scan",
+      "label": "读取目录",
+      "script": "../../backend/export_obsidian.py",
+      "args": [
+        "--scan-toc"
+      ],
+      "includeSelection": false,
+      "secondary": true
+    },
+    {
+      "id": "export",
+      "kind": "export",
+      "label": "开始导出",
+      "script": "../../backend/export_obsidian.py",
+      "args": [
+        "--export",
+        "--progress-every",
+        "1"
+      ],
+      "actionName": "导出",
+      "progressTitle": "Obsidian Vault 归档",
+      "progressDetail": "正在复制 Markdown 和资源文件..."
+    }
+  ]
+}

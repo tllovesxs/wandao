@@ -16,8 +16,8 @@
   "checkpoint": { "supported": true, "strategy": "cursor", "resourceTracking": true },
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
   "fields": [
-    { "name": "entry_url", "label": "知识星球 Group URL", "type": "text", "arg": "--entry-url", "required": true, "actions": ["login", "export"] },
-    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "entry_url", "label": "知识星球 Group URL", "type": "text", "arg": "--entry-url", "required": true, "history": "url", "actions": ["login", "export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "history": "path", "actions": ["export"] },
     { "name": "group_scope", "label": "帖子范围", "type": "select", "arg": "--group-scope", "default": "auto", "options": [{ "value": "auto", "label": "自动" }, { "value": "all", "label": "全部" }, { "value": "digests", "label": "精华" }, { "value": "by_owner", "label": "星主" }], "advanced": true, "actions": ["export"] },
     { "name": "limit", "label": "最多导出篇数（0 为全部）", "type": "number", "arg": "--limit", "default": 0, "min": 0, "advanced": true, "actions": ["export"] },
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },

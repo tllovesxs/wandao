@@ -16,25 +16,32 @@
   "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
   "fields": [
-    { "name": "wiki_url", "label": "目标飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["login", "probe", "plan", "import", "setupTarget"] },
-    { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "actions": ["plan", "import"] },
-    { "name": "app_id", "label": "飞书应用 App ID（留空读取已保存配置）", "type": "text", "arg": "--app-id", "actions": ["saveConfig", "checkApp", "permissions", "probe", "plan", "import", "setupTarget"] },
-    { "name": "app_secret", "label": "飞书应用 App Secret（留空读取已保存配置）", "type": "password", "arg": "--app-secret", "actions": ["saveConfig", "checkApp", "probe", "plan", "import", "setupTarget"] },
-    { "name": "drive_folder_token", "label": "云空间目录 Token（可选）", "type": "text", "arg": "--drive-folder-token", "advanced": true, "actions": ["saveConfig", "plan", "import"] },
-    { "name": "import_mount_key", "label": "导入挂载 Key（可选）", "type": "text", "arg": "--import-mount-key", "advanced": true, "actions": ["saveConfig", "import"] },
-    { "name": "space_id", "label": "目标 Wiki Space ID（可自动检测）", "type": "text", "arg": "--space-id", "advanced": true, "actions": ["saveConfig", "import", "setupTarget"] },
-    { "name": "parent_wiki_token", "label": "父级 Wiki Token（可自动检测）", "type": "text", "arg": "--parent-wiki-token", "advanced": true, "actions": ["saveConfig", "import", "setupTarget"] },
-    { "name": "obj_type", "label": "导入文档类型", "type": "select", "arg": "--obj-type", "default": "docx", "options": [{ "value": "docx", "label": "新版文档 docx" }, { "value": "doc", "label": "旧版文档 doc" }], "advanced": true, "actions": ["saveConfig", "import"] },
+    {
+      "name": "first_import_steps",
+      "label": "首次导入步骤",
+      "type": "notice",
+      "markdown": "### 首次导入请按此顺序操作\n\n1. **登录并保存 Cookie 凭证**：点击“登录飞书网页版”完成登录后，回到工具点击“我已完成登录，保存凭证”。\n2. **保存 API 配置**：填写 App ID 与 App Secret 后，点击“保存 API 配置”。这与浏览器 Cookie 凭证是两类独立信息。\n3. **检测应用与目标 Wiki，并添加应用**：依次点击“检测应用配置”、“检测目标 Wiki”和“添加应用到目标 Wiki”；如提示缺少权限，先执行“检查并开通权限”。\n4. **生成只读计划**：填写目标 Wiki URL 与本地 Markdown 目录后，点击“生成导入计划”。检测、权限检查和生成计划均不会在 Wiki 创建或修改内容。\n5. **单篇导入测试**：确认计划后，选择一篇 Markdown（或留空使用目录内第一篇）并点击“单篇导入测试”。此步骤会在目标 Wiki 创建测试文档，并可能上传图片。\n6. **确认后批量导入**：核对测试结果无误后，再点击“开始批量导入”。批量导入会在目标 Wiki 创建文档，并可能上传图片。"
+    },
+    { "name": "wiki_url", "label": "目标飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "history": "url", "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["login", "probe", "plan", "importOne", "import", "setupTarget"] },
+    { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "history": "path", "actions": ["plan", "importOne", "import"] },
+    { "name": "source_file", "label": "单篇测试文件（可选）", "type": "file", "arg": "--source-file", "history": "path", "placeholder": "留空则使用目录内第一篇 Markdown", "actions": ["importOne"] },
+    { "name": "app_id", "label": "飞书应用 App ID（留空读取已保存配置）", "type": "text", "arg": "--app-id", "actions": ["saveConfig", "checkApp", "permissions", "probe", "plan", "importOne", "import", "setupTarget"] },
+    { "name": "app_secret", "label": "飞书应用 App Secret（留空读取已保存配置）", "type": "password", "arg": "--app-secret", "actions": ["saveConfig", "checkApp", "probe", "plan", "importOne", "import", "setupTarget"] },
+    { "name": "drive_folder_token", "label": "云空间目录 Token（可选）", "type": "text", "arg": "--drive-folder-token", "advanced": true, "actions": ["saveConfig", "plan", "importOne", "import"] },
+    { "name": "import_mount_key", "label": "导入挂载 Key（可选）", "type": "text", "arg": "--import-mount-key", "advanced": true, "actions": ["saveConfig", "importOne", "import"] },
+    { "name": "space_id", "label": "目标 Wiki Space ID（可自动检测）", "type": "text", "arg": "--space-id", "advanced": true, "actions": ["saveConfig", "importOne", "import", "setupTarget"] },
+    { "name": "parent_wiki_token", "label": "父级 Wiki Token（可自动检测）", "type": "text", "arg": "--parent-wiki-token", "advanced": true, "actions": ["saveConfig", "importOne", "import", "setupTarget"] },
+    { "name": "obj_type", "label": "导入文档类型", "type": "select", "arg": "--obj-type", "default": "docx", "options": [{ "value": "docx", "label": "新版文档 docx" }, { "value": "doc", "label": "旧版文档 doc" }], "advanced": true, "actions": ["saveConfig", "importOne", "import"] },
     { "name": "max_import", "label": "最多导入篇数（0 为全部）", "type": "number", "arg": "--max-import", "default": 0, "min": 0, "advanced": true, "actions": ["import"] },
-    { "name": "move_to_wiki", "label": "导入后移动到目标 Wiki", "type": "checkbox", "arg": "--move-to-wiki", "default": true, "advanced": true, "actions": ["import"] },
-    { "name": "require_image_repair", "label": "图片补全失败时判定导入失败", "type": "checkbox", "arg": "--require-image-repair", "default": false, "advanced": true, "actions": ["import"] },
-    { "name": "skip_image_repair", "label": "跳过本地图片补全", "type": "checkbox", "arg": "--skip-image-repair", "default": false, "advanced": true, "actions": ["import"] },
-    { "name": "skip_rename", "label": "保留飞书临时标题，不恢复 Markdown 标题", "type": "checkbox", "arg": "--skip-rename", "default": false, "advanced": true, "actions": ["import"] },
-    { "name": "image_max_width", "label": "图片最大显示宽度", "type": "number", "arg": "--image-max-width", "default": 1200, "min": 100, "advanced": true, "actions": ["import"] },
-    { "name": "poll_timeout", "label": "异步任务超时秒", "type": "number", "arg": "--poll-timeout", "default": 120, "min": 10, "advanced": true, "actions": ["import"] },
-    { "name": "poll_interval", "label": "异步任务轮询秒", "type": "number", "arg": "--poll-interval", "default": 2, "min": 0.5, "step": 0.5, "advanced": true, "actions": ["import"] },
-    { "name": "request_delay", "label": "请求延迟秒", "type": "number", "arg": "--request-delay", "default": 0.5, "min": 0, "step": 0.1, "advanced": true, "actions": ["plan", "import"] },
-    { "name": "request_jitter", "label": "随机浮动秒", "type": "number", "arg": "--request-jitter", "default": 0.3, "min": 0, "step": 0.1, "advanced": true, "actions": ["plan", "import"] }
+    { "name": "move_to_wiki", "label": "导入后移动到目标 Wiki", "type": "checkbox", "arg": "--move-to-wiki", "default": true, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "require_image_repair", "label": "图片补全失败时判定导入失败", "type": "checkbox", "arg": "--require-image-repair", "default": false, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "skip_image_repair", "label": "跳过本地图片补全", "type": "checkbox", "arg": "--skip-image-repair", "default": false, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "skip_rename", "label": "保留飞书临时标题，不恢复 Markdown 标题", "type": "checkbox", "arg": "--skip-rename", "default": false, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "image_max_width", "label": "图片最大显示宽度", "type": "number", "arg": "--image-max-width", "default": 1200, "min": 100, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "poll_timeout", "label": "异步任务超时秒", "type": "number", "arg": "--poll-timeout", "default": 120, "min": 10, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "poll_interval", "label": "异步任务轮询秒", "type": "number", "arg": "--poll-interval", "default": 2, "min": 0.5, "step": 0.5, "advanced": true, "actions": ["importOne", "import"] },
+    { "name": "request_delay", "label": "请求延迟秒", "type": "number", "arg": "--request-delay", "default": 0.5, "min": 0, "step": 0.1, "advanced": true, "actions": ["plan", "importOne", "import"] },
+    { "name": "request_jitter", "label": "随机浮动秒", "type": "number", "arg": "--request-jitter", "default": 0.3, "min": 0, "step": 0.1, "advanced": true, "actions": ["plan", "importOne", "import"] }
   ],
   "actions": [
     { "id": "login", "kind": "login", "label": "登录飞书网页版", "script": "../../backend/import_feishu.py", "args": ["--login"], "includeSelection": false, "track": false, "secondary": true },
@@ -42,8 +49,9 @@
     { "id": "checkApp", "kind": "check", "label": "检测应用配置", "script": "../../backend/import_feishu.py", "args": ["--check-app-setup"], "secondary": true, "track": false },
     { "id": "permissions", "kind": "check", "label": "检查并开通权限", "script": "../../backend/import_feishu.py", "args": ["--setup-openapi-permissions"], "secondary": true, "track": false },
     { "id": "probe", "kind": "check", "label": "检测目标 Wiki", "script": "../../backend/import_feishu.py", "args": ["--probe"], "secondary": true, "track": false },
-    { "id": "setupTarget", "kind": "check", "label": "添加应用到目标 Wiki", "script": "../../backend/import_feishu.py", "args": ["--setup-target-wiki-doc-app"], "secondary": true, "track": false },
+    { "id": "setupTarget", "kind": "custom", "label": "添加应用到目标 Wiki", "script": "../../backend/import_feishu.py", "args": ["--setup-target-wiki-doc-app", "--yes"], "secondary": true, "track": false, "confirm": "这会尝试修改目标 Wiki 的文档应用权限。请确认目标 Wiki 与当前飞书应用无误后继续。" },
     { "id": "plan", "kind": "plan", "label": "生成导入计划", "script": "../../backend/import_feishu.py", "args": ["--plan"], "secondary": true, "track": false },
-    { "id": "import", "kind": "import", "label": "开始导入", "script": "../../backend/import_feishu.py", "args": ["--api-import-all", "--yes"], "progressTitle": "Markdown 导入飞书", "progressDetail": "正在上传文档、修复图片并写入 Wiki..." }
+    { "id": "importOne", "kind": "import", "label": "单篇导入测试", "script": "../../backend/import_feishu.py", "args": ["--api-import-one", "--yes"], "secondary": true, "confirm": "将向目标飞书 Wiki 创建一篇测试文档，并可能上传其引用的图片。请确认目标 Wiki 和本地文件无误后继续。", "progressTitle": "单篇 Markdown 导入飞书", "progressDetail": "正在上传测试文档、修复图片并写入 Wiki..." },
+    { "id": "import", "kind": "import", "label": "开始批量导入", "script": "../../backend/import_feishu.py", "args": ["--api-import-all", "--yes"], "confirm": "将向目标飞书 Wiki 批量创建文档，并可能上传图片。请先生成导入计划，确认目标 Wiki、本地目录和同名处理方式无误后继续。", "progressTitle": "Markdown 导入飞书", "progressDetail": "正在上传文档、修复图片并写入 Wiki..." }
   ]
 }

@@ -4,7 +4,7 @@
   "id": "ima",
   "name": "ima 知识库",
   "description": "ima 知识库 OpenAPI 导出与本地文件批量导入。",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "Wandao Official",
   "homepage": "https://ima.qq.com/",
   "license": "AGPL-3.0-only",

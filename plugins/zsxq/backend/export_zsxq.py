@@ -81,6 +81,8 @@ DEFAULT_COMMENT_BATCH_SIZE = 30
 DEFAULT_COMMENT_REQUEST_DELAY = 3.0
 DEFAULT_COMMENT_REQUEST_JITTER = 2.0
 GROUP_CURSOR_NAME = "zsxq-group"
+EXPORT_SEQUENCE_RE = re.compile(r"^(?P<sequence>\d+)-")
+MAX_GROUP_NEWEST_REFRESH_PAGES = 250
 
 
 class SkipDocument(Exception):
@@ -1222,6 +1224,158 @@ def previous_zsxq_end_time(create_time: str) -> str:
     except ValueError:
         return f"{prefix}000{suffix}"
     return f"{previous.strftime('%Y-%m-%dT%H:%M:%S')}.999{tz}"
+
+
+def export_sequence_from_name(name: str) -> int | None:
+    """Return a positive numeric export prefix, excluding reserved ``00-*`` entries."""
+    match = EXPORT_SEQUENCE_RE.match(str(name or ""))
+    if not match:
+        return None
+    sequence = int(match.group("sequence"))
+    return sequence if sequence > 0 else None
+
+
+def scan_max_export_sequence(base_dir: Path) -> int:
+    """Find the highest immediate child sequence without walking nested folders."""
+    if not base_dir.exists() or not base_dir.is_dir():
+        return 0
+    maximum = 0
+    try:
+        entries = base_dir.iterdir()
+        for entry in entries:
+            if not entry.is_dir() and entry.suffix.lower() != ".md":
+                continue
+            sequence = export_sequence_from_name(entry.name)
+            if sequence is not None:
+                maximum = max(maximum, sequence)
+    except OSError:
+        return maximum
+    return maximum
+
+
+def compare_zsxq_create_time(left: str, right: str) -> int:
+    """Compare API timestamps while tolerating both ``+0800`` and ``+08:00`` forms."""
+    def parse(value: str) -> datetime | None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        elif re.search(r"[+-]\d{4}$", normalized):
+            normalized = normalized[:-5] + normalized[-5:-2] + ":" + normalized[-2:]
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+
+    left_dt = parse(left)
+    right_dt = parse(right)
+    if left_dt is not None and right_dt is not None:
+        return (left_dt > right_dt) - (left_dt < right_dt)
+    left_text = str(left or "")
+    right_text = str(right or "")
+    return (left_text > right_text) - (left_text < right_text)
+
+
+def group_topic_reaches_watermark(
+    topic: dict[str, Any],
+    latest_create_time: str,
+    latest_topic_id: str,
+) -> bool:
+    """Return true once a newest-first listing reaches the previous run's boundary."""
+    topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or "").strip()
+    create_time = str(topic.get("create_time") or "").strip()
+    if latest_topic_id and topic_id == str(latest_topic_id):
+        return True
+    return bool(
+        latest_create_time
+        and create_time
+        and compare_zsxq_create_time(create_time, latest_create_time) < 0
+    )
+
+
+def load_compatible_group_cursor(
+    checkpoint: WandaoCheckpoint,
+    group_id: str,
+    scope: str,
+    source: str,
+    output: Path,
+) -> tuple[dict[str, Any], str]:
+    """Load the newest compatible cursor, including one written by an earlier UI job id."""
+    current = checkpoint.load_cursor(GROUP_CURSOR_NAME, {})
+    if (
+        isinstance(current, dict)
+        and str(current.get("group_id") or "") == str(group_id)
+        and str(current.get("scope") or "") == str(scope)
+    ):
+        return current, checkpoint.task_id
+
+    row = checkpoint.conn.execute(
+        """
+        SELECT c.task_id, c.cursor_value_json
+        FROM cursors c
+        JOIN tasks t ON t.task_id = c.task_id
+        WHERE c.cursor_name = ?
+          AND c.task_id != ?
+          AND t.provider_id = 'zsxq'
+          AND t.action = 'export'
+          AND lower(COALESCE(t.source, '')) = lower(?)
+          AND lower(COALESCE(t.output_dir, '')) = lower(?)
+        ORDER BY c.updated_at DESC, t.updated_at DESC, c.rowid DESC
+        LIMIT 20
+        """,
+        (GROUP_CURSOR_NAME, checkpoint.task_id, str(source), str(output.resolve())),
+    ).fetchall()
+    for candidate in row:
+        try:
+            cursor = json.loads(candidate["cursor_value_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(cursor, dict)
+            and str(cursor.get("group_id") or "") == str(group_id)
+            and str(cursor.get("scope") or "") == str(scope)
+        ):
+            return cursor, str(candidate["task_id"] or "")
+    return {}, ""
+
+
+def inherit_unresolved_group_items(checkpoint: WandaoCheckpoint, source_task_id: str) -> int:
+    """Copy unfinished listed items when the desktop app starts a new job id."""
+    if not source_task_id or source_task_id == checkpoint.task_id:
+        return 0
+    rows = checkpoint.conn.execute(
+        """
+        SELECT * FROM items
+        WHERE task_id = ? AND status IN ('pending', 'running', 'interrupted', 'failed')
+        ORDER BY created_at, item_key
+        """,
+        (source_task_id,),
+    ).fetchall()
+    inherited = 0
+    for raw_row in rows:
+        row = dict(raw_row)
+        try:
+            metadata = json.loads(row.get("metadata_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        checkpoint.upsert_item(
+            str(row.get("item_key") or ""),
+            title=str(row.get("title") or ""),
+            source_url=str(row.get("source_url") or ""),
+            source_id=str(row.get("source_id") or ""),
+            parent_key=str(row.get("parent_key") or ""),
+            metadata=metadata if isinstance(metadata, dict) else {},
+        )
+        local_path = str(row.get("local_path") or "").strip()
+        if local_path:
+            with checkpoint.conn:
+                checkpoint.conn.execute(
+                    "UPDATE items SET local_path = ? WHERE task_id = ? AND item_key = ?",
+                    (local_path, checkpoint.task_id, str(row.get("item_key") or "")),
+                )
+        inherited += 1
+    return inherited
 
 
 def topic_preview_text(topic: dict[str, Any]) -> str:
@@ -3085,9 +3239,16 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         long_sleep_count = 0
         long_sleep_seconds = 0.0
         started_at = time.time()
-        root_sequence = 0
+        # Bootstrap every run from the existing directory so a new task continues
+        # numbering instead of silently restarting at 01.
+        root_sequence = scan_max_export_sequence(output)
         folder_sequences: dict[str, int] = {}
         output_key = str(output.resolve()).lower()
+        run_id = checkpoint.run_id if checkpoint else hashlib.sha256(
+            f"zsxq:{entry_url}:{output}:{time.time_ns()}".encode("utf-8")
+        ).hexdigest()[:16]
+        run_exported_items: list[dict[str, Any]] = []
+        run_skipped_items: list[dict[str, Any]] = []
         source_count = args.limit if use_group_topics else (len(toc_items) if use_toc else len(links))
         source_mode = "group" if use_group_topics else ("toc" if use_toc else "links")
         if checkpoint and not use_group_topics:
@@ -3118,7 +3279,9 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             if key == output_key:
                 root_sequence += 1
                 return root_sequence
-            folder_sequences[key] = folder_sequences.get(key, 0) + 1
+            if key not in folder_sequences:
+                folder_sequences[key] = scan_max_export_sequence(base_dir)
+            folder_sequences[key] += 1
             return folder_sequences[key]
 
         def unique_path(path: Path) -> Path:
@@ -3129,6 +3292,26 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 if not candidate.exists():
                     return candidate
             raise ExportError(f"无法生成不冲突的文件名：{path}")
+
+        def reusable_checkpoint_path(item_key: str) -> Path | None:
+            """Reuse a previously reserved/written Markdown path for an interrupted item."""
+            if not checkpoint or not item_key:
+                return None
+            row = checkpoint.conn.execute(
+                "SELECT local_path FROM items WHERE task_id = ? AND item_key = ?",
+                (checkpoint.task_id, item_key),
+            ).fetchone()
+            local_path = str(row["local_path"] or "").strip() if row else ""
+            if not local_path:
+                return None
+            candidate = Path(local_path).expanduser().resolve()
+            try:
+                candidate.relative_to(output)
+            except ValueError:
+                return None
+            if candidate.suffix.lower() != ".md" or not candidate.exists():
+                return None
+            return candidate
 
         def next_markdown_path(base_dir: Path, title: str) -> Path:
             index = allocate_sequence(base_dir)
@@ -3141,6 +3324,64 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 folder_path = unique_path(folder_path.with_suffix(".folder"))
             folder_path.mkdir(parents=True, exist_ok=True)
             return folder_path
+
+        def report_local_path(path: Path) -> str:
+            try:
+                return path.resolve().relative_to(output).as_posix()
+            except ValueError:
+                return str(path.resolve())
+
+        def record_exported_item(
+            title: str,
+            path: Path,
+            source: dict[str, Any] | str,
+            item_key: str = "",
+            status: str = "completed",
+        ) -> None:
+            source_data = source if isinstance(source, dict) else {"href": str(source or "")}
+            sequence = export_sequence_from_name(path.name)
+            if sequence is None and path.name.startswith("00-"):
+                sequence = export_sequence_from_name(path.parent.name)
+            run_exported_items.append(
+                {
+                    "itemKey": item_key,
+                    "sourceId": str(source_data.get("topicId") or source_data.get("topicUid") or ""),
+                    "sourceUrl": str(
+                        source_data.get("topicUrl")
+                        or source_data.get("articleUrl")
+                        or source_data.get("href")
+                        or ""
+                    ),
+                    "title": title,
+                    "localPath": report_local_path(path),
+                    "sequence": sequence,
+                    "status": status,
+                }
+            )
+
+        def record_skipped_item(
+            title: str,
+            source: dict[str, Any] | str,
+            reason: str,
+            path: Path | None = None,
+            item_key: str = "",
+        ) -> None:
+            source_data = source if isinstance(source, dict) else {"href": str(source or "")}
+            run_skipped_items.append(
+                {
+                    "itemKey": item_key,
+                    "sourceId": str(source_data.get("topicId") or source_data.get("topicUid") or ""),
+                    "sourceUrl": str(
+                        source_data.get("topicUrl")
+                        or source_data.get("articleUrl")
+                        or source_data.get("href")
+                        or ""
+                    ),
+                    "title": title,
+                    "localPath": report_local_path(path) if path else "",
+                    "reason": reason,
+                }
+            )
 
         def maybe_long_sleep_after_export() -> None:
             nonlocal long_sleep_count, long_sleep_seconds
@@ -3182,6 +3423,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 if checkpoint and overview_item_key:
                     checkpoint.complete_item(overview_item_key, local_path=str(overview_existing), metadata={"source": overview_key, "skippedExisting": True})
                 exported_rows.append({"title": entry.get("title") or "专栏正文", "path": str(overview_existing)})
+                record_skipped_item(
+                    str(entry.get("title") or "专栏正文"),
+                    overview_key,
+                    "existing",
+                    overview_existing,
+                    overview_item_key,
+                )
             else:
                 if checkpoint and overview_item_key:
                     checkpoint.upsert_item(
@@ -3241,10 +3489,18 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 overview_path.write_text(markdown, encoding="utf-8")
                 if checkpoint and overview_item_key:
                     if img_errors:
+                        checkpoint.complete_item(overview_item_key, local_path=str(overview_path), metadata={"source": overview_key})
                         checkpoint.fail_item(overview_item_key, f"{len(img_errors)} 个图片下载失败")
                     else:
                         checkpoint.complete_item(overview_item_key, local_path=str(overview_path), metadata={"source": overview_key})
                 exported_rows.append({"title": entry.get("title") or "专栏正文", "path": str(overview_path)})
+                record_exported_item(
+                    str(entry.get("title") or "专栏正文"),
+                    overview_path,
+                    overview_key,
+                    overview_item_key,
+                    "completed_with_resource_errors" if img_errors else "completed",
+                )
                 emit(
                     args,
                     f"知识星球专栏正文导出完成：{entry.get('title') or '专栏正文'}",
@@ -3259,26 +3515,50 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         seen_toc_keys: set[str] = set()
         group_seen_topic_ids: set[str] = set()
         group_end_time = ""
+        group_history_page_total = 0
+        group_history_fetched_total = 0
         group_page_count = 0
         group_fetched_count = 0
+        group_selected_count = 0
         group_exhausted = not use_group_topics
+        group_paused_for_limit = False
+        group_latest_create_time = ""
+        group_latest_topic_id = ""
+        group_previous_latest_create_time = ""
+        group_previous_latest_topic_id = ""
+        newest_discovered_count = 0
         if checkpoint and use_group_topics and getattr(args, "resume", False):
-            cursor = checkpoint.load_cursor(GROUP_CURSOR_NAME, {})
+            cursor, cursor_task_id = load_compatible_group_cursor(
+                checkpoint,
+                group_id,
+                group_scope,
+                entry_url,
+                output,
+            )
             if (
                 str(cursor.get("group_id") or "") == str(group_id)
                 and str(cursor.get("scope") or "") == str(group_scope)
             ):
+                inherited_items = inherit_unresolved_group_items(checkpoint, cursor_task_id)
                 group_end_time = str(cursor.get("end_time") or "")
-                group_page_count = int(cursor.get("page") or 0)
-                group_fetched_count = int(cursor.get("fetched_count") or 0)
-                group_exhausted = bool(cursor.get("exhausted")) and not checkpoint.pending_items()
+                group_history_page_total = int(cursor.get("page") or 0)
+                group_history_fetched_total = int(cursor.get("fetched_count") or 0)
+                group_exhausted = bool(cursor.get("exhausted"))
+                group_previous_latest_create_time = str(cursor.get("latest_create_time") or "")
+                group_previous_latest_topic_id = str(cursor.get("latest_topic_id") or "")
+                group_latest_create_time = group_previous_latest_create_time
+                group_latest_topic_id = group_previous_latest_topic_id
                 emit(
                     args,
-                    f"已从 checkpoint 恢复知识星球 Group 游标：page={group_page_count} fetched={group_fetched_count}。",
+                    "已从 checkpoint 恢复知识星球 Group 历史游标："
+                    f"page={group_history_page_total} fetched={group_history_fetched_total}；"
+                    "本次仍会先检查最新帖子。",
                     event="task.resumed",
                     level="info",
                     checkpointFile=str(checkpoint.path),
                     cursor=cursor,
+                    inheritedFromTask=cursor_task_id,
+                    inheritedPendingItems=inherited_items,
                 )
 
         def save_group_checkpoint_cursor(exhausted: bool = False) -> None:
@@ -3290,24 +3570,34 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     "group_id": group_id,
                     "scope": group_scope,
                     "end_time": group_end_time,
-                    "page": group_page_count,
-                    "fetched_count": group_fetched_count,
+                    "page": group_history_page_total,
+                    "fetched_count": group_history_fetched_total,
+                    "latest_create_time": group_latest_create_time,
+                    "latest_topic_id": group_latest_topic_id,
                     "limit": args.limit,
                     "page_size": group_page_size,
                     "exhausted": exhausted,
+                    "paused_for_limit": group_paused_for_limit,
                 },
             )
 
         def enqueue_checkpoint_pending_items() -> int:
+            nonlocal group_selected_count, group_paused_for_limit
             if not checkpoint or not use_group_topics:
                 return 0
             rows = checkpoint.failed_items() if getattr(args, "retry_failed", False) else checkpoint.pending_items()
-            added = 0
+            decoded_rows: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
             for row in rows:
                 metadata = json.loads(row.get("metadata_json") or "{}")
                 source = metadata.get("source") if isinstance(metadata, dict) else None
-                if not isinstance(source, dict):
-                    continue
+                if isinstance(source, dict):
+                    decoded_rows.append((str(source.get("createTime") or ""), row, source))
+            decoded_rows.sort(key=lambda value: value[0], reverse=True)
+            added = 0
+            for _, row, source in decoded_rows:
+                if group_selected_count >= args.limit:
+                    group_paused_for_limit = True
+                    break
                 item_key = str(row.get("item_key") or zsxq_item_key_from_source(source))
                 topic_id = str(source.get("topicId") or source.get("topicUid") or "").strip()
                 if topic_id:
@@ -3316,6 +3606,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     continue
                 queue_links.append((dict(source, kind="toc", outputDir=str(output)), 1))
                 added += 1
+                group_selected_count += 1
             if added:
                 emit(
                     args,
@@ -3327,18 +3618,116 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 )
             return added
 
-        def enqueue_next_group_batch() -> int:
-            nonlocal group_end_time, group_page_count, group_fetched_count, group_exhausted, toc
-            if not use_group_topics or group_exhausted:
+        def discover_newest_group_topics() -> int:
+            """Persist posts newer than the previous high-water mark before resuming history."""
+            nonlocal group_latest_create_time, group_latest_topic_id
+            if (
+                not checkpoint
+                or not use_group_topics
+                or not getattr(args, "resume", False)
+                or getattr(args, "retry_failed", False)
+            ):
                 return 0
-            if group_fetched_count >= args.limit:
-                group_exhausted = True
-                return 0
-            if group_page_count >= group_max_pages:
-                group_exhausted = True
+            legacy_watermark = not group_previous_latest_create_time and not group_previous_latest_topic_id
+
+            refresh_end_time = ""
+            refresh_pages = 0
+            discovered = 0
+            reached_watermark = False
+            newest_time = ""
+            newest_id = ""
+            while refresh_pages < MAX_GROUP_NEWEST_REFRESH_PAGES:
+                check_stopped(args)
+                if refresh_pages > 0:
+                    pause_between_group_pages(args, refresh_pages, discovered)
+                result = fetch_group_topics_page(cdp, group_id, group_scope, refresh_end_time, group_page_size, args)
+                if not result.get("ok"):
+                    raise ExportError(summarize_zsxq_api_failure(result, f"知识星球 group 最新主题检查失败：{group_id}"))
+                batch = [topic for topic in result.get("topics") or [] if isinstance(topic, dict)]
+                refresh_pages += 1
+                if not batch:
+                    reached_watermark = True
+                    break
+                if not newest_time:
+                    newest_time = str(batch[0].get("create_time") or "").strip()
+                    newest_id = str(batch[0].get("topic_id") or batch[0].get("topic_uid") or "").strip()
+
+                for topic in batch:
+                    topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or "").strip()
+                    create_time = str(topic.get("create_time") or "").strip()
+                    preview_item = group_topic_to_item(topic, group_scope, discovered, include_raw=True)
+                    preview_item["entryUrl"] = entry_url
+                    preview_item_key = zsxq_item_key_from_source(preview_item)
+                    previous_status = checkpoint.item_status(preview_item_key) if preview_item_key else ""
+                    if legacy_watermark and previous_status == "completed":
+                        reached_watermark = True
+                        break
+                    if group_topic_reaches_watermark(
+                        topic,
+                        group_previous_latest_create_time,
+                        group_previous_latest_topic_id,
+                    ):
+                        reached_watermark = True
+                        break
+                    item = preview_item
+                    item_key = preview_item_key
+                    if item_key:
+                        checkpoint.upsert_item(
+                            item_key,
+                            title=str(item.get("title") or item.get("text") or topic_id),
+                            source_url=str(item.get("topicUrl") or item.get("articleUrl") or entry_url),
+                            source_id=topic_id,
+                            metadata={"source": item},
+                        )
+                    if not previous_status:
+                        discovered += 1
+
+                if reached_watermark or len(batch) < group_page_size:
+                    reached_watermark = True
+                    break
+                last_time = str(batch[-1].get("create_time") or "").strip()
+                if not last_time or last_time == refresh_end_time:
+                    break
+                refresh_end_time = previous_zsxq_end_time(last_time)
+
+            if reached_watermark and newest_time:
+                group_latest_create_time = newest_time
+                group_latest_topic_id = newest_id
+            elif not reached_watermark:
                 emit(
                     args,
-                    f"知识星球 Group 已达到批次页数上限：{group_max_pages} 页。本次先停止继续读取。",
+                    f"最新帖子检查达到安全上限 {MAX_GROUP_NEWEST_REFRESH_PAGES} 页；"
+                    "已发现内容均已写入 checkpoint，下次仍会从最新页复核，避免越过未确认区间。",
+                    event="log.message",
+                    level="warn",
+                )
+            save_group_checkpoint_cursor(exhausted=group_exhausted)
+            emit(
+                args,
+                f"最新帖子检查完成：扫描 {refresh_pages} 页，发现 {discovered} 个待导出帖子。",
+                event="task.progress",
+                stats={"newestRefreshPages": refresh_pages, "newestDiscoveredTopics": discovered},
+            )
+            return discovered
+
+        def enqueue_next_group_batch() -> int:
+            nonlocal group_end_time, group_page_count, group_fetched_count
+            nonlocal group_history_page_total, group_history_fetched_total
+            nonlocal group_selected_count, group_exhausted, group_paused_for_limit
+            nonlocal group_latest_create_time, group_latest_topic_id, toc
+            if not use_group_topics or group_exhausted or group_paused_for_limit:
+                return 0
+            if group_selected_count >= args.limit:
+                group_paused_for_limit = True
+                save_group_checkpoint_cursor(exhausted=False)
+                return 0
+            if group_page_count >= group_max_pages:
+                group_paused_for_limit = True
+                save_group_checkpoint_cursor(exhausted=False)
+                emit(
+                    args,
+                    f"知识星球 Group 已达到本次批次页数上限：{group_max_pages} 页；"
+                    "历史游标已保存，下次会继续且仍会先检查最新帖子。",
                     event="log.message",
                     level="warn",
                 )
@@ -3351,6 +3740,12 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 raise ExportError(summarize_zsxq_api_failure(result, f"知识星球 group 主题列表读取失败：{group_id}"))
             batch = [topic for topic in result.get("topics") or [] if isinstance(topic, dict)]
             group_page_count += 1
+            group_history_page_total += 1
+            group_fetched_count += len(batch)
+            group_history_fetched_total += len(batch)
+            if batch and not group_latest_create_time:
+                group_latest_create_time = str(batch[0].get("create_time") or "").strip()
+                group_latest_topic_id = str(batch[0].get("topic_id") or batch[0].get("topic_uid") or "").strip()
             added = 0
             for topic in batch:
                 topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or "").strip()
@@ -3369,12 +3764,22 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         source_id=topic_id,
                         metadata={"source": item},
                     )
-                if not (checkpoint and item_key and checkpoint.item_status(item_key) == "completed"):
+                item_existing = next(
+                    (
+                        existing[key]
+                        for key in canonical_url_keys(item.get("topicUrl"), item.get("articleUrl"))
+                        if key in existing
+                    ),
+                    None,
+                )
+                already_exported = bool(
+                    (checkpoint and item_key and checkpoint.item_status(item_key) == "completed")
+                    or (args.incremental and item_existing and not args.update_existing)
+                )
+                if not already_exported and group_selected_count < args.limit:
                     queue_links.append((dict(item, kind="toc", outputDir=str(output)), 1))
                     added += 1
-                group_fetched_count += 1
-                if group_fetched_count >= args.limit:
-                    break
+                    group_selected_count += 1
 
             toc["pageCount"] = group_page_count
             toc["totalTopics"] = group_fetched_count
@@ -3384,19 +3789,20 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     "groupIndex": 0,
                     "groupTitle": group_scope_title(group_scope),
                     "expectedCount": args.limit,
-                    "topicCount": group_fetched_count,
+                    "topicCount": group_selected_count,
                     "topics": [],
                 }
             ]
             emit(
                 args,
-                f"知识星球 Group 批次读取：page={group_page_count} batch={len(batch)} queued={added} total={group_fetched_count}/{args.limit} scope={group_scope}",
+                f"知识星球 Group 批次读取：page={group_page_count} batch={len(batch)} "
+                f"queued={added} selected={group_selected_count}/{args.limit} scope={group_scope}",
                 event="task.progress",
-                progress={"current": group_fetched_count, "total": args.limit},
+                progress={"current": group_selected_count, "total": args.limit},
                 stats={"groupPage": group_page_count, "groupBatchTopics": len(batch), "groupQueuedTopics": added},
             )
 
-            if group_fetched_count >= args.limit or not batch or added == 0 or len(batch) < group_page_size:
+            if not batch:
                 group_exhausted = True
                 save_group_checkpoint_cursor(exhausted=True)
                 return added
@@ -3406,6 +3812,14 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 save_group_checkpoint_cursor(exhausted=True)
                 return added
             group_end_time = previous_zsxq_end_time(last_time)
+            if len(batch) < group_page_size:
+                group_exhausted = True
+                save_group_checkpoint_cursor(exhausted=True)
+                return added
+            if group_selected_count >= args.limit:
+                group_paused_for_limit = True
+                save_group_checkpoint_cursor(exhausted=False)
+                return added
             save_group_checkpoint_cursor(exhausted=False)
             return added
 
@@ -3443,11 +3857,17 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             return added
 
         if use_group_topics:
-            restored_items = enqueue_checkpoint_pending_items()
-            if getattr(args, "retry_failed", False):
-                group_exhausted = True
-            if not restored_items:
-                enqueue_next_group_batch()
+            try:
+                newest_discovered_count = discover_newest_group_topics()
+                restored_items = enqueue_checkpoint_pending_items()
+                if getattr(args, "retry_failed", False):
+                    group_exhausted = True
+                if not restored_items and not group_paused_for_limit:
+                    enqueue_next_group_batch()
+            except ExportStopped:
+                stopped = True
+                group_paused_for_limit = True
+                emit(args, "收到停止请求，正在生成本次批次报告。", event="task.stopped", level="warn")
         elif use_toc:
             for toc_item in toc_items:
                 toc_key = str(toc_item.get("key") or "")
@@ -3461,9 +3881,15 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     continue
                 mark_link_seen(link, queued_urls)
                 queue_links.append((dict(link, kind="link", outputDir=str(output)), 1))
-        while queue_links or (use_group_topics and not group_exhausted):
-            if not queue_links and use_group_topics and not group_exhausted:
-                enqueue_next_group_batch()
+        while queue_links or (use_group_topics and not group_exhausted and not group_paused_for_limit):
+            if not queue_links and use_group_topics and not group_exhausted and not group_paused_for_limit:
+                try:
+                    enqueue_next_group_batch()
+                except ExportStopped:
+                    stopped = True
+                    group_paused_for_limit = True
+                    emit(args, "收到停止请求，正在生成本次批次报告。", event="task.stopped", level="warn")
+                    break
                 if not queue_links:
                     continue
             if stop_requested(args):
@@ -3475,6 +3901,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             checkpoint_item_key = zsxq_item_key_from_source(link)
             if checkpoint and checkpoint_item_key and checkpoint.item_status(checkpoint_item_key) == "completed" and not args.update_existing:
                 skipped += 1
+                record_skipped_item(
+                    str(link.get("title") or link.get("text") or href),
+                    link,
+                    "checkpoint-completed",
+                    reusable_checkpoint_path(checkpoint_item_key),
+                    checkpoint_item_key,
+                )
                 continue
             if checkpoint and checkpoint_item_key:
                 checkpoint.upsert_item(
@@ -3485,9 +3918,11 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     metadata={"source": {k: v for k, v in link.items() if k not in {"kind", "outputDir"}}},
                 )
             href_existing = next((existing[key] for key in canonical_url_keys(href) if key in existing), None)
-            existing_update_path: Path | None = None
+            existing_update_path: Path | None = reusable_checkpoint_path(checkpoint_item_key)
             if args.incremental and href_existing and not args.update_existing:
-                if should_update_existing_for_comments(args, href_existing):
+                if existing_update_path is not None:
+                    pass
+                elif should_update_existing_for_comments(args, href_existing):
                     existing_update_path = href_existing
                     emit(args, f"补写评论区：{href_existing.name}")
                 else:
@@ -3498,6 +3933,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     if checkpoint and checkpoint_item_key:
                         checkpoint.complete_item(checkpoint_item_key, local_path=str(href_existing), metadata={"source": link, "skippedExisting": True})
                     skipped += 1
+                    record_skipped_item(
+                        str(link.get("title") or link.get("text") or href),
+                        link,
+                        "existing",
+                        href_existing,
+                        checkpoint_item_key,
+                    )
                     if depth == 1:
                         exported_rows.append({"title": link.get("title") or link.get("text") or href, "path": str(href_existing)})
                     continue
@@ -3530,6 +3972,12 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     if checkpoint and checkpoint_item_key:
                         checkpoint.skip_item(checkpoint_item_key, "duplicate")
                     skipped += 1
+                    record_skipped_item(
+                        str(item.get("title") or link.get("title") or link.get("text") or href),
+                        item,
+                        "duplicate",
+                        item_key=checkpoint_item_key,
+                    )
                     continue
                 if link.get("kind") == "toc":
                     key_existing = next((existing[key] for key in canonical_url_keys(item.get("tocKey")) if key in existing), None)
@@ -3561,6 +4009,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         if checkpoint and checkpoint_item_key:
                             checkpoint.complete_item(checkpoint_item_key, local_path=str(key_existing), metadata={"source": item, "skippedExisting": True})
                         skipped += 1
+                        record_skipped_item(
+                            str(item.get("title") or link.get("title") or link.get("text") or href),
+                            item,
+                            "existing",
+                            key_existing,
+                            checkpoint_item_key,
+                        )
                         if depth == 1:
                             exported_rows.append({"title": item.get("title") or link.get("title") or link.get("text") or href, "path": str(key_existing)})
                         continue
@@ -3573,10 +4028,14 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     and args.folder_link_threshold > 0
                     and len(children) >= args.folder_link_threshold
                 )
+                checkpoint_resume_path = reusable_checkpoint_path(checkpoint_item_key)
                 if existing_update_path:
                     md_path = existing_update_path
                     child_output = child_output_dir_for_existing(md_path, len(children))
                     comments_updated_existing += 1
+                elif checkpoint_resume_path:
+                    md_path = checkpoint_resume_path
+                    child_output = child_output_dir_for_existing(md_path, len(children))
                 elif should_folderize:
                     folder_path = next_folder_path(current_output, title)
                     md_path = unique_path(folder_path / f"00-{sanitize_filename(title)}.md")
@@ -3644,6 +4103,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 md_path.write_text(markdown, encoding="utf-8")
                 if checkpoint and checkpoint_item_key:
                     if img_errors or file_errors:
+                        checkpoint.complete_item(checkpoint_item_key, local_path=str(md_path), metadata={"source": item})
                         checkpoint.fail_item(
                             checkpoint_item_key,
                             f"{len(img_errors)} 个图片、{len(file_errors)} 个附件下载失败",
@@ -3652,6 +4112,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         checkpoint.complete_item(checkpoint_item_key, local_path=str(md_path), metadata={"source": item})
                 if depth == 1:
                     exported_rows.append({"title": title, "path": str(md_path)})
+                record_exported_item(
+                    str(title),
+                    md_path,
+                    item,
+                    checkpoint_item_key,
+                    "completed_with_resource_errors" if img_errors or file_errors else "completed",
+                )
                 exported += 1
                 emit(
                     args,
@@ -3685,6 +4152,12 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     skipped_video += 1
                 if checkpoint and checkpoint_item_key:
                     checkpoint.skip_item(checkpoint_item_key, exc.reason)
+                record_skipped_item(
+                    str(exc.title or link.get("title") or link.get("text") or href),
+                    link,
+                    exc.reason,
+                    item_key=checkpoint_item_key,
+                )
                 emit(
                     args,
                     f"跳过：{exc.title or href} ({exc.reason})",
@@ -3734,8 +4207,29 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
 
         write_index(output, entry.get("title") or "知识星球导出", exported_rows)
         local_link_rewrite_count = rewrite_local_zsxq_links(output)
+        pending_report_items: list[dict[str, Any]] = []
+        failed_report_items: list[dict[str, Any]] = []
+        if checkpoint:
+            for row in checkpoint.pending_items():
+                metadata = json.loads(row.get("metadata_json") or "{}")
+                source = metadata.get("source") if isinstance(metadata, dict) else {}
+                source = source if isinstance(source, dict) else {}
+                report_item = {
+                    "itemKey": str(row.get("item_key") or ""),
+                    "sourceId": str(row.get("source_id") or source.get("topicId") or source.get("topicUid") or ""),
+                    "sourceUrl": str(row.get("source_url") or source.get("topicUrl") or source.get("articleUrl") or ""),
+                    "title": str(row.get("title") or source.get("title") or ""),
+                    "localPath": str(row.get("local_path") or ""),
+                    "status": str(row.get("status") or "pending"),
+                    "lastError": str(row.get("last_error") or ""),
+                }
+                if report_item["status"] == "failed":
+                    failed_report_items.append(report_item)
+                else:
+                    pending_report_items.append(report_item)
         report = {
             "provider": "zsxq",
+            "runId": run_id,
             "exportMode": "incremental" if args.incremental else "full",
             "entryUrl": entry_url,
             "output": str(output),
@@ -3743,11 +4237,16 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             "groupId": toc.get("groupId", ""),
             "groupScope": toc.get("scope", ""),
             "groupPageCount": group_page_count if use_group_topics else toc.get("pageCount", 0),
+            "groupHistoryPageTotal": group_history_page_total if use_group_topics else 0,
+            "groupHistoryFetchedTotal": group_history_fetched_total if use_group_topics else 0,
+            "groupPausedForLimit": group_paused_for_limit if use_group_topics else False,
+            "newestDiscoveredDocs": newest_discovered_count if use_group_topics else 0,
+            "latestCreateTime": group_latest_create_time if use_group_topics else "",
             "tocGroupCount": len(toc.get("groups") or []),
             "tocTopicCount": group_fetched_count if use_group_topics else toc.get("totalTopics", 0),
             "selectedTocCount": group_fetched_count if use_group_topics else (len(toc_items) if use_toc else 0),
             "sourceLinkCount": group_fetched_count if use_group_topics else (len(toc_items) if use_toc else len(entry.get("zsxqLinks") or [])),
-            "selectedLinkCount": source_count if use_group_topics else (len(toc_items) if use_toc else len(links)),
+            "selectedLinkCount": group_selected_count if use_group_topics else (len(toc_items) if use_toc else len(links)),
             "totalDocs": exported + skipped + len(failures),
             "exportedDocs": exported,
             "skippedDocs": skipped,
@@ -3785,6 +4284,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             "groupPageJitterSeconds": float(getattr(args, "group_page_jitter", 0) or 0),
             "rateLimitPauseSeconds": float(getattr(args, "rate_limit_pause", 0) or 0),
             "elapsedSeconds": round(time.time() - started_at, 1),
+            "exportedItems": run_exported_items,
+            "skippedItems": run_skipped_items,
+            "pendingItems": pending_report_items,
+            "failedItems": failed_report_items,
             "failures": failures,
             "imageFailures": image_failures,
             "attachmentFailures": file_failures,
@@ -3795,6 +4298,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         report_path = output / "00-导出报告.json"
         report = finalize_report(report, provider="zsxq", mode="export", report_file=report_path, output=output)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_history_dir = output / ".wandao" / "reports"
+        report_history_dir.mkdir(parents=True, exist_ok=True)
+        report_history_path = report_history_dir / f"zsxq-{run_id}.json"
+        report_history_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         emit(
             args,
             "知识星球导出完成" if not stopped else "知识星球导出已停止",

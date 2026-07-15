@@ -25,6 +25,7 @@ from typing import Any
 
 from wandao_core.logging import emit_legacy
 from wandao_core.report import finalize_report
+from wandao_core.source_paths import iter_regular_files_under_root, resolve_local_reference, source_root_for_file
 
 
 class ImportErrorForUser(RuntimeError):
@@ -169,8 +170,9 @@ class ResourceRef:
 
 
 class MarkdownToEnml:
-    def __init__(self, md_path: Path) -> None:
-        self.md_path = md_path
+    def __init__(self, md_path: Path, source_root: Path | None = None) -> None:
+        self.md_path = md_path.resolve()
+        self.source_root = source_root or source_root_for_file(None, self.md_path)
         self.resources: dict[Path, ResourceRef] = {}
         self.first_heading = ""
 
@@ -306,11 +308,8 @@ class MarkdownToEnml:
         parsed = urllib.parse.urlparse(target)
         if parsed.scheme in {"http", "https", "mailto"}:
             return None
-        clean = urllib.parse.unquote(parsed.path or target)
-        path = Path(clean)
-        if not path.is_absolute():
-            path = (self.md_path.parent / path).resolve()
-        if not path.exists() or not path.is_file():
+        path = resolve_local_reference(self.source_root, self.md_path, target)
+        if not path:
             return None
         return self._build_resource(path)
 
@@ -355,7 +354,11 @@ class MarkdownToEnml:
 
 
 def markdown_files(source_dir: Path, limit: int = 0) -> list[Path]:
-    files = sorted(source_dir.rglob("*.md"), key=lambda path: path.relative_to(source_dir).as_posix())
+    source_dir = source_dir.resolve()
+    files = sorted(
+        iter_regular_files_under_root(source_dir, suffixes={".md"}),
+        key=lambda path: path.relative_to(source_dir).as_posix(),
+    )
     if limit > 0:
         files = files[:limit]
     return files
@@ -427,7 +430,7 @@ def import_markdown_file(args: argparse.Namespace, store: Any, md_path: Path) ->
     require_evernote_api()
     from evernote.edam.type import ttypes as Types  # type: ignore
 
-    converter = MarkdownToEnml(md_path)
+    converter = MarkdownToEnml(md_path, source_root_for_file(getattr(args, "source_dir", None), md_path))
     content, resources, first_heading = converter.convert()
     title = safe_title(first_heading or md_path.stem)
     notebook_name, stack_name = target_notebook_for(args, md_path)

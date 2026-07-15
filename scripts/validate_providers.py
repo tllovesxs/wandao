@@ -29,6 +29,7 @@ STATUSES = {"stable", "beta", "experimental"}
 FIELD_TYPES = {"text", "password", "directory", "file", "checkbox", "select", "number", "textarea", "notice"}
 ACTION_KINDS = {"login", "scan", "export", "import", "plan", "check", "custom"}
 NOTICE_TYPES = {"announcement", "tutorial"}
+TOC_ADAPTERS = {"yinxiang-notebooks", "zsxq-column-groups"}
 
 
 @dataclass(frozen=True)
@@ -64,14 +65,21 @@ def is_inside(root: Path, candidate: Path) -> bool:
         return False
 
 
-def resolve_safe(root: Path, rel_path: str, path: Path, label: str) -> tuple[Path | None, list[ValidationIssue]]:
+def resolve_safe(
+    root: Path,
+    rel_path: str,
+    path: Path,
+    label: str,
+    *,
+    allowed_root: Path | None = None,
+) -> tuple[Path | None, list[ValidationIssue]]:
     issues: list[ValidationIssue] = []
     if not isinstance(rel_path, str) or not rel_path.strip():
         return None, [ValidationIssue(path, f"{label} 不能为空")]
     if Path(rel_path).is_absolute():
         return None, [ValidationIssue(path, f"{label} 不能使用绝对路径：{rel_path}")]
     resolved = (root / rel_path).resolve()
-    if not is_inside(root, resolved):
+    if not is_inside(allowed_root or root, resolved):
         return None, [ValidationIssue(path, f"{label} 不能跳出 provider 目录：{rel_path}")]
     return resolved, issues
 
@@ -133,6 +141,12 @@ def validate_fields(data: dict[str, Any], path: Path) -> list[ValidationIssue]:
             issues.append(ValidationIssue(path, f"fields[{index}].arg 必须是字符串"))
         if "required" in field and not isinstance(field["required"], bool):
             issues.append(ValidationIssue(path, f"fields[{index}].required 必须是布尔值"))
+        if "history" in field and field["history"] not in {"url", "path", "text"}:
+            issues.append(ValidationIssue(path, f"fields[{index}].history 必须是 url、path 或 text"))
+        if "sensitive" in field and not isinstance(field["sensitive"], bool):
+            issues.append(ValidationIssue(path, f"fields[{index}].sensitive 必须是布尔值"))
+        if field_type == "password" and "history" in field:
+            issues.append(ValidationIssue(path, f"fields[{index}] 密码字段不能声明 history"))
         for action_key in ("actions", "includeActions", "excludeActions", "skipActions"):
             if action_key in field:
                 value = field[action_key]
@@ -146,26 +160,70 @@ def validate_fields(data: dict[str, Any], path: Path) -> list[ValidationIssue]:
 
 
 def validate_toc(data: dict[str, Any], path: Path) -> list[ValidationIssue]:
-    toc = data.get("toc", {})
-    if not toc:
+    scan_toc = isinstance(data.get("capabilities"), dict) and data["capabilities"].get("scanToc") is True
+    toc = data.get("toc")
+    if toc is None or toc == {}:
+        if scan_toc:
+            return [ValidationIssue(path, "capabilities.scanToc 为 true 时需要声明非空 toc 对象")]
         return []
     if not isinstance(toc, dict):
         return [ValidationIssue(path, "toc 必须是对象")]
-    issues = []
-    for key in ("itemsPath", "idKey", "titleKey", "typeKey"):
-        if key in toc and not isinstance(toc[key], str):
-            issues.append(ValidationIssue(path, f"toc.{key} 必须是字符串"))
-    if "selectionArg" in toc and not isinstance(toc["selectionArg"], str):
-        issues.append(ValidationIssue(path, "toc.selectionArg 必须是字符串"))
+    issues: list[ValidationIssue] = []
+    string_keys = (
+        "itemsPath", "idKey", "exportIdKey", "titleKey", "parentIdKey",
+        "selectableKey", "typeKey", "selectionArg", "adapter",
+    )
+    for key in string_keys:
+        if key in toc and (not isinstance(toc[key], str) or not toc[key].strip()):
+            issues.append(ValidationIssue(path, f"toc.{key} 必须是非空字符串"))
     if "selectableTypes" in toc and (
         not isinstance(toc["selectableTypes"], list)
         or any(not isinstance(value, (str, int, float)) for value in toc["selectableTypes"])
     ):
         issues.append(ValidationIssue(path, "toc.selectableTypes 必须是字符串或数字数组"))
+    if "selectionPrefixArgs" in toc and (
+        not isinstance(toc["selectionPrefixArgs"], list)
+        or any(not isinstance(value, str) for value in toc["selectionPrefixArgs"])
+    ):
+        issues.append(ValidationIssue(path, "toc.selectionPrefixArgs 必须是字符串数组"))
+    if "selectableWhenExportId" in toc and not isinstance(toc["selectableWhenExportId"], bool):
+        issues.append(ValidationIssue(path, "toc.selectableWhenExportId 必须是布尔值"))
+
+    adapter = toc.get("adapter")
+    if adapter is not None:
+        if adapter not in TOC_ADAPTERS:
+            issues.append(ValidationIssue(path, f"toc.adapter 不支持：{adapter!r}"))
+        for key in ("itemsPath", "selectionArg"):
+            if not isinstance(toc.get(key), str) or not toc.get(key, "").strip():
+                issues.append(ValidationIssue(path, f"适配器 toc 缺少必填非空字符串：{key}"))
+    else:
+        for key in ("itemsPath", "idKey", "exportIdKey", "titleKey", "parentIdKey", "selectionArg"):
+            if not isinstance(toc.get(key), str) or not toc.get(key, "").strip():
+                issues.append(ValidationIssue(path, f"标准 toc 缺少必填非空字符串：{key}"))
+        has_selectable_key = isinstance(toc.get("selectableKey"), str) and bool(toc["selectableKey"].strip())
+        has_type_selection = (
+            isinstance(toc.get("typeKey"), str)
+            and bool(toc["typeKey"].strip())
+            and isinstance(toc.get("selectableTypes"), list)
+            and bool(toc["selectableTypes"])
+        )
+        if not has_selectable_key and not has_type_selection:
+            issues.append(
+                ValidationIssue(path, "标准 toc 需要 selectableKey，或同时声明 typeKey 和非空 selectableTypes")
+            )
+    selection_arg = toc.get("selectionArg")
+    if isinstance(selection_arg, str) and selection_arg.strip() and not selection_arg.startswith("--"):
+        issues.append(ValidationIssue(path, "toc.selectionArg 必须是以 -- 开头的脚本参数"))
     return issues
 
 
-def validate_actions(data: dict[str, Any], provider_root: Path, path: Path) -> list[ValidationIssue]:
+def validate_actions(
+    data: dict[str, Any],
+    provider_root: Path,
+    path: Path,
+    *,
+    allowed_root: Path | None = None,
+) -> list[ValidationIssue]:
     actions = data.get("actions", [])
     provider_type = data.get("type")
     if actions is None:
@@ -197,7 +255,13 @@ def validate_actions(data: dict[str, Any], provider_root: Path, path: Path) -> l
         if not script:
             issues.append(ValidationIssue(path, f"actions[{index}].script 不能为空"))
         else:
-            script_path, script_issues = resolve_safe(provider_root, str(script), path, f"actions[{index}].script")
+            script_path, script_issues = resolve_safe(
+                provider_root,
+                str(script),
+                path,
+                f"actions[{index}].script",
+                allowed_root=allowed_root,
+            )
             issues.extend(script_issues)
             if script_path and (not script_path.exists() or script_path.suffix.lower() != ".py"):
                 issues.append(ValidationIssue(path, f"actions[{index}].script 必须指向存在的 Python 文件：{script}"))
@@ -246,7 +310,14 @@ def validate_provider_manifest(path: Path, repo_root: Path) -> list[ValidationIs
     issues.extend(validate_capabilities(data, path))
     issues.extend(validate_fields(data, path))
     issues.extend(validate_toc(data, path))
-    issues.extend(validate_actions(data, provider_root, path))
+    action_root = provider_root
+    try:
+        relative_parts = path.resolve().relative_to(repo_root.resolve()).parts
+    except ValueError:
+        relative_parts = ()
+    if len(relative_parts) >= 5 and relative_parts[0] == "plugins" and relative_parts[2] == "providers":
+        action_root = repo_root / "plugins" / relative_parts[1]
+    issues.extend(validate_actions(data, provider_root, path, allowed_root=action_root))
 
     guide = data.get("guide") or data.get("guidePath")
     if data.get("type") in {"guide", "hybrid"} and not guide:
@@ -273,10 +344,9 @@ def validate_provider_manifest(path: Path, repo_root: Path) -> list[ValidationIs
 
 
 def provider_manifest_paths(repo_root: Path) -> list[Path]:
-    providers_dir = repo_root / "providers"
-    if not providers_dir.exists():
-        return []
-    return sorted(providers_dir.glob("*/provider.json"))
+    paths = list((repo_root / "providers").glob("*/provider.json"))
+    paths.extend((repo_root / "plugins").glob("*/providers/*/provider.json"))
+    return sorted(paths)
 
 
 def validate_notice_manifest(repo_root: Path) -> list[ValidationIssue]:

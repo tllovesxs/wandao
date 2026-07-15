@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from wandao_report import finalize_report
+from wandao_report import derive_outcome, finalize_report
 
 
 class WandaoReportTests(unittest.TestCase):
@@ -24,6 +24,7 @@ class WandaoReportTests(unittest.TestCase):
         self.assertEqual(report["totalDocs"], 3)
         self.assertEqual(report["successCount"], 2)
         self.assertEqual(report["failureCount"], 1)
+        self.assertEqual(report["outcome"], "partial")
         self.assertEqual(report["reportFile"], "00-导出报告.json")
         self.assertEqual(report["output"], "exports/wiz")
 
@@ -43,6 +44,7 @@ class WandaoReportTests(unittest.TestCase):
         self.assertEqual(report["successCount"], 3)
         self.assertEqual(report["failureCount"], 0)
         self.assertEqual(report["resourceFailures"][0]["type"], "image")
+        self.assertEqual(report["outcome"], "partial")
 
     def test_finalize_legacy_import_count_fields(self) -> None:
         report = finalize_report(
@@ -58,6 +60,7 @@ class WandaoReportTests(unittest.TestCase):
         self.assertEqual(report["totalDocs"], 4)
         self.assertEqual(report["successCount"], 3)
         self.assertEqual(report["failureCount"], 1)
+        self.assertEqual(report["outcome"], "partial")
 
     def test_finalize_report_emits_task_result_v1_with_run_lineage(self) -> None:
         with patch.dict(
@@ -76,8 +79,23 @@ class WandaoReportTests(unittest.TestCase):
         self.assertEqual(report["runId"], "run-123")
         self.assertEqual(report["jobId"], "job-456")
         self.assertEqual(report["parentRunId"], "run-122")
-        for field in ("provider", "mode", "totalDocs", "successCount", "failureCount", "failures", "resourceFailures"):
+        self.assertEqual(report["outcome"], "completed")
+        for field in ("provider", "mode", "totalDocs", "successCount", "failureCount", "failures", "resourceFailures", "outcome"):
             self.assertIn(field, report)
+
+    def test_report_outcome_corrects_contradictory_failure_count(self) -> None:
+        report = finalize_report(
+            {
+                "totalDocs": 2,
+                "successCount": 1,
+                "failureCount": 0,
+                "failures": [{"title": "missing", "error": "timeout"}],
+            }
+        )
+
+        self.assertEqual(report["failureCount"], 1)
+        self.assertEqual(report["outcome"], "partial")
+        self.assertEqual(derive_outcome({"stopped": True}), "stopped")
 
 
 if __name__ == "__main__":

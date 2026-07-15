@@ -275,6 +275,7 @@ select:focus-visible,
 .provider-actions-mini,
 .task-history-actions,
 .task-history-buttons,
+.task-result-actions,
 .toc-actions {
   display: flex;
   align-items: center;
@@ -384,6 +385,11 @@ select:focus-visible,
 .nav-item:hover:not(:disabled):not(.active) {
   background: var(--shell-hover);
   color: var(--shell-text);
+}
+
+.nav-item:disabled:not(.active) {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .nav-item.active {
@@ -1063,6 +1069,17 @@ select:focus-visible,
   margin-bottom: 0;
 }
 
+.draft-restore-notice {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning-line);
+  border-radius: var(--r-sm);
+  background: var(--warning-bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .form-group label {
   display: block;
   margin-bottom: 7px;
@@ -1076,6 +1093,7 @@ select:focus-visible,
 }
 
 .form-group input[type="text"],
+.form-group input[type="url"],
 .form-group input[type="password"],
 .form-group input[type="number"],
 .form-group textarea,
@@ -1116,6 +1134,29 @@ select:focus-visible,
   outline: none;
 }
 
+.manifest-tool-panel .form-group.has-error > label,
+.manifest-tool-panel .form-group.has-error .checkbox-label {
+  color: var(--danger-deep);
+}
+
+.manifest-tool-panel .form-group.has-error input,
+.manifest-tool-panel .form-group.has-error textarea,
+.manifest-tool-panel .form-group.has-error select {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-bg);
+}
+
+.form-field-error {
+  margin: 6px 0 0;
+  color: var(--danger-deep);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.form-field-error[hidden] {
+  display: none;
+}
+
 .form-row {
   display: flex;
   align-items: flex-start;
@@ -1135,6 +1176,84 @@ select:focus-visible,
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+}
+
+.recent-input-history {
+  margin-top: 9px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunk);
+}
+
+.recent-input-history[hidden] {
+  display: none;
+}
+
+.recent-input-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.recent-input-clear,
+.recent-input-value,
+.recent-input-remove {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--surface-raise);
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.recent-input-clear {
+  min-height: 32px;
+  padding: 5px 9px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.recent-input-options {
+  display: grid;
+  gap: 6px;
+}
+
+.recent-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.recent-input-value {
+  min-width: 0;
+  padding: 7px 10px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-input-remove {
+  padding: 7px 10px;
+  color: var(--text-3);
+}
+
+.recent-input-clear:hover,
+.recent-input-value:hover,
+.recent-input-remove:hover {
+  border-color: var(--border-strong);
+  background: var(--brand-soft);
+  color: var(--text);
 }
 
 .checkbox-label {
@@ -1211,6 +1330,30 @@ select:focus-visible,
 
 .helper-note {
   margin-top: 10px;
+}
+
+.ima-kb-guidance {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 2px 0 16px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunk);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ima-kb-guidance p {
+  flex: 1 1 260px;
+  margin: 0;
+}
+
+.ima-kb-guidance .btn-secondary {
+  min-height: 38px;
 }
 
 .field-hint {
@@ -1297,6 +1440,7 @@ select:focus-visible,
 .trust-badge.local,
 .trust-badge.experimental,
 .settings-status.warning,
+.task-status.partial,
 .task-status.running,
 .task-status.stopping,
 .task-status.interrupted {
@@ -1521,9 +1665,14 @@ select:focus-visible,
 }
 
 .progress-section {
-  margin-top: 16px;
+  position: sticky;
+  z-index: 12;
+  top: 12px;
+  margin-top: 0;
+  margin-bottom: 18px;
   padding: 18px 20px;
   border: 1px solid var(--border);
+  box-shadow: 0 12px 30px rgba(32, 53, 39, 0.12);
 }
 
 .progress-header {
@@ -1564,12 +1713,93 @@ select:focus-visible,
 }
 
 .progress-fill.success { background: var(--success); }
+.progress-fill.partial,
+.progress-fill.stopped { background: var(--warning); }
 .progress-fill.error { background: var(--danger); }
 
 .progress-detail {
   margin-top: 8px;
   color: var(--text-3);
   font-size: 12px;
+}
+
+.task-result-card {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.task-result-card:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+}
+
+.task-result-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.task-result-kicker {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.task-result-header h3 {
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 780;
+}
+
+.task-result-summary {
+  margin-top: 9px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.task-result-document-note,
+.task-result-resource-note,
+.task-result-failures {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.task-result-document-note,
+.task-result-failures {
+  background: var(--danger-bg);
+  color: var(--danger-deep);
+}
+
+.task-result-resource-note {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.task-result-failures strong {
+  display: block;
+  font-size: 12px;
+}
+
+.task-result-failures ul {
+  margin: 6px 0 0 18px;
+  padding: 0;
+}
+
+.task-result-failures li + li {
+  margin-top: 4px;
+}
+
+.task-result-actions {
+  margin-top: 14px;
 }
 
 @keyframes progress-slide {
@@ -1975,6 +2205,65 @@ button,
   font-size: 12px;
 }
 
+.task-history-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(132px, 0.42fr) minmax(132px, 0.42fr) auto;
+  gap: 10px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-sunk);
+}
+
+.task-history-filter {
+  min-width: 0;
+}
+
+.task-history-filter label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.task-history-filter input,
+.task-history-filter select {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-raise);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.task-history-filter input:hover:not(:focus),
+.task-history-filter select:hover:not(:focus) {
+  border-color: var(--text-3);
+}
+
+.task-history-filter input:focus,
+.task-history-filter select:focus {
+  border-color: var(--text);
+  box-shadow: 0 0 0 4px var(--focus);
+  outline: none;
+}
+
+.task-history-clear {
+  align-self: end;
+  white-space: nowrap;
+}
+
+.task-history-filter-summary {
+  min-height: 20px;
+  margin: 0;
+  padding: 8px 22px 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
 .task-history-list {
   display: flex;
   max-height: 520px;
@@ -2039,6 +2328,29 @@ button,
 
 .task-history-failures div + div {
   margin-top: 5px;
+}
+
+.task-history-failures.warning {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.task-history-more {
+  padding: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.task-history-empty p {
+  margin: 0 0 7px;
+}
+
+.task-history-empty .btn-secondary {
+  margin-top: 6px;
 }
 
 .task-history-buttons {
@@ -2358,6 +2670,7 @@ button,
   .notice-document-header,
   .provider-mode-switcher,
   .toc-header,
+  .task-result-header,
   .task-history-header,
   .task-history-main {
     flex-direction: column;
@@ -2392,8 +2705,25 @@ button,
   }
 
   .task-history-buttons,
+  .task-result-actions,
   .task-history-actions {
     justify-content: flex-start;
+  }
+
+  .task-history-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-history-filter-search {
+    grid-column: 1 / -1;
+  }
+
+  .task-history-clear {
+    justify-self: start;
+  }
+
+  .progress-section {
+    top: 126px;
   }
 
   .log-header {

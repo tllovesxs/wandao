@@ -27,6 +27,31 @@ class YuqueImportResumeTests(unittest.TestCase):
         self.assertTrue(args.resume)
         self.assertTrue(args.retry_failed)
 
+    def test_saved_form_config_exposes_only_values_needed_by_the_desktop_form(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = Path(tmp) / "yuque-import.json"
+            import_yuque.save_config(
+                config_file,
+                {
+                    "targetBookUrl": "https://www.yuque.com/demo/book",
+                    "sourceDir": "D:/notes",
+                    "authFile": "D:/private/.yuque_auth.json",
+                },
+            )
+
+            self.assertEqual(
+                import_yuque.saved_form_config(config_file),
+                {
+                    "targetBookUrl": "https://www.yuque.com/demo/book",
+                    "sourceDir": "D:/notes",
+                },
+            )
+
+    def test_parser_accepts_show_config_without_import_arguments(self) -> None:
+        args = import_yuque.parse_args(["--show-config"])
+
+        self.assertTrue(args.show_config)
+
     def test_import_uses_checkpoint_retry_attribute_consistently(self) -> None:
         source = (REPO_ROOT / "plugins" / "yuque" / "backend" / "import_yuque.py").read_text(encoding="utf-8")
 

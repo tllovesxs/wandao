@@ -46,6 +46,7 @@
       "arg": "--output",
       "required": true,
       "default": "",
+      "history": "path",
       "actions": ["scan", "export"]
     },
     {

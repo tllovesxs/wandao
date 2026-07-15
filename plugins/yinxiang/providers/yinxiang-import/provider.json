@@ -13,9 +13,9 @@
   "templateId": "template-yinxiang-import",
   "capabilities": { "export": false, "import": true, "guide": false, "login": false, "scanToc": false, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": false },
   "fields": [
-    { "name": "database", "label": "印象笔记本地数据库", "type": "file", "arg": "--database", "required": true, "actions": ["plan", "importOne", "import"] },
-    { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "actions": ["plan", "importOne", "import"] },
-    { "name": "notebook", "label": "默认目标笔记本", "type": "text", "arg": "--notebook", "default": "万能导导入", "actions": ["importOne", "import"] },
+    { "name": "database", "label": "印象笔记本地数据库", "type": "file", "arg": "--database", "required": true, "history": "path", "actions": ["plan", "importOne", "import"] },
+    { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "history": "path", "actions": ["plan", "importOne", "import"] },
+    { "name": "notebook", "label": "默认目标笔记本", "type": "text", "arg": "--notebook", "default": "万能导导入", "history": "text", "actions": ["importOne", "import"] },
     { "name": "preserve_folders", "label": "按目录映射笔记本", "type": "checkbox", "arg": "--preserve-folders", "default": true, "advanced": true, "actions": ["importOne", "import"] },
     { "name": "max_import", "label": "最多导入篇数（0 为全部）", "type": "number", "arg": "--max-import", "default": 0, "min": 0, "advanced": true, "actions": ["import"] }
   ],

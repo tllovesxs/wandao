@@ -43,6 +43,7 @@
       "name": "source_dir",
       "label": "Markdown 源目录",
       "type": "directory",
+      "history": "path",
       "arg": "--source-dir",
       "required": true
     },
@@ -50,6 +51,7 @@
       "name": "output",
       "label": "输出目录",
       "type": "directory",
+      "history": "path",
       "arg": "--output",
       "required": true
     },

@@ -55,18 +55,19 @@ from export_feishu import (
     connect_wiki_browser,
     default_auth_path,
     default_profile_path,
-    load_auth_state,
     load_wiki_tree,
     login_and_save_auth as export_login_and_save_auth,
     open_tab,
     order_tree,
     parse_wiki_url,
+    prepare_entry_session,
+    run_with_auth_retry,
     start_chrome,
-    wait_for_wiki_ready,
 )
 from wandao_core.report import finalize_report
 from wandao_core.credentials import write_private_json
 from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_core.source_paths import resolve_local_reference, source_root_for_file
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -95,7 +96,8 @@ FEISHU_SCOPE_FALLBACK_PRIORITY = (
 FEISHU_PERMISSION_URL_RE = re.compile(r"https://open\.feishu\.cn/app/[^\s\"'<>，。]+")
 DEFAULT_WIKI_URL = ""
 DEFAULT_SOURCE_DIR = default_data_dir() / "exports" / "feishu"
-DEFAULT_CONFIG_FILE = default_state_path(".feishu_import_config.json")
+DEFAULT_CONFIG_FILE = default_state_path("feishu_import_config.json")
+LEGACY_DEFAULT_CONFIG_FILE = default_state_path(".feishu_import_config.json")
 DEFAULT_OPENAPI_PROFILE = ".feishu-openapi-profile"
 DEFAULT_IMAGE_MAX_WIDTH = 1460
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^\n)]*)\)")
@@ -325,6 +327,12 @@ class FeishuUploadForbiddenError(FeishuPermissionError):
     pass
 
 
+def default_import_config_path() -> Path:
+    if DEFAULT_CONFIG_FILE.exists() or not LEGACY_DEFAULT_CONFIG_FILE.exists():
+        return DEFAULT_CONFIG_FILE.resolve()
+    return LEGACY_DEFAULT_CONFIG_FILE.resolve()
+
+
 def auth_path_from_args(args: argparse.Namespace) -> Path:
     return Path(args.auth_file).resolve() if args.auth_file else default_auth_path().resolve()
 
@@ -332,7 +340,7 @@ def auth_path_from_args(args: argparse.Namespace) -> Path:
 def config_path_from_args(args: argparse.Namespace | None = None) -> Path:
     if args and getattr(args, "config_file", None):
         return Path(args.config_file).resolve()
-    return DEFAULT_CONFIG_FILE.resolve()
+    return default_import_config_path()
 
 
 def default_openapi_profile_path() -> Path:
@@ -340,7 +348,7 @@ def default_openapi_profile_path() -> Path:
 
 
 def load_import_config(config_file: str | Path | None = None) -> dict[str, Any]:
-    path = Path(config_file).resolve() if config_file else DEFAULT_CONFIG_FILE.resolve()
+    path = Path(config_file).resolve() if config_file else default_import_config_path()
     if not path.exists():
         return {}
     try:
@@ -641,33 +649,35 @@ def markdown_image_url_candidates(raw_url: str) -> list[str]:
     return candidates
 
 
-def collect_local_images_from_markdown(md_path: Path) -> list[dict[str, str]]:
+def collect_local_images_from_markdown(md_path: Path, source_root: Path | None = None) -> list[dict[str, str]]:
     text = md_path.read_text(encoding="utf-8", errors="ignore")
     images: list[dict[str, str]] = []
+    root = source_root or source_root_for_file(None, md_path)
     for match in MARKDOWN_IMAGE_RE.finditer(text):
         for candidate in markdown_image_url_candidates(match.group(2)):
             raw_url = clean_markdown_url(candidate)
             if not raw_url or is_remote_or_data_url(raw_url):
                 continue
-            image_path = (md_path.parent / raw_url.replace("/", os.sep)).resolve()
-            if image_path.exists() and image_path.is_file():
+            image_path = resolve_local_reference(root, md_path, raw_url)
+            if image_path:
                 images.append({"alt": match.group(1), "url": raw_url, "path": str(image_path)})
                 break
     for match in HTML_IMAGE_RE.finditer(text):
         raw_url = clean_markdown_url(match.group(1))
         if not raw_url or is_remote_or_data_url(raw_url):
             continue
-        image_path = (md_path.parent / raw_url.replace("/", os.sep)).resolve()
-        if image_path.exists() and image_path.is_file():
+        image_path = resolve_local_reference(root, md_path, raw_url)
+        if image_path:
             images.append({"alt": "", "url": raw_url, "path": str(image_path)})
     return images
 
 
-def prepare_markdown_for_image_blocks(md_path: Path) -> tuple[Path, Path | None]:
+def prepare_markdown_for_image_blocks(md_path: Path, source_root: Path | None = None) -> tuple[Path, Path | None]:
     temp_dir: Path | None = None
     index = 0
     changed = False
     text = md_path.read_text(encoding="utf-8", errors="ignore")
+    root = source_root or source_root_for_file(None, md_path)
 
     def markdown_replacer(match: re.Match[str]) -> str:
         nonlocal index, changed
@@ -676,8 +686,8 @@ def prepare_markdown_for_image_blocks(md_path: Path) -> tuple[Path, Path | None]
             raw_url = clean_markdown_url(candidate)
             if not raw_url or is_remote_or_data_url(raw_url):
                 continue
-            image_path = (md_path.parent / raw_url.replace("/", os.sep)).resolve()
-            if image_path.exists() and image_path.is_file():
+            image_path = resolve_local_reference(root, md_path, raw_url)
+            if image_path:
                 index += 1
                 changed = True
                 suffix = image_path.suffix or ".png"
@@ -702,9 +712,10 @@ def image_path_to_data_url(image_path: Path) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
-def prepare_markdown_with_inlined_local_images(md_path: Path) -> tuple[Path, Path | None]:
+def prepare_markdown_with_inlined_local_images(md_path: Path, source_root: Path | None = None) -> tuple[Path, Path | None]:
     text = md_path.read_text(encoding="utf-8", errors="ignore")
     changed = False
+    root = source_root or source_root_for_file(None, md_path)
 
     def markdown_replacer(match: re.Match[str]) -> str:
         nonlocal changed
@@ -713,8 +724,8 @@ def prepare_markdown_with_inlined_local_images(md_path: Path) -> tuple[Path, Pat
             raw_url = clean_markdown_url(candidate)
             if not raw_url or is_remote_or_data_url(raw_url):
                 continue
-            image_path = (md_path.parent / raw_url.replace("/", os.sep)).resolve()
-            if image_path.exists() and image_path.is_file():
+            image_path = resolve_local_reference(root, md_path, raw_url)
+            if image_path:
                 changed = True
                 return f"![{alt}]({image_path_to_data_url(image_path)})"
         return match.group(0)
@@ -724,8 +735,8 @@ def prepare_markdown_with_inlined_local_images(md_path: Path) -> tuple[Path, Pat
         raw_url = clean_markdown_url(match.group(1))
         if not raw_url or is_remote_or_data_url(raw_url):
             return match.group(0)
-        image_path = (md_path.parent / raw_url.replace("/", os.sep)).resolve()
-        if not image_path.exists() or not image_path.is_file():
+        image_path = resolve_local_reference(root, md_path, raw_url)
+        if not image_path:
             return match.group(0)
         changed = True
         return match.group(0).replace(match.group(1), image_path_to_data_url(image_path), 1)
@@ -903,20 +914,18 @@ def probe_target_wiki(args: argparse.Namespace) -> dict[str, Any]:
     host, _origin, wiki_token, wiki_url = parse_wiki_url(args.wiki_url)
     cdp, chrome_proc = connect_wiki_browser(args, wiki_url, host, wiki_token)
     try:
-        auth_file = auth_path_from_args(args)
-        if auth_file.exists() and not args.skip_auth_load:
-            cookie_count = load_auth_state(cdp, auth_file)
-            emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
-            cdp.navigate(wiki_url)
-            time.sleep(2)
-        elif not auth_file.exists():
-            emit(args, f"未找到飞书登录凭证文件：{auth_file}")
-            emit(args, "请先点击“登录并保存凭证”，在浏览器完成飞书登录后再探测目标 Wiki。")
         try:
-            tree = load_wiki_tree(cdp, wiki_url, wiki_token, args)
+            session = prepare_entry_session(cdp, args, wiki_url)
+            tree = run_with_auth_retry(
+                cdp,
+                args,
+                wiki_url,
+                lambda: load_wiki_tree(cdp, wiki_url, wiki_token, args),
+                already_restored=bool(session.get("restoredCookies")),
+            )
         except ExportError as exc:
-            if "飞书页面没有加载完成" in str(exc):
-                raise ExportError("目标飞书 Wiki 未登录或无权限访问。请先点击“登录并保存凭证”，完成登录后再重试。") from exc
+            if "登录" in str(exc) or "凭证" in str(exc):
+                raise ExportError("目标飞书 Wiki 未登录。请先点击“登录并保存凭证”，完成登录后再重试。") from exc
             raise
         summary = summarize_wiki_tree(tree)
         summary.update(
@@ -1407,29 +1416,20 @@ def setup_target_wiki_doc_app(args: argparse.Namespace) -> dict[str, Any]:
     host, _origin, wiki_token, wiki_url = parse_wiki_url(args.wiki_url)
     cdp, chrome_proc = connect_wiki_browser(args, wiki_url, host, wiki_token)
     try:
-        auth_file = auth_path_from_args(args)
-        current_login_ready = False
-        try:
-            wait_for_wiki_ready(cdp, timeout=8, args=args)
-            current_login_ready = True
+        session = prepare_entry_session(cdp, args, wiki_url)
+        if not session.get("restoredCookies"):
             emit(args, "已复用当前浏览器里的飞书登录态。")
-        except ExportError:
-            current_login_ready = False
-        if not current_login_ready and auth_file.exists() and not args.skip_auth_load:
-            cookie_count = load_auth_state(cdp, auth_file)
-            emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
-            cdp.navigate(wiki_url)
-            time.sleep(2)
-        elif not current_login_ready and not auth_file.exists():
-            emit(args, f"未找到飞书登录凭证文件：{auth_file}")
-            emit(args, "会继续使用当前浏览器登录态；如果页面要求登录，请先点击“登录并保存凭证”。")
-        if not current_login_ready:
-            wait_for_wiki_ready(cdp, timeout=45, args=args)
         configured_space_id = get_config_value(args, "space_id")
         try:
             node = get_current_wiki_node_info(cdp, wiki_token, space_id=configured_space_id)
         except ExportError:
-            tree = load_wiki_tree(cdp, wiki_url, wiki_token, args)
+            tree = run_with_auth_retry(
+                cdp,
+                args,
+                wiki_url,
+                lambda: load_wiki_tree(cdp, wiki_url, wiki_token, args),
+                already_restored=bool(session.get("restoredCookies")),
+            )
             node = find_wiki_node_info(tree, wiki_token)
         obj_token = str(node.get("obj_token") or "").strip()
         obj_type = int(node.get("obj_type") or 22)
@@ -1662,7 +1662,8 @@ def repair_imported_local_images(
     document_id: str,
     md_path: Path,
 ) -> dict[str, Any]:
-    local_images = collect_local_images_from_markdown(md_path)
+    source_root = source_root_for_file(getattr(args, "source_dir", None), md_path)
+    local_images = collect_local_images_from_markdown(md_path, source_root)
     if not local_images:
         return {"localImageCount": 0, "imageBlockCount": 0, "replacedCount": 0, "items": []}
 
@@ -1816,6 +1817,7 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         raise ExportError("请填写飞书 App ID / App Secret，或设置 FEISHU_APP_ID / FEISHU_APP_SECRET 环境变量")
 
     md_path = select_source_file(args)
+    source_root = source_root_for_file(getattr(args, "source_dir", None), md_path)
     upload_md_path = md_path
     upload_temp_dir: Path | None = None
     title = normalize_title_from_md(md_path)
@@ -1831,8 +1833,8 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
             doc={"title": title, "path": str(md_path)},
             step="prepare",
         )
-        if not getattr(args, "skip_image_repair", False) and collect_local_images_from_markdown(md_path):
-            upload_md_path, upload_temp_dir = prepare_markdown_for_image_blocks(md_path)
+        if not getattr(args, "skip_image_repair", False) and collect_local_images_from_markdown(md_path, source_root):
+            upload_md_path, upload_temp_dir = prepare_markdown_for_image_blocks(md_path, source_root)
             if upload_temp_dir:
                 emit(args, "已生成图片占位用临时 Markdown，导入后会替换为真实本地图片")
         access_token = get_tenant_access_token(app_id, app_secret)
@@ -1876,7 +1878,7 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
     image_repair_result: dict[str, Any] | None = None
     image_repair_error = ""
     if not getattr(args, "skip_image_repair", False):
-        local_image_count = len(collect_local_images_from_markdown(md_path))
+        local_image_count = len(collect_local_images_from_markdown(md_path, source_root))
         if local_image_count:
             emit(
                 args,
@@ -2347,7 +2349,7 @@ def run_gui(initial_args: argparse.Namespace | None = None) -> int:
     from gui_utils import create_collapsible_section, create_scrollable_body
 
     args0 = initial_args or argparse.Namespace()
-    initial_config_file = getattr(args0, "config_file", None) or str(DEFAULT_CONFIG_FILE)
+    initial_config_file = getattr(args0, "config_file", None) or str(default_import_config_path())
     try:
         initial_config = load_import_config(initial_config_file)
     except Exception:
@@ -2488,7 +2490,7 @@ def run_gui(initial_args: argparse.Namespace | None = None) -> int:
         if not data["app_id"] or not data["app_secret"]:
             messagebox.showwarning("配置不完整", "请先填写飞书 App ID 和 App Secret。")
             return
-        path = save_import_config(config_file_var.get().strip() or str(DEFAULT_CONFIG_FILE), data)
+        path = save_import_config(config_file_var.get().strip() or str(default_import_config_path()), data)
         messagebox.showinfo("配置已保存", f"已保存到：\n{path}\n\n这个文件已加入 .gitignore，不会提交到仓库。")
 
     def browse_profile() -> None:
@@ -2546,7 +2548,7 @@ def run_gui(initial_args: argparse.Namespace | None = None) -> int:
             space_id=space_id_var.get().strip() or None,
             parent_wiki_token=parent_wiki_token_var.get().strip() or None,
             obj_type=obj_type_var.get().strip() or "docx",
-            config_file=config_file_var.get().strip() or str(DEFAULT_CONFIG_FILE),
+            config_file=config_file_var.get().strip() or str(default_import_config_path()),
             move_to_wiki=move_to_wiki_var.get(),
             skip_rename=skip_rename_var.get(),
             skip_image_repair=not repair_images_var.get(),
@@ -2803,7 +2805,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--profile-dir", help=f"Chrome profile dir. Omit to auto-use {default_profile_path()}")
     parser.add_argument("--browser-path", help="Optional Chrome/Edge/Chromium executable path")
     parser.add_argument("--auth-file", help=f"Auth cookie file. Omit to auto-use {default_auth_path()}")
-    parser.add_argument("--config-file", default=str(DEFAULT_CONFIG_FILE), help="Local JSON file for Feishu API config")
+    parser.add_argument("--config-file", default=str(default_import_config_path()), help="Local JSON file for Feishu API config")
     parser.add_argument("--skip-auth-load", action="store_true", help="Do not load saved auth cookies before probing")
     parser.add_argument("--limit", type=int, default=5, help="Maximum local Markdown samples in the plan output")
     parser.add_argument("--max-import", type=int, default=0, help="Maximum Markdown files to import in --api-import-all. 0 means all")

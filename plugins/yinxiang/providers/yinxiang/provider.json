@@ -19,7 +19,7 @@
   "fields": [
     { "name": "username", "label": "印象笔记账号", "type": "text", "arg": "--username", "actions": ["initAuth"] },
     { "name": "database", "label": "本地同步库", "type": "file", "arg": "--database", "advanced": true, "actions": ["scan", "export"] },
-    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "history": "path", "actions": ["export"] },
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
     { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },
     { "name": "no_sync", "label": "导出前不重新同步", "type": "checkbox", "arg": "--no-sync", "default": false, "advanced": true, "actions": ["export"] }

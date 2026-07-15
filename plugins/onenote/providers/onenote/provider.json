@@ -12,19 +12,19 @@
   "status": "stable",
   "templateId": "template-onenote",
   "defaults": { "output": "exports/onenote" },
-  "requirements": { "systems": ["Windows"], "notes": ["需要已安装并登录桌面版 OneNote"] },
+  "requirements": { "system": ["Windows"], "notes": ["需要已安装并登录桌面版 OneNote"] },
   "capabilities": { "export": true, "import": false, "guide": false, "login": false, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
   "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
   "toc": { "itemsPath": "nodes", "idKey": "nodeId", "exportIdKey": "exportId", "titleKey": "title", "parentIdKey": "parentNodeId", "selectableKey": "selectable", "selectionArg": "--doc-id", "selectableWhenExportId": false },
   "fields": [
-    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "history": "path", "actions": ["export"] },
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
     { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },
     { "name": "keep_mht", "label": "保留 MHT 中间文件", "type": "checkbox", "arg": "--keep-mht", "default": false, "advanced": true, "actions": ["export"] }
   ],
   "actions": [
-    { "id": "scan", "kind": "scan", "label": "读取 OneNote 目录", "script": "../../backend/export_onenote.py", "args": ["--scan-toc"], "includeSelection": false, "secondary": true },
+    { "id": "scan", "kind": "scan", "label": "读取 OneNote 目录", "script": "../../backend/export_onenote.py", "args": ["--scan-toc"], "includeSelection": false, "secondary": true, "track": false },
     { "id": "export", "kind": "export", "label": "开始导出", "script": "../../backend/export_onenote.py", "args": ["--progress-every", "1"], "progressTitle": "OneNote 导出", "progressDetail": "正在导出页面和资源..." }
   ]
 }

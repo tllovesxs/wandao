@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Python 命令执行
   runPythonCommand: (command, args, options) => ipcRenderer.invoke('run-python-command', command, args, options),
   stopPythonProcess: () => ipcRenderer.invoke('stop-python-process'),
+  getPythonProcessState: () => ipcRenderer.invoke('get-python-process-state'),
   sendPythonInput: (text) => ipcRenderer.invoke('send-python-input', text),
   protectTaskArgs: (args) => ipcRenderer.invoke('protect-task-args', args),
   restoreTaskArgs: (payload) => ipcRenderer.invoke('restore-task-args', payload),
@@ -52,5 +53,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (event, data) => callback(data);
     ipcRenderer.on('python-log', listener);
     return () => ipcRenderer.removeListener('python-log', listener);
+  },
+  onPythonProcessState: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('python-process-state', listener);
+    return () => ipcRenderer.removeListener('python-process-state', listener);
   }
 });

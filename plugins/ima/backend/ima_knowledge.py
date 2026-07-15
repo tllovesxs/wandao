@@ -36,6 +36,7 @@ from wandao_cli import extend_arg_list_from_file
 from wandao_core.logging import emit_legacy
 from wandao_core.report import finalize_report
 from wandao_core.credentials import write_private_json
+from wandao_core.source_paths import iter_regular_files_under_root, resolve_local_reference
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -772,9 +773,7 @@ def markdown_reference_candidates(raw: str) -> list[str]:
 
 def collect_markdown_referenced_files(source_dir: Path) -> set[Path]:
     referenced: set[Path] = set()
-    for md_path in sorted(source_dir.rglob("*")):
-        if not md_path.is_file() or md_path.suffix.lower() not in {".md", ".markdown"}:
-            continue
+    for md_path in sorted(iter_regular_files_under_root(source_dir, suffixes={".md", ".markdown"})):
         if should_skip_source_path(source_dir, md_path):
             continue
         try:
@@ -784,14 +783,8 @@ def collect_markdown_referenced_files(source_dir: Path) -> set[Path]:
         for match in MARKDOWN_REFERENCE_RE.finditer(text):
             raw = next((group for group in match.groups() if group), "")
             for candidate in markdown_reference_candidates(raw):
-                ref_path = Path(candidate)
-                if not ref_path.is_absolute():
-                    ref_path = md_path.parent / ref_path
-                try:
-                    resolved = ref_path.resolve()
-                except OSError:
-                    continue
-                if resolved.exists() and resolved.is_file() and is_inside(source_dir, resolved):
+                resolved = resolve_local_reference(source_dir, md_path, candidate)
+                if resolved:
                     referenced.add(resolved)
                     break
     return referenced
@@ -803,10 +796,7 @@ def scan_source_files(source_dir: Path, *, include_referenced_assets: bool = Fal
     source_dir = source_dir.resolve()
     referenced_assets = set() if include_referenced_assets else collect_markdown_referenced_files(source_dir)
     files: list[dict[str, Any]] = []
-    for path in sorted(source_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        path = path.resolve()
+    for path in sorted(iter_regular_files_under_root(source_dir)):
         if should_skip_source_path(source_dir, path):
             continue
         if path in referenced_assets:

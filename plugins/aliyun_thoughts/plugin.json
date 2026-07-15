@@ -4,7 +4,7 @@
   "id": "aliyun_thoughts",
   "name": "阿里云 Thoughts",
   "description": "阿里云 Thoughts 工作区 Markdown 导出。",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "Wandao Official",
   "license": "AGPL-3.0-only",
   "core": { "minVersion": "1.2.9" },

@@ -1,9 +1,17 @@
 import argparse
+import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from wandao_checkpoint import WandaoCheckpoint, add_checkpoint_args, open_checkpoint_from_args
+from wandao_checkpoint import (
+    CheckpointInUseError,
+    CheckpointLeaseLostError,
+    WandaoCheckpoint,
+    add_checkpoint_args,
+    open_checkpoint_from_args,
+)
 
 
 class WandaoCheckpointTests(unittest.TestCase):
@@ -30,7 +38,29 @@ class WandaoCheckpointTests(unittest.TestCase):
             finally:
                 checkpoint.close()
 
-    def test_recover_interrupted_running_items(self) -> None:
+    def test_open_does_not_recover_or_take_over_a_live_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.sqlite"
+            checkpoint = WandaoCheckpoint.open(path, task_id="task-1", provider_id="zsxq-group", action="导出")
+            try:
+                checkpoint.start_task({})
+                checkpoint.upsert_item("item-1", title="item")
+                checkpoint.start_item("item-1", "content")
+
+                reopened = WandaoCheckpoint.open(path, task_id="task-1", provider_id="zsxq-group", action="导出")
+                try:
+                    self.assertEqual(reopened.item_status("item-1"), "running")
+                    with self.assertRaises(CheckpointInUseError):
+                        reopened.reset_task()
+                    with self.assertRaises(CheckpointInUseError):
+                        reopened.start_task({})
+                    self.assertEqual(checkpoint.item_status("item-1"), "running")
+                finally:
+                    reopened.close()
+            finally:
+                checkpoint.close()
+
+    def test_close_releases_lease_and_next_claim_recovers_running_items(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "checkpoint.sqlite"
             checkpoint = WandaoCheckpoint.open(path, task_id="task-1", provider_id="zsxq-group", action="导出")
@@ -41,10 +71,107 @@ class WandaoCheckpointTests(unittest.TestCase):
 
             reopened = WandaoCheckpoint.open(path, task_id="task-1", provider_id="zsxq-group", action="导出")
             try:
+                self.assertEqual(reopened.item_status("item-1"), "running")
+                reopened.start_task({})
                 self.assertEqual(reopened.item_status("item-1"), "pending")
-                self.assertEqual(reopened.pending_items()[0]["item_key"], "item-1")
             finally:
                 reopened.close()
+
+    def test_heartbeat_renews_and_close_clears_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.sqlite"
+            checkpoint = WandaoCheckpoint.open(
+                path,
+                task_id="task-1",
+                provider_id="zsxq-group",
+                action="导出",
+                lease_seconds=5,
+            )
+            checkpoint.start_task({})
+            before = checkpoint.conn.execute(
+                "SELECT lease_id, lease_heartbeat, lease_expires_at FROM tasks WHERE task_id = ?",
+                ("task-1",),
+            ).fetchone()
+            time.sleep(0.01)
+            checkpoint.heartbeat()
+            renewed = checkpoint.conn.execute(
+                "SELECT lease_id, lease_heartbeat, lease_expires_at FROM tasks WHERE task_id = ?",
+                ("task-1",),
+            ).fetchone()
+            self.assertEqual(renewed["lease_id"], checkpoint.run_id)
+            self.assertGreater(renewed["lease_heartbeat"], before["lease_heartbeat"])
+            self.assertGreater(renewed["lease_expires_at"], before["lease_expires_at"])
+            checkpoint.close()
+
+            conn = sqlite3.connect(path)
+            try:
+                lease = conn.execute(
+                    "SELECT lease_id, lease_pid, lease_heartbeat, lease_expires_at FROM tasks WHERE task_id = ?",
+                    ("task-1",),
+                ).fetchone()
+                self.assertEqual(lease[0], "")
+                self.assertEqual(lease[1:], (None, None, None))
+            finally:
+                conn.close()
+
+    def test_expired_lease_can_be_taken_over_and_fences_old_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.sqlite"
+            first = WandaoCheckpoint.open(path, task_id="task-1", provider_id="zsxq-group", action="导出")
+            second = None
+            try:
+                first.start_task({})
+                first.upsert_item("item-1", title="item")
+                first.start_item("item-1", "content")
+                conn = sqlite3.connect(path)
+                try:
+                    conn.execute(
+                        "UPDATE tasks SET lease_expires_at = ? WHERE task_id = ?",
+                        (time.time() - 1, "task-1"),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                second = WandaoCheckpoint.open(path, task_id="task-1", provider_id="zsxq-group", action="导出")
+                second.start_task({})
+                self.assertEqual(second.item_status("item-1"), "pending")
+                with self.assertRaises(CheckpointLeaseLostError):
+                    first.start_item("item-1", "content")
+            finally:
+                if second is not None:
+                    second.close()
+                first.close()
+
+    def test_legacy_database_is_migrated_without_losing_checkpoint_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.sqlite"
+            conn = sqlite3.connect(path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE tasks (
+                        task_id TEXT PRIMARY KEY, provider_id TEXT, action TEXT, resume_key TEXT,
+                        args_hash TEXT, source TEXT, target TEXT, output_dir TEXT, status TEXT,
+                        current_stage TEXT, metadata_json TEXT, error_summary TEXT, created_at TEXT,
+                        updated_at TEXT, completed_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO tasks (task_id, provider_id, action, status) VALUES ('task-1', 'demo', 'export', 'completed')"
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            checkpoint = WandaoCheckpoint.open(path, task_id="task-1", provider_id="demo", action="export")
+            try:
+                columns = {row["name"] for row in checkpoint.conn.execute("PRAGMA table_info(tasks)")}
+                self.assertTrue({"lease_id", "lease_pid", "lease_heartbeat", "lease_expires_at"}.issubset(columns))
+                self.assertEqual(checkpoint.conn.execute("SELECT status FROM tasks WHERE task_id = 'task-1'").fetchone()["status"], "completed")
+            finally:
+                checkpoint.close()
 
     def test_source_scope_change_resets_old_items(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

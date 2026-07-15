@@ -56,6 +56,7 @@ from wandao_core.browser import (
 
 PROJECT_DIR = Path(__file__).resolve().parent
 YOUDAO_WEB_URL = "https://note.youdao.com/web/"
+YOUDAO_AUTH_HOST = "note.youdao.com"
 DEFAULT_PROFILE = ".youdao-chrome-profile"
 DEFAULT_AUTH_FILE = ".youdao_auth.json"
 FORBIDDEN_FILENAME_CHARS = r'<>:"/\|?*'
@@ -295,7 +296,34 @@ def read_auth_payload(auth_file: Path) -> dict[str, Any]:
     return payload
 
 
-def cookie_header(cookies: list[dict[str, Any]]) -> str:
+def is_youdao_https_url(url: str) -> bool:
+    """Only the real Youdao web host and its subdomains receive auth cookies."""
+
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        return (
+            parsed.scheme.lower() == "https"
+            and not parsed.username
+            and not parsed.password
+            and (host == YOUDAO_AUTH_HOST or host.endswith(f".{YOUDAO_AUTH_HOST}"))
+        )
+    except ValueError:
+        return False
+
+
+def is_https_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        return parsed.scheme.lower() == "https" and bool(parsed.hostname) and not parsed.username and not parsed.password
+    except ValueError:
+        return False
+
+
+def cookie_header(cookies: list[dict[str, Any]], url: str | None = None) -> str:
+    parsed = urllib.parse.urlsplit(url) if url else None
+    host = (parsed.hostname or "").lower().rstrip(".") if parsed else ""
+    request_path = (parsed.path or "/") if parsed else "/"
     parts: list[str] = []
     seen: set[str] = set()
     for cookie in cookies:
@@ -303,9 +331,25 @@ def cookie_header(cookies: list[dict[str, Any]]) -> str:
         value = str(cookie.get("value") or "")
         if not name or name in seen:
             continue
+        if parsed:
+            domain = str(cookie.get("domain") or "").lstrip(".").lower().rstrip(".")
+            cookie_path = str(cookie.get("path") or "/")
+            if not domain or not (host == domain or host.endswith(f".{domain}")):
+                continue
+            if not request_path.startswith(cookie_path.rstrip("/") or "/"):
+                continue
+            if cookie.get("secure") and parsed.scheme.lower() != "https":
+                continue
         parts.append(f"{name}={value}")
         seen.add(name)
     return "; ".join(parts)
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Surface redirects so every hop can receive freshly scoped headers."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
 
 
 def extract_cstk(cookies: list[dict[str, Any]]) -> str:
@@ -349,7 +393,6 @@ class YoudaoClient:
         cookies = [prepare_cookie_for_set(cookie) for cookie in payload.get("cookies", [])]
         self.cookies = [cookie for cookie in cookies if cookie.get("name") and cookie.get("value")]
         self.cstk = extract_cstk(self.cookies)
-        self.cookie_header = cookie_header(self.cookies)
         self.args = args
         self.request_count = 0
 
@@ -360,39 +403,67 @@ class YoudaoClient:
         data: dict[str, Any] | None = None,
         timeout: int = 60,
         extra_headers: dict[str, str] | None = None,
+        allow_external_redirects: bool = False,
     ) -> DownloadedContent:
+        if not is_youdao_https_url(url):
+            raise YoudaoError("拒绝向非 HTTPS 的有道云域名发送认证请求。")
         throttle_request(self.args)
         self.request_count += 1
-        body = None
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-            ),
-            "Accept": "*/*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Accept-Encoding": "identity",
-            "Origin": "https://note.youdao.com",
-            "Referer": YOUDAO_WEB_URL,
-            "Cookie": self.cookie_header,
-        }
-        if extra_headers:
-            headers.update(extra_headers)
-        if data is not None:
-            body = urllib.parse.urlencode(data).encode("utf-8")
-            headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
-        request = urllib.request.Request(safe_url(url), data=body, headers=headers, method=method.upper())
         attempts = max(1, int(getattr(self.args, "retry", 2) or 1))
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
+            current_url = url
+            current_method = method.upper()
+            current_body = urllib.parse.urlencode(data).encode("utf-8") if data is not None else None
             try:
-                with urllib.request.urlopen(request, timeout=timeout) as response:
-                    raw = decode_response_body(response.headers, response.read())
-                    return DownloadedContent(
-                        content=raw,
-                        content_type=response.headers.get("Content-Type", ""),
-                        final_url=response.geturl(),
-                    )
+                for _redirect in range(4):
+                    authenticated = is_youdao_https_url(current_url)
+                    if not authenticated and not allow_external_redirects:
+                        raise YoudaoError("有道云请求被重定向到未受信任域名，已停止以保护登录凭证。")
+                    headers = {
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                        ),
+                        "Accept": "*/*",
+                        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                        "Accept-Encoding": "identity",
+                    }
+                    if authenticated:
+                        headers.update({"Origin": "https://note.youdao.com", "Referer": YOUDAO_WEB_URL})
+                        scoped_cookie = cookie_header(self.cookies, current_url)
+                        if scoped_cookie:
+                            headers["Cookie"] = scoped_cookie
+                        if extra_headers:
+                            headers.update(extra_headers)
+                    if current_body is not None:
+                        headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+                    request = urllib.request.Request(safe_url(current_url), data=current_body, headers=headers, method=current_method)
+                    try:
+                        response = urllib.request.build_opener(NoRedirectHandler()).open(request, timeout=timeout)
+                    except urllib.error.HTTPError as exc:
+                        if exc.code not in {301, 302, 303, 307, 308}:
+                            raise
+                        location = exc.headers.get("Location") if exc.headers else ""
+                        if not location:
+                            raise YoudaoError(f"有道云重定向缺少 Location：HTTP {exc.code}") from exc
+                        next_url = urllib.parse.urljoin(current_url, location)
+                        if not is_https_url(next_url):
+                            raise YoudaoError("有道云重定向到非 HTTPS 地址，已阻止 Cookie 外泄。") from exc
+                        if not is_youdao_https_url(next_url) and not allow_external_redirects:
+                            raise YoudaoError("有道云重定向到未受信任域名，已阻止 Cookie 外泄。") from exc
+                        current_url = next_url
+                        if exc.code in {301, 302, 303} and current_method != "GET":
+                            current_method, current_body = "GET", None
+                        continue
+                    with response:
+                        raw = decode_response_body(response.headers, response.read())
+                        return DownloadedContent(
+                            content=raw,
+                            content_type=response.headers.get("Content-Type", ""),
+                            final_url=response.geturl(),
+                        )
+                raise YoudaoError("有道云资源重定向次数超过限制。")
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
                 if exc.code == 401:
@@ -433,7 +504,11 @@ class YoudaoClient:
         return self.request("POST", FILE_DOWNLOAD_URL.format(cstk=urllib.parse.quote(self.cstk)), data=data)
 
     def download_url(self, url: str, timeout: int = 60) -> DownloadedContent:
-        return self.request("GET", url, timeout=timeout)
+        if not is_youdao_https_url(url):
+            raise YoudaoError("资源地址不是受信任的 HTTPS 有道云域名，已拒绝下载。")
+        # CDN redirects are permitted, but every redirect hop gets a new request
+        # and only Youdao hosts receive cookies.
+        return self.request("GET", url, timeout=timeout, allow_external_redirects=True)
 
 
 def file_entry(item: dict[str, Any]) -> dict[str, Any]:
@@ -928,8 +1003,9 @@ def download_resource(
     return relative_link(md_path, target), image_file
 
 
-IMAGE_LINK_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^)\s]*note\.youdao\.com[^)]*)\)")
-ANY_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\((https?://[^)\s]*note\.youdao\.com[^)]*)\)")
+YOUDAO_RESOURCE_HOST_RE = r"(?:[A-Za-z0-9-]+\.)*note\.youdao\.com"
+IMAGE_LINK_RE = re.compile(rf"!\[([^\]]*)\]\((https://{YOUDAO_RESOURCE_HOST_RE}(?::\d+)?/[^)\s]*)\)", re.I)
+ANY_LINK_RE = re.compile(rf"(?<!!)\[([^\]]+)\]\((https://{YOUDAO_RESOURCE_HOST_RE}(?::\d+)?/[^)\s]*)\)", re.I)
 
 
 def localize_links(client: YoudaoClient, markdown: str, md_path: Path, args: argparse.Namespace, stats: dict[str, int]) -> str:

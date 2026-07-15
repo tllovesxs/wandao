@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import mimetypes
 import os
@@ -72,6 +73,8 @@ PROJECT_DIR = SCRIPT_DIR
 DEFAULT_PROFILE = ".yuque-chrome-profile"
 DEFAULT_AUTH_FILE = ".yuque_auth.json"
 DEFAULT_BOOK_URL = ""
+MAX_RESOURCE_REDIRECTS = 3
+RESOURCE_REDIRECT_CODES = {301, 302, 303, 307, 308}
 
 
 def default_auth_path() -> Path:
@@ -460,7 +463,9 @@ def guess_extension(url: str, content_type: str | None, fallback: str = "bin") -
 
 
 def cookies_for_url(cookies: list[dict[str, Any]], url: str) -> str:
-    host = urllib.parse.urlparse(url).hostname
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.hostname
+    path = parsed.path or "/"
     pairs: list[str] = []
     for cookie in cookies:
         name = cookie.get("name")
@@ -470,8 +475,87 @@ def cookies_for_url(cookies: list[dict[str, Any]], url: str) -> str:
         domain = cookie.get("domain") or ""
         if domain and not cookie_domain_matches(domain, host):
             continue
+        if cookie.get("secure") and parsed.scheme.lower() != "https":
+            continue
+        cookie_path = str(cookie.get("path") or "/")
+        if not _cookie_path_matches(cookie_path, path):
+            continue
+        expires = cookie.get("expires")
+        try:
+            if expires not in (None, "", -1, 0) and float(expires) <= time.time():
+                continue
+        except (TypeError, ValueError):
+            continue
         pairs.append(f"{name}={value}")
     return "; ".join(pairs)
+
+
+def _cookie_path_matches(cookie_path: str, request_path: str) -> bool:
+    if request_path == cookie_path:
+        return True
+    if not request_path.startswith(cookie_path):
+        return False
+    return cookie_path.endswith("/") or request_path[len(cookie_path):].startswith("/")
+
+
+class _ResourceNoRedirect(urllib.request.HTTPRedirectHandler):
+    """Return 3xx responses to the caller so every redirect hop is revalidated."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
+def _validated_resource_url(value: str, *, context: str) -> urllib.parse.SplitResult:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ExportError(f"{context} URL 端口非法") from exc
+    host = parsed.hostname
+    if (
+        parsed.scheme.lower() != "https"
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise ExportError(f"{context} 只允许使用无凭据的 HTTPS 域名 URL")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return parsed
+    raise ExportError(f"{context} 不允许使用 IP 地址 URL")
+
+
+def _same_resource_origin(left: str, right: str) -> bool:
+    try:
+        left_parts = _validated_resource_url(left, context="资源")
+        right_parts = _validated_resource_url(right, context="资源")
+    except ExportError:
+        return False
+    return (
+        left_parts.hostname == right_parts.hostname
+        and (left_parts.port or 443) == (right_parts.port or 443)
+    )
+
+
+def _resource_request_headers(
+    url: str,
+    *,
+    initial_url: str,
+    cookies: list[dict[str, Any]],
+    referer: str | None,
+) -> dict[str, str]:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    # urllib copies manually supplied headers when it follows redirects.  Build
+    # every request ourselves and attach cookies only on the original origin.
+    if _same_resource_origin(initial_url, url):
+        cookie_header = cookies_for_url(cookies, url)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        if referer:
+            headers["Referer"] = referer
+    return headers
 
 
 def read_auth_cookies(auth_file: Path | None) -> list[dict[str, Any]]:
@@ -521,19 +605,45 @@ def download_resource(
     title: str | None = None,
     referer: str | None = None,
 ) -> Path:
-    headers = {"User-Agent": "Mozilla/5.0"}
-    cookie_header = cookies_for_url(cookies, url)
-    if cookie_header:
-        headers["Cookie"] = cookie_header
-    if referer:
-        headers["Referer"] = referer
-
-    request = urllib.request.Request(url, headers=headers)
+    _validated_resource_url(url, context="语雀资源")
+    initial_url = url
+    current_url = url
+    opener = urllib.request.build_opener(_ResourceNoRedirect())
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = response.read()
-            content_type = response.headers.get("Content-Type")
-            filename = safe_resource_filename(url, content_type, title, response.headers.get("Content-Disposition"))
+        for redirect_count in range(MAX_RESOURCE_REDIRECTS + 1):
+            _validated_resource_url(current_url, context="语雀资源重定向")
+            request = urllib.request.Request(
+                current_url,
+                headers=_resource_request_headers(
+                    current_url,
+                    initial_url=initial_url,
+                    cookies=cookies,
+                    referer=referer,
+                ),
+            )
+            try:
+                with opener.open(request, timeout=timeout) as response:
+                    data = response.read()
+                    content_type = response.headers.get("Content-Type")
+                    filename = safe_resource_filename(
+                        current_url,
+                        content_type,
+                        title,
+                        response.headers.get("Content-Disposition"),
+                    )
+                    break
+            except urllib.error.HTTPError as exc:
+                if exc.code not in RESOURCE_REDIRECT_CODES:
+                    raise
+                location = exc.headers.get("Location") if exc.headers else ""
+                if not location:
+                    raise ExportError(f"语雀资源重定向缺少 Location：HTTP {exc.code}") from exc
+                if redirect_count >= MAX_RESOURCE_REDIRECTS:
+                    raise ExportError(f"语雀资源重定向超过 {MAX_RESOURCE_REDIRECTS} 次") from exc
+                current_url = urllib.parse.urljoin(current_url, location)
+                _validated_resource_url(current_url, context="语雀资源重定向")
+        else:  # pragma: no cover - loop exits through break or an exception
+            raise ExportError("语雀资源下载未返回响应")
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise ExportError("语雀登录已失效，请重新点击“登录并保存凭证”后重试。") from exc

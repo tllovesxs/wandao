@@ -71,6 +71,21 @@ PROJECT_DIR = SCRIPT_DIR
 DEFAULT_PROFILE = ".feishu-chrome-profile"
 DEFAULT_AUTH_FILE = ".feishu_auth.json"
 DEFAULT_WIKI_URL = ""
+FEISHU_NATIVE_DOC_OBJ_TYPE = 22
+FEISHU_FILE_OBJ_TYPE = 12
+FEISHU_MARKDOWN_FILE_TYPES = {"md", "markdown"}
+
+
+class FeishuLoginRequired(ExportError):
+    pass
+
+
+class FeishuPermissionDenied(ExportError):
+    pass
+
+
+class FeishuMarkdownSourceInvalid(ExportError):
+    pass
 
 
 def default_auth_path() -> Path:
@@ -277,20 +292,191 @@ def load_auth_state(cdp: CDPClient, auth_file: Path) -> int:
     return len(cookies)
 
 
-def wait_for_wiki_ready(cdp: CDPClient, timeout: int, args: argparse.Namespace | None = None) -> None:
+def inspect_entry_session(cdp: CDPClient) -> dict[str, Any]:
+    value = cdp.evaluate(
+        r"""
+        (() => {
+          const bodyText = (document.body && document.body.innerText) || "";
+          const href = location.href || "";
+          const url = new URL(href);
+          const loginHost = /(^|\.)accounts\.(feishu\.cn|larksuite\.com)$/i.test(url.hostname);
+          const loginPath = /\/accounts\/page\/login/i.test(url.pathname);
+          const hasLoginForm = !!document.querySelector(
+            'form input[type="password"], input[name="password"], [data-testid*="login"] input'
+          );
+          const permissionSelector = !!document.querySelector(
+            '[data-testid*="permission"], [class*="permission-denied"], [class*="no-permission"], [class*="access-denied"]'
+          );
+          const permissionTitle = /没有权限|暂无权限|无权访问|access denied/i.test(document.title || "")
+            && bodyText.length < 2000;
+          const permissionDenied = permissionSelector || permissionTitle;
+          return {
+            href,
+            title: document.title || "",
+            readyState: document.readyState || "",
+            hasBody: !!document.body,
+            textLength: bodyText.length,
+            hasLoginForm,
+            loginRequired: loginHost || loginPath || hasLoginForm,
+            permissionDenied,
+          };
+        })()
+        """,
+        timeout=10,
+    )
+    return value if isinstance(value, dict) else {}
+
+
+def is_expected_entry_url(actual_url: str, expected_url: str) -> bool:
+    try:
+        actual = urllib.parse.urlparse(actual_url)
+        expected = urllib.parse.urlparse(expected_url)
+    except ValueError:
+        return False
+    if actual.hostname != expected.hostname:
+        return False
+    actual_parts = [part for part in actual.path.split("/") if part]
+    expected_parts = [part for part in expected.path.split("/") if part]
+    if len(actual_parts) < 2 or len(expected_parts) < 2:
+        return actual.path.rstrip("/") == expected.path.rstrip("/")
+    if expected_parts[:2] == ["drive", "folder"]:
+        return len(actual_parts) >= 3 and len(expected_parts) >= 3 and actual_parts[:3] == expected_parts[:3]
+    if actual_parts[1] != expected_parts[1]:
+        return False
+    if expected_parts[0] in FEISHU_DOC_PATH_TYPES:
+        return actual_parts[0] in FEISHU_DOC_PATH_TYPES
+    return actual_parts[:2] == expected_parts[:2]
+
+
+def should_restore_auth(
+    state: dict[str, Any],
+    *,
+    auth_exists: bool,
+    skip_auth_load: bool,
+) -> bool:
+    return bool(auth_exists and not skip_auth_load and state.get("loginRequired"))
+
+
+def wait_for_wiki_ready(
+    cdp: CDPClient,
+    timeout: int,
+    args: argparse.Namespace | None = None,
+    expected_url: str = "",
+) -> dict[str, Any]:
     deadline = time.time() + timeout
+    last_state: dict[str, Any] = {}
     while time.time() < deadline:
         check_stopped(args)
-        ready = cdp.evaluate(
-            "document.readyState === 'complete' && !!document.body && document.body.innerText.length > 20",
-            timeout=10,
-        )
-        if ready:
-            text = cdp.evaluate("(document.body && document.body.innerText || '').slice(0, 500)", timeout=10) or ""
-            if "登录" not in text[:80] and "没有权限访问" not in text[:120]:
-                return
+        try:
+            last_state = inspect_entry_session(cdp)
+        except ExportError:
+            time.sleep(0.5)
+            continue
+        route_ready = not expected_url or is_expected_entry_url(str(last_state.get("href") or ""), expected_url)
+        if route_ready and last_state.get("permissionDenied"):
+            raise ExportError("当前账号没有权限访问该飞书页面")
+        if route_ready and last_state.get("loginRequired"):
+            raise FeishuLoginRequired("飞书登录状态已失效，请重新登录并保存凭证")
+        document_ready = str(last_state.get("readyState") or "") != "loading"
+        content_ready = bool(last_state.get("hasBody")) and int(last_state.get("textLength") or 0) > 20
+        if route_ready and document_ready and content_ready:
+            return last_state
         time.sleep(0.5)
-    raise ExportError("飞书页面没有加载完成，可能未登录、无权限或页面结构变化")
+    if last_state.get("loginRequired"):
+        raise FeishuLoginRequired("飞书登录状态已失效，请重新登录并保存凭证")
+    detail = (
+        f"href={last_state.get('href') or '-'}, title={last_state.get('title') or '-'}, "
+        f"readyState={last_state.get('readyState') or '-'}, textLength={last_state.get('textLength') or 0}"
+    )
+    raise ExportError(f"飞书页面没有加载完成（{detail}）")
+
+
+def prepare_entry_session(
+    cdp: CDPClient,
+    args: argparse.Namespace,
+    entry_url: str,
+) -> dict[str, Any]:
+    state = inspect_entry_session(cdp)
+    auth_file = auth_path_from_args(args)
+    restored_cookies = 0
+    navigated = False
+
+    matches_target = is_expected_entry_url(str(state.get("href") or ""), entry_url)
+    if matches_target and state.get("permissionDenied"):
+        raise ExportError("当前账号没有权限访问该飞书页面")
+
+    can_restore = should_restore_auth(
+        state,
+        auth_exists=auth_file.exists(),
+        skip_auth_load=bool(getattr(args, "skip_auth_load", False)),
+    )
+    if state.get("loginRequired") and not can_restore:
+        raise FeishuLoginRequired("飞书登录状态已失效，请先登录并保存凭证")
+
+    if can_restore:
+        restored_cookies = load_auth_state(cdp, auth_file)
+        emit(args, f"Loaded {restored_cookies} auth cookies from {auth_file}")
+        cdp.navigate(entry_url)
+        navigated = True
+    elif not matches_target:
+        cdp.navigate(entry_url)
+        navigated = True
+
+    try:
+        ready_state = wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=entry_url)
+    except FeishuLoginRequired:
+        if restored_cookies or not auth_file.exists() or bool(getattr(args, "skip_auth_load", False)):
+            raise
+        restored_cookies = load_auth_state(cdp, auth_file)
+        emit(args, f"Loaded {restored_cookies} auth cookies from {auth_file}")
+        cdp.navigate(entry_url)
+        navigated = True
+        ready_state = wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=entry_url)
+    return {
+        "restoredCookies": restored_cookies,
+        "navigated": navigated,
+        "state": ready_state,
+    }
+
+
+def run_with_auth_retry(
+    cdp: CDPClient,
+    args: argparse.Namespace,
+    entry_url: str,
+    operation: Callable[[], Any],
+    *,
+    already_restored: bool = False,
+) -> Any:
+    """Run a Feishu page operation and recover from one API-level 401.
+
+    ``prepare_entry_session`` deliberately preserves a healthy browser session.
+    The session can still expire between that readiness check and a directory
+    API request, so only that narrow failure gets one saved-cookie retry.  A
+    second authentication failure is returned to the user instead of looping.
+    """
+
+    try:
+        return operation()
+    except FeishuLoginRequired:
+        auth_file = auth_path_from_args(args)
+        if (
+            already_restored
+            or bool(getattr(args, "_feishu_auth_retry_used", False))
+            or bool(getattr(args, "skip_auth_load", False))
+            or not auth_file.exists()
+        ):
+            raise
+
+        restored_cookies = load_auth_state(cdp, auth_file)
+        args._feishu_auth_retry_used = True
+        emit(
+            args,
+            f"飞书接口登录态已过期，已恢复 {restored_cookies} 个凭证并重试一次。",
+            level="warn",
+        )
+        cdp.navigate(entry_url)
+        wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=entry_url)
+        return operation()
 
 
 FEISHU_TREE_LOADER_JS = r"""
@@ -303,28 +489,53 @@ async (startToken) => {
   }
   async function getJson(url) {
     const res = await fetch(url, {credentials: "include"});
-    const json = await res.json();
+    if (res.status === 401) throw new Error("FEISHU_AUTH_REQUIRED: " + url);
+    if (res.status === 403) throw new Error("FEISHU_PERMISSION_DENIED: " + url);
+    if (res.redirected && /\/accounts\/page\/login/i.test(new URL(res.url, location.origin).pathname)) {
+      throw new Error("FEISHU_AUTH_REQUIRED: " + url);
+    }
+    if (!res.ok) throw new Error("FEISHU_API_HTTP_" + res.status + ": " + url);
+    let json;
+    try { json = await res.json(); }
+    catch (_) { throw new Error("FEISHU_API_INVALID_JSON: " + url); }
     return assertOk(json, url);
   }
 
   let spaceId = "";
+  let bootstrapError = null;
   try {
     const node = await getJson(`/space/api/wiki/v2/tree/get_node/?wiki_token=${encodeURIComponent(startToken)}&space_id=&expand_shortcut=true&with_deleted=true`);
     spaceId = node && node.data && node.data.space_id || "";
-  } catch (_) {}
+  } catch (error) {
+    bootstrapError = error;
+  }
   if (!spaceId) {
     const entry = performance.getEntriesByType("resource")
       .map(e => e.name)
       .find(url => url.includes("/space/api/wiki/v2/tree/get_info/") && url.includes("space_id="));
     if (entry) spaceId = new URL(entry).searchParams.get("space_id") || "";
   }
-  if (!spaceId) throw new Error("Could not detect Feishu Wiki space_id.");
+  if (!spaceId) {
+    if (bootstrapError && /FEISHU_AUTH_REQUIRED|FEISHU_PERMISSION_DENIED/.test(String(bootstrapError))) {
+      throw bootstrapError;
+    }
+    throw new Error("Could not detect Feishu Wiki space_id.");
+  }
 
   const seen = new Set();
   const nodes = {};
   const childMap = {};
   let rootList = [];
   let space = {};
+
+  function nodeFileType(node) {
+    let iconInfo = node && node.icon_info;
+    if (typeof iconInfo === "string") {
+      try { iconInfo = JSON.parse(iconInfo); }
+      catch (_) { iconInfo = {}; }
+    }
+    return iconInfo && iconInfo.file_type || node && node.file_type || "";
+  }
 
   async function load(token) {
     if (!token || seen.has(token)) return;
@@ -361,6 +572,8 @@ async (startToken) => {
       sort_id: node.sort_id || 0,
       url: node.url || (location.origin + "/wiki/" + token),
       wiki_node_type: node.wiki_node_type || 0,
+      file_type: nodeFileType(node),
+      mount_point: "wiki",
     };
   }
   return {spaceId, space, rootList, childMap, nodes: compactNodes};
@@ -378,7 +591,15 @@ async (startToken) => {
   }
   async function getJson(url) {
     const res = await fetch(url, {credentials: "include"});
-    const json = await res.json();
+    if (res.status === 401) throw new Error("FEISHU_AUTH_REQUIRED: " + url);
+    if (res.status === 403) throw new Error("FEISHU_PERMISSION_DENIED: " + url);
+    if (res.redirected && /\/accounts\/page\/login/i.test(new URL(res.url, location.origin).pathname)) {
+      throw new Error("FEISHU_AUTH_REQUIRED: " + url);
+    }
+    if (!res.ok) throw new Error("FEISHU_API_HTTP_" + res.status + ": " + url);
+    let json;
+    try { json = await res.json(); }
+    catch (_) { throw new Error("FEISHU_API_INVALID_JSON: " + url); }
     return assertOk(json, url);
   }
   function normalizeNode(raw, parentToken, sortId) {
@@ -395,6 +616,8 @@ async (startToken) => {
       url: raw.url || (type === 0 ? `${location.origin}/drive/folder/${token}` : ""),
       wiki_node_type: 0,
       drive_node_type: raw.node_type || 0,
+      file_type: raw.file_type || raw.extension || ((raw.name || "").split(".").pop() || ""),
+      mount_point: "explorer",
     };
   }
   const nodes = {};
@@ -475,9 +698,16 @@ def load_wiki_tree(
     args: argparse.Namespace | None = None,
 ) -> dict[str, Any]:
     throttle_request(args)
-    cdp.navigate(wiki_url)
-    wait_for_wiki_ready(cdp, timeout=30, args=args)
-    value = cdp.evaluate(f"({FEISHU_TREE_LOADER_JS})({js_string(start_token)})", timeout=120)
+    wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=wiki_url)
+    try:
+        value = cdp.evaluate(f"({FEISHU_TREE_LOADER_JS})({js_string(start_token)})", timeout=120)
+    except ExportError as exc:
+        message = str(exc)
+        if "FEISHU_AUTH_REQUIRED" in message:
+            raise FeishuLoginRequired("飞书目录接口要求重新登录，请重新登录并保存凭证") from exc
+        if "FEISHU_PERMISSION_DENIED" in message:
+            raise ExportError("当前账号没有权限读取该飞书目录") from exc
+        raise
     if not isinstance(value, dict) or not value.get("nodes"):
         raise ExportError("Failed to load Feishu Wiki tree")
     return value
@@ -490,19 +720,76 @@ def load_drive_folder_tree(
     args: argparse.Namespace | None = None,
 ) -> dict[str, Any]:
     throttle_request(args)
-    cdp.navigate(folder_url)
-    wait_for_wiki_ready(cdp, timeout=30, args=args)
-    value = cdp.evaluate(f"({FEISHU_DRIVE_FOLDER_LOADER_JS})({js_string(start_token)})", timeout=180)
+    wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=folder_url)
+    try:
+        value = cdp.evaluate(f"({FEISHU_DRIVE_FOLDER_LOADER_JS})({js_string(start_token)})", timeout=180)
+    except ExportError as exc:
+        message = str(exc)
+        if "FEISHU_AUTH_REQUIRED" in message:
+            raise FeishuLoginRequired("飞书目录接口要求重新登录，请重新登录并保存凭证") from exc
+        if "FEISHU_PERMISSION_DENIED" in message:
+            raise ExportError("当前账号没有权限读取该飞书目录") from exc
+        raise
     if not isinstance(value, dict) or not value.get("nodes"):
         raise ExportError("Failed to load Feishu Drive folder tree")
     return value
+
+
+def feishu_node_file_type(node: dict[str, Any]) -> str:
+    icon_info = node.get("icon_info")
+    if isinstance(icon_info, str):
+        try:
+            parsed_icon_info = json.loads(icon_info)
+            icon_info = parsed_icon_info if isinstance(parsed_icon_info, dict) else {}
+        except json.JSONDecodeError:
+            icon_info = {}
+    icon_file_type = icon_info.get("file_type") if isinstance(icon_info, dict) else ""
+    explicit = node.get("file_type") or icon_file_type or ""
+    normalized = str(explicit).strip().lower().lstrip(".")
+    if normalized:
+        return normalized
+    title = str(node.get("title") or "").strip().lower()
+    if title.endswith(".md"):
+        return "md"
+    if title.endswith(".markdown"):
+        return "markdown"
+    return ""
+
+
+def is_markdown_file_node(node: dict[str, Any]) -> bool:
+    try:
+        obj_type = int(node.get("obj_type"))
+    except (TypeError, ValueError):
+        return False
+    return obj_type == FEISHU_FILE_OBJ_TYPE and feishu_node_file_type(node) in FEISHU_MARKDOWN_FILE_TYPES
+
+
+def is_exportable_feishu_node(node: dict[str, Any]) -> bool:
+    if not node.get("url"):
+        return False
+    try:
+        obj_type = int(node.get("obj_type"))
+    except (TypeError, ValueError):
+        return False
+    return obj_type == FEISHU_NATIVE_DOC_OBJ_TYPE or is_markdown_file_node(node)
+
+
+def feishu_output_stem(node: dict[str, Any]) -> str:
+    title = str(node.get("title") or "未命名")
+    if is_markdown_file_node(node):
+        lowered = title.lower()
+        if lowered.endswith(".markdown"):
+            title = title[:-9]
+        elif lowered.endswith(".md"):
+            title = title[:-3]
+    return sanitize_filename(title)
 
 
 def annotate_selectable_toc(ordered: list[dict[str, Any]]) -> list[dict[str, Any]]:
     annotated: list[dict[str, Any]] = []
     for item in ordered:
         node = dict(item)
-        node["selectable"] = bool(node.get("url")) and node.get("obj_type") == 22
+        node["selectable"] = is_exportable_feishu_node(node)
         annotated.append(node)
     return annotated
 
@@ -510,9 +797,7 @@ def annotate_selectable_toc(ordered: list[dict[str, Any]]) -> list[dict[str, Any
 def select_exportable_docs(
     ordered: list[dict[str, Any]], selected_doc_ids: set[str] | None = None
 ) -> list[dict[str, Any]]:
-    exportable_docs = [item for item in ordered if item.get("url") and item.get("obj_type") == 22]
-    if not exportable_docs:
-        exportable_docs = [item for item in ordered if item.get("url")]
+    exportable_docs = [item for item in ordered if is_exportable_feishu_node(item)]
     if not selected_doc_ids:
         return exportable_docs
     docs = [item for item in exportable_docs if item.get("wiki_token") in selected_doc_ids]
@@ -705,23 +990,235 @@ async (fallbackTitle) => {
   setScroll(0);
   const body = rendered.filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
   const markdown = "# " + pageTitle + "\n\n" + body + "\n";
-  return {title: pageTitle, markdown, images: [...new Set(images)], blockCount: rendered.length, textLength: body.length};
+  return {title: pageTitle, markdown, images: [...new Set(images)], blockCount: rendered.length, textLength: body.length, renderer: "native_doc"};
 }
 """
 
 
-def wait_for_doc_ready(cdp: CDPClient, timeout: int, args: argparse.Namespace | None = None) -> None:
+FEISHU_MARKDOWN_FILE_LOADER_JS = r"""
+async (objToken, wikiToken, mountPoint, fallbackTitle, allowPreviewFallback) => {
+  const ZERO = /[\u200b\u200c\u200d\ufeff]/g;
+  const MAX_BYTES = 50 * 1024 * 1024;
+  const title = ((typeof store !== "undefined"
+    && store.getState
+    && store.getState().box_common_base
+    && store.getState().box_common_base.currentDriveFileInfo
+    && store.getState().box_common_base.currentDriveFileInfo.name) || fallbackTitle || "未命名.md").trim();
+  const sourceErrors = [];
+
+  function fatal(code, detail) {
+    return new Error(`FEISHU_MARKDOWN_FATAL_${code}: ${detail}`);
+  }
+
+  function classifyResponse(response, path) {
+    if (response.status === 401) throw new Error(`FEISHU_AUTH_REQUIRED: ${path}`);
+    if (response.status === 403) throw new Error(`FEISHU_PERMISSION_DENIED: ${path}`);
+    if (response.redirected && /\/accounts\/page\/login/i.test(new URL(response.url, location.origin).pathname)) {
+      throw new Error(`FEISHU_AUTH_REQUIRED: ${path}`);
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  }
+
+  async function readLimited(response) {
+    const lengthHeader = Number(response.headers.get('content-length') || 0);
+    if (lengthHeader > MAX_BYTES) throw fatal('TOO_LARGE', 'Markdown file exceeds 50 MiB');
+    if (!response.body || !response.body.getReader) {
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength > MAX_BYTES) throw fatal('TOO_LARGE', 'Markdown file exceeds 50 MiB');
+      return buffer;
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      total += part.value.byteLength;
+      if (total > MAX_BYTES) {
+        await reader.cancel();
+        throw fatal('TOO_LARGE', 'Markdown file exceeds 50 MiB');
+      }
+      chunks.push(part.value);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes.buffer;
+  }
+
+  function collectResources(markdown) {
+    const images = [];
+    const relativeResources = [];
+    const add = (rawValue) => {
+      let value = String(rawValue || '').trim().replace(/^<|>$/g, '');
+      const titled = value.match(/^(.*?)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))$/);
+      if (titled) value = titled[1].trim();
+      if (!value) return;
+      if (/^https?:\/\//i.test(value)) images.push(value);
+      else if (!/^(?:data:|#)/i.test(value)) relativeResources.push(value);
+    };
+    for (const match of markdown.matchAll(/!\[[^\]]*\]\(\s*([^\n)]*)\)/gi)) add(match[1]);
+    for (const match of markdown.matchAll(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)) add(match[1]);
+    const definitions = new Map();
+    for (const match of markdown.matchAll(/^\s*\[([^\]]+)\]:\s*(\S+|<[^>]+>)/gim)) {
+      definitions.set(match[1].trim().toLowerCase(), match[2]);
+    }
+    for (const match of markdown.matchAll(/!\[[^\]]*\]\[([^\]]+)\]/gi)) {
+      add(definitions.get(match[1].trim().toLowerCase()) || '');
+    }
+    return {
+      images: [...new Set(images)],
+      relativeResources: [...new Set(relativeResources)],
+    };
+  }
+
+  try {
+    let fileInfo = {};
+    let metadataTrusted = false;
+    try {
+      const infoResponse = await fetch('/space/api/box/file/info/', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({
+          caller: mountPoint === 'wiki' ? 'wiki' : 'explorer',
+          file_token: objToken,
+          mount_point: mountPoint || 'wiki',
+          mount_node_token: wikiToken,
+          option_params: ['preview_meta', 'check_cipher'],
+        }),
+      });
+      classifyResponse(infoResponse, '/space/api/box/file/info/');
+      let infoJson;
+      try { infoJson = await infoResponse.json(); }
+      catch (_) { throw new Error('file info returned invalid JSON'); }
+      if (!infoJson || infoJson.code !== 0 || !infoJson.data) {
+        throw new Error(`file info HTTP ${infoResponse.status}, code ${infoJson && infoJson.code}`);
+      }
+      fileInfo = infoJson.data;
+      const infoType = String(fileInfo.type || '').toLowerCase();
+      const mimeType = String(fileInfo.mime_type || '').toLowerCase();
+      if (!['md', 'markdown'].includes(infoType) && !mimeType.includes('markdown')) {
+        throw fatal('UNSUPPORTED_TYPE', infoType || mimeType || 'unknown');
+      }
+      if (Number(fileInfo.size || 0) > MAX_BYTES) throw fatal('TOO_LARGE', 'Markdown file exceeds 50 MiB');
+      metadataTrusted = true;
+    } catch (error) {
+      if (/FEISHU_(?:AUTH_REQUIRED|PERMISSION_DENIED)|FEISHU_MARKDOWN_FATAL_/.test(String(error))) throw error;
+      sourceErrors.push(`metadata: ${error}`);
+    }
+
+    const version = String(fileInfo.data_version || fileInfo.version || '');
+    const query = new URLSearchParams({mount_point: mountPoint || 'wiki'});
+    if (version) query.set('version', version);
+    const paths = [
+      `/space/api/box/stream/download/all/${encodeURIComponent(objToken)}?${query}`,
+    ];
+    if (version) {
+      const previewQuery = new URLSearchParams({
+        preview_type: '16',
+        version,
+        mount_point: mountPoint || 'wiki',
+      });
+      paths.push(`/space/api/box/stream/download/preview/${encodeURIComponent(objToken)}?${previewQuery}`);
+    }
+
+    for (const path of paths) {
+      try {
+        const response = await fetch(path, {credentials: 'include'});
+        classifyResponse(response, path);
+        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+        if (/text\/html|application\/(?:json|problem\+json)/.test(contentType)) {
+          throw fatal('INVALID_CONTENT', `unexpected content type ${contentType}`);
+        }
+        if (!metadataTrusted && contentType && !/markdown|text\/plain|application\/octet-stream/.test(contentType)) {
+          throw fatal('INVALID_CONTENT', `untrusted content type ${contentType}`);
+        }
+        const buffer = await readLimited(response);
+        const expectedSize = Number(fileInfo.size || 0);
+        if (expectedSize && buffer.byteLength !== expectedSize) {
+          throw fatal('SIZE_MISMATCH', `expected ${expectedSize}, received ${buffer.byteLength}`);
+        }
+        let markdown;
+        try { markdown = new TextDecoder('utf-8', {fatal: true}).decode(buffer).replace(/^\ufeff/, ''); }
+        catch (error) { throw fatal('INVALID_UTF8', String(error)); }
+        if (!markdown.trim()) throw fatal('EMPTY', 'Markdown file is empty');
+        if (/^\s*<!doctype\s+html|^\s*<html\b/i.test(markdown)) {
+          throw fatal('INVALID_CONTENT', 'download returned HTML');
+        }
+        if (!markdown.endsWith('\n')) markdown += '\n';
+        const resources = collectResources(markdown);
+        return {
+          title: fileInfo.name || title,
+          markdown,
+          images: resources.images,
+          relativeResources: resources.relativeResources,
+          blockCount: markdown.split(/\r?\n/).length,
+          textLength: markdown.length,
+          renderer: 'markdown_file',
+          contentType: response.headers.get('content-type') || fileInfo.mime_type || '',
+          byteLength: buffer.byteLength,
+        };
+      } catch (error) {
+        if (/FEISHU_(?:AUTH_REQUIRED|PERMISSION_DENIED)|FEISHU_MARKDOWN_FATAL_/.test(String(error))) throw error;
+        sourceErrors.push(`${path.split('?')[0]}: ${error}`);
+      }
+    }
+    throw new Error(sourceErrors.join('; '));
+  } catch (error) {
+    if (/FEISHU_(?:AUTH_REQUIRED|PERMISSION_DENIED)|FEISHU_MARKDOWN_FATAL_/.test(String(error))) throw error;
+    if (!allowPreviewFallback) throw new Error(`Feishu Markdown source unavailable: ${error}`);
+    const lines = [...document.querySelectorAll('.box-editor-kit .ace-line')].map((line) => {
+      let text = (line.innerText || "").replace(ZERO, "");
+      const heading = [...line.classList].find((name) => /^heading-h[1-6]$/.test(name));
+      if (heading) text = `${"#".repeat(Number(heading.slice(-1)))} ${text}`;
+      return text;
+    });
+    const markdown = lines.join("\n").trim();
+    if (!markdown) throw new Error(`Unable to read Feishu Markdown file: ${error}`);
+    const resources = collectResources(markdown);
+    return {
+      title,
+      markdown: markdown + "\n",
+      images: resources.images,
+      relativeResources: resources.relativeResources,
+      blockCount: lines.length,
+      textLength: markdown.length,
+      renderer: "markdown_preview_fallback",
+      sourceError: String(error),
+    };
+  }
+}
+"""
+
+
+def wait_for_doc_ready(
+    cdp: CDPClient,
+    timeout: int,
+    args: argparse.Namespace | None = None,
+    node: dict[str, Any] | None = None,
+) -> None:
     deadline = time.time() + timeout
+    markdown_file = is_markdown_file_node(node or {})
     while time.time() < deadline:
         check_stopped(args)
-        ready = cdp.evaluate(
-            "!!(document.querySelector('.root-render-unit-container [data-block-type]') || document.querySelector('.page-main-item.editor'))",
-            timeout=8,
+        selector = (
+            "!!(document.querySelector('[data-sel=\"box-preview-container\"]') || "
+            "document.querySelector('.box-preview-wrapper') || document.querySelector('.box-editor-kit .ace-line') || "
+            "(typeof store !== 'undefined' && store.getState && store.getState().box_common_base && "
+            "store.getState().box_common_base.currentDriveFileInfo))"
+            if markdown_file
+            else "!!(document.querySelector('.root-render-unit-container [data-block-type]') || document.querySelector('.page-main-item.editor'))"
         )
+        ready = cdp.evaluate(selector, timeout=8)
         if ready:
             return
         time.sleep(0.5)
-    raise ExportError("飞书文档正文没有加载完成")
+    kind = "Markdown 文件预览" if markdown_file else "文档正文"
+    raise ExportError(f"飞书{kind}没有加载完成：{(node or {}).get('title') or '未命名'}")
 
 
 def materialize_doc_dom(cdp: CDPClient) -> None:
@@ -732,6 +1229,60 @@ def materialize_doc_dom(cdp: CDPClient) -> None:
         "})()",
         timeout=10,
     )
+
+
+def extract_doc_markdown_current(
+    cdp: CDPClient,
+    node: dict[str, Any],
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    check_stopped(args)
+    if is_markdown_file_node(node):
+        obj_token = str(node.get("obj_token") or node.get("wiki_token") or "")
+        if not obj_token:
+            raise ExportError(f"飞书 Markdown 文件缺少 obj_token：{node.get('title') or '未命名'}")
+        mount_point = str(node.get("mount_point") or "wiki")
+
+        def evaluate_markdown_file(allow_preview_fallback: bool) -> dict[str, Any]:
+            expression = (
+                f"({FEISHU_MARKDOWN_FILE_LOADER_JS})({js_string(obj_token)}, "
+                f"{js_string(node.get('wiki_token') or '')}, {js_string(mount_point)}, "
+                f"{js_string(node.get('title') or '未命名.md')}, "
+                f"{'true' if allow_preview_fallback else 'false'})"
+            )
+            try:
+                result = cdp.evaluate(expression, timeout=60)
+            except ExportError as exc:
+                message = str(exc)
+                if "FEISHU_AUTH_REQUIRED" in message:
+                    raise FeishuLoginRequired("飞书 Markdown 原文件接口要求重新登录") from exc
+                if "FEISHU_PERMISSION_DENIED" in message:
+                    raise FeishuPermissionDenied("当前账号没有权限读取该飞书 Markdown 文件") from exc
+                if "FEISHU_MARKDOWN_FATAL_" in message:
+                    raise FeishuMarkdownSourceInvalid(
+                        f"飞书 Markdown 原文件校验失败：{node.get('title') or '未命名'}：{message}"
+                    ) from exc
+                raise
+            if not isinstance(result, dict):
+                raise ExportError(f"Unexpected Feishu Markdown response: {node.get('title')}")
+            return result
+
+        try:
+            value = evaluate_markdown_file(False)
+        except (FeishuLoginRequired, FeishuPermissionDenied, FeishuMarkdownSourceInvalid):
+            raise
+        except ExportError:
+            wait_for_doc_ready(cdp, timeout=35, args=args, node=node)
+            value = evaluate_markdown_file(True)
+    else:
+        wait_for_doc_ready(cdp, timeout=35, args=args, node=node)
+        value = cdp.evaluate(f"({FEISHU_CONVERTER_JS})({js_string(node.get('title') or '未命名')})", timeout=60)
+    if not isinstance(value, dict):
+        raise ExportError(f"Unexpected Feishu doc response: {node.get('title')}")
+    if value.get("renderer") == "markdown_preview_fallback":
+        value["incomplete"] = True
+        emit(args, f"飞书原始 Markdown 下载失败，已使用页面预览兜底：{node.get('title') or '未命名'}", level="warn")
+    return value
 
 
 def fetch_doc_markdown(
@@ -745,11 +1296,7 @@ def fetch_doc_markdown(
     if not url:
         raise ExportError(f"Node has no URL: {node.get('title')}")
     cdp.navigate(url)
-    wait_for_doc_ready(cdp, timeout=35, args=args)
-    value = cdp.evaluate(f"({FEISHU_CONVERTER_JS})({js_string(node.get('title') or '未命名')})", timeout=60)
-    if not isinstance(value, dict):
-        raise ExportError(f"Unexpected Feishu doc response: {node.get('title')}")
-    return value
+    return extract_doc_markdown_current(cdp, node, args)
 
 
 def guess_extension(url: str, content_type: str | None) -> str:
@@ -884,14 +1431,14 @@ def build_doc_paths(ordered: list[dict[str, Any]], tree: dict[str, Any], output:
     doc_paths: dict[str, Path] = {}
     for fallback_index, item in enumerate(ordered, start=1):
         token = item.get("wiki_token")
-        if not token or not item.get("url") or item.get("obj_type") == 0:
+        if not token or not is_exportable_feishu_node(item):
             continue
         parent_token = item.get("parent_wiki_token") or "ROOT"
         if parent_token in root_parents:
             parent_token = "ROOT"
         parent_dir = ensure_container(parent_token)
         index = index_in_parent.get(token, fallback_index)
-        doc_paths[token] = parent_dir / f"{pad(index)}-{sanitize_filename(item.get('title') or '未命名')}.md"
+        doc_paths[token] = parent_dir / f"{pad(index)}-{feishu_output_stem(item)}.md"
     return doc_paths
 
 
@@ -930,7 +1477,7 @@ def write_index(
         indent = "  " * max(0, int(item.get("level") or 0))
         doc_path = doc_paths.get(token)
         label = item.get("title") or "未命名"
-        if doc_path and item.get("obj_type") != 0:
+        if doc_path:
             rel_path = os.path.relpath(doc_path, index_path.parent).replace("\\", "/")
             lines.append(f"{indent}- [{label}]({rel_path})")
         else:
@@ -943,19 +1490,20 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
     if kind == "drive_folder":
         cdp, chrome_proc = connect_entry_browser(args, entry_url, host)
         try:
-            auth_file = auth_path_from_args(args)
-            if auth_file.exists() and not args.skip_auth_load:
-                cookie_count = load_auth_state(cdp, auth_file)
-                emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
-                cdp.navigate(entry_url)
-                time.sleep(2)
+            session = prepare_entry_session(cdp, args, entry_url)
             emit(args, "开始读取飞书云空间文件夹目录。")
-            tree = load_drive_folder_tree(cdp, entry_url, start_token, args)
+            tree = run_with_auth_retry(
+                cdp,
+                args,
+                entry_url,
+                lambda: load_drive_folder_tree(cdp, entry_url, start_token, args),
+                already_restored=bool(session.get("restoredCookies")),
+            )
             ordered = order_tree(tree)
             return {
                 "tree": tree,
                 "ordered": ordered,
-                "totalDocs": sum(1 for item in ordered if item.get("url") and item.get("obj_type") == 22),
+                "totalDocs": sum(1 for item in ordered if is_exportable_feishu_node(item)),
                 "entryKind": "drive_folder",
             }
         finally:
@@ -966,31 +1514,12 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
     if kind != "wiki":
         cdp, chrome_proc = connect_entry_browser(args, entry_url, host)
         try:
-            auth_file = auth_path_from_args(args)
-            if auth_file.exists() and not args.skip_auth_load:
-                cookie_count = load_auth_state(cdp, auth_file)
-                emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
-                cdp.navigate(entry_url)
-                time.sleep(2)
-            wait_for_doc_ready(cdp, timeout=35, args=args)
-            result = fetch_doc_markdown(
-                cdp,
-                {
-                    "wiki_token": start_token,
-                    "title": "飞书云文档",
-                    "url": entry_url,
-                    "obj_type": 22,
-                    "parent_wiki_token": "",
-                    "sort_id": 1,
-                },
-                args,
-            )
             node = {
                 "wiki_token": start_token,
                 "parent_wiki_token": "",
-                "title": result.get("title") or "飞书云文档",
+                "title": "飞书云文档",
                 "obj_token": start_token,
-                "obj_type": 22,
+                "obj_type": FEISHU_NATIVE_DOC_OBJ_TYPE,
                 "has_child": False,
                 "sort_id": 1,
                 "url": entry_url,
@@ -998,6 +1527,9 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
                 "level": 0,
                 "entry_kind": "document",
             }
+            prepare_entry_session(cdp, args, entry_url)
+            result = extract_doc_markdown_current(cdp, node, args)
+            node["title"] = result.get("title") or "飞书云文档"
             tree = {
                 "spaceId": "",
                 "space": {"space_name": result.get("title") or "飞书云文档"},
@@ -1014,19 +1546,20 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
     wiki_url = entry_url
     cdp, chrome_proc = connect_wiki_browser(args, wiki_url, host, start_token)
     try:
-        auth_file = auth_path_from_args(args)
-        if auth_file.exists() and not args.skip_auth_load:
-            cookie_count = load_auth_state(cdp, auth_file)
-            emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
-            cdp.navigate(wiki_url)
-            time.sleep(2)
+        session = prepare_entry_session(cdp, args, wiki_url)
         emit(args, "开始读取飞书目录。")
-        tree = load_wiki_tree(cdp, wiki_url, start_token, args)
+        tree = run_with_auth_retry(
+            cdp,
+            args,
+            wiki_url,
+            lambda: load_wiki_tree(cdp, wiki_url, start_token, args),
+            already_restored=bool(session.get("restoredCookies")),
+        )
         ordered = order_tree(tree)
         return {
             "tree": tree,
             "ordered": ordered,
-            "totalDocs": sum(1 for item in ordered if item.get("url")),
+            "totalDocs": sum(1 for item in ordered if is_exportable_feishu_node(item)),
         }
     finally:
         cdp.close()
@@ -1045,43 +1578,37 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
         else connect_entry_browser(args, wiki_url, host)
     )
     try:
-        auth_file = auth_path_from_args(args)
-        if auth_file.exists() and not args.skip_auth_load:
-            cookie_count = load_auth_state(cdp, auth_file)
-            emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
-            cdp.navigate(wiki_url)
-            time.sleep(2)
-
         emit(args, "Chrome page is ready. If login is required, finish login in Chrome.")
         if args.wait_login:
             input("Press Enter after the Feishu Wiki page is logged in and visible...")
+        session = prepare_entry_session(cdp, args, wiki_url)
 
+        prefetched_results: dict[str, dict[str, Any]] = {}
         if entry_kind == "wiki":
-            tree = load_wiki_tree(cdp, wiki_url, start_token, args)
+            tree = run_with_auth_retry(
+                cdp,
+                args,
+                wiki_url,
+                lambda: load_wiki_tree(cdp, wiki_url, start_token, args),
+                already_restored=bool(session.get("restoredCookies")),
+            )
             ordered = order_tree(tree)
         elif entry_kind == "drive_folder":
-            tree = load_drive_folder_tree(cdp, wiki_url, start_token, args)
+            tree = run_with_auth_retry(
+                cdp,
+                args,
+                wiki_url,
+                lambda: load_drive_folder_tree(cdp, wiki_url, start_token, args),
+                already_restored=bool(session.get("restoredCookies")),
+            )
             ordered = order_tree(tree)
         else:
-            wait_for_doc_ready(cdp, timeout=35, args=args)
-            probe = fetch_doc_markdown(
-                cdp,
-                {
-                    "wiki_token": start_token,
-                    "title": "飞书云文档",
-                    "url": wiki_url,
-                    "obj_type": 22,
-                    "parent_wiki_token": "",
-                    "sort_id": 1,
-                },
-                args,
-            )
             node = {
                 "wiki_token": start_token,
                 "parent_wiki_token": "",
-                "title": probe.get("title") or "飞书云文档",
+                "title": "飞书云文档",
                 "obj_token": start_token,
-                "obj_type": 22,
+                "obj_type": FEISHU_NATIVE_DOC_OBJ_TYPE,
                 "has_child": False,
                 "sort_id": 1,
                 "url": wiki_url,
@@ -1089,6 +1616,9 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                 "level": 0,
                 "entry_kind": "document",
             }
+            probe = extract_doc_markdown_current(cdp, node, args)
+            node["title"] = probe.get("title") or "飞书云文档"
+            prefetched_results[start_token] = probe
             tree = {
                 "spaceId": "",
                 "space": {"space_name": probe.get("title") or "飞书云文档"},
@@ -1171,7 +1701,13 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                     event="document.export.started",
                     doc={"id": token, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
                 )
-                result = fetch_doc_markdown(cdp, doc, args)
+                result = prefetched_results.pop(token, None) or run_with_auth_retry(
+                    cdp,
+                    args,
+                    wiki_url,
+                    lambda: fetch_doc_markdown(cdp, doc, args),
+                    already_restored=bool(session.get("restoredCookies")),
+                )
                 markdown = result.get("markdown") or f"# {doc.get('title') or '未命名'}\n"
                 markdown += (
                     f"\n---\n\n来源: {doc.get('url') or origin + '/wiki/' + token}\n"
@@ -1188,23 +1724,67 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                     args.keep_remote_images,
                     args,
                 )
+                relative_resources = [
+                    str(resource).strip()
+                    for resource in (result.get("relativeResources") or [])
+                    if str(resource).strip()
+                ]
+                relative_errors = [
+                    {
+                        "url": resource,
+                        "error": "源 Markdown 引用的相对资源未随飞书 Wiki 节点提供",
+                    }
+                    for resource in dict.fromkeys(relative_resources)
+                ]
+                if relative_errors:
+                    img_errors.extend(relative_errors)
+                    emit(
+                        args,
+                        f"文档包含 {len(relative_errors)} 个飞书未提供的相对图片资源：{doc.get('title') or token}",
+                        event="resource.download.failed",
+                        level="warn",
+                        step="resolve_relative_resource",
+                        doc={"id": token, "title": doc.get("title") or "", "path": str(md_path)},
+                        stats={"relativeResourceFailures": len(relative_errors)},
+                    )
                 image_success += count
                 if img_errors:
                     image_failures.append({"document": doc.get("title"), "path": str(md_path), "failures": img_errors})
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 md_path.write_text(markdown, encoding="utf-8")
+                incomplete = bool(result.get("incomplete"))
+                if incomplete:
+                    failures.append(
+                        {
+                            "title": doc.get("title") or "",
+                            "wiki_token": token,
+                            "error": "飞书原始 Markdown 下载失败，已保留页面预览兜底内容，但内容可能不完整",
+                            "local_path": str(md_path),
+                        }
+                    )
                 if checkpoint:
-                    if img_errors:
+                    if incomplete:
+                        checkpoint.fail_item(item_key, "原始 Markdown 下载失败，页面预览兜底内容可能不完整")
+                    elif img_errors:
                         checkpoint.fail_item(item_key, f"{len(img_errors)} 个图片下载失败")
                     else:
                         checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"doc": doc})
                 exported += 1
                 emit(
                     args,
-                    f"文档导出完成：{doc.get('title') or token}",
+                    (
+                        f"文档已导出但内容可能不完整：{doc.get('title') or token}"
+                        if incomplete
+                        else f"文档导出完成：{doc.get('title') or token}"
+                    ),
                     event="document.export.completed",
+                    level="warn" if incomplete or img_errors else "success",
                     doc={"id": token, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
-                    stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_errors)},
+                    stats={
+                        "imageSuccessInDoc": count,
+                        "imageFailuresInDoc": len(img_errors),
+                        "contentIncomplete": incomplete,
+                    },
                 )
             except ExportStopped:
                 if checkpoint:
@@ -1258,6 +1838,7 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
             "stopped": stopped,
             "imageSuccess": image_success,
             "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
+            "resourceFailureCount": sum(len(item["failures"]) for item in image_failures),
             "requestCount": int(getattr(args, "_request_count", 0) or 0),
             "requestDelaySeconds": float(getattr(args, "request_delay", 0.8) or 0),
             "requestJitterSeconds": float(getattr(args, "request_jitter", 0.4) or 0),
@@ -1481,9 +2062,7 @@ def run_gui() -> int:
 
     def exportable_doc_tokens() -> list[str]:
         ordered = toc_state.get("ordered") or []
-        docs = [item for item in ordered if item.get("url") and item.get("obj_type") == 22]
-        if not docs:
-            docs = [item for item in ordered if item.get("url")]
+        docs = [item for item in ordered if is_exportable_feishu_node(item)]
         return [str(item.get("wiki_token")) for item in docs if item.get("wiki_token")]
 
     def refresh_toc_status() -> None:

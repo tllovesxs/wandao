@@ -417,6 +417,7 @@ class ZsxqGroupExportTests(unittest.TestCase):
             target.write_text("demo", encoding="utf-8")
             checkpoint = WandaoCheckpoint.open(root / ".wandao" / "checkpoint.sqlite", task_id="default", provider_id="zsxq", action="export")
             try:
+                checkpoint.start_task({"source": "https://wx.zsxq.com/group/test", "outputDir": str(root)})
                 resource_key = zsxq_resource_key("attachment", "https://example.com/file.pdf")
                 checkpoint.upsert_resource("item-1", resource_key, "attachment", "https://example.com/file.pdf")
                 checkpoint.complete_resource(resource_key, local_path=str(target))

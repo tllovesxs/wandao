@@ -40,6 +40,40 @@ def resource_failures(report: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
+def _failure_count(report: dict[str, Any]) -> int:
+    return max(
+        _number(report.get("failureCount")),
+        len(_list(report.get("failures"))),
+    )
+
+
+def _resource_failure_count(report: dict[str, Any]) -> int:
+    return max(
+        _number(
+            report.get("resourceFailureCount"),
+            report.get("imageFailureCount"),
+            report.get("attachmentFailureCount"),
+        ),
+        len(resource_failures(report)),
+    )
+
+
+def derive_outcome(report: dict[str, Any]) -> str:
+    """Return the user-visible terminal outcome for a finalized task report.
+
+    A successful process exit is not sufficient evidence of a successful task:
+    document or required-resource failures make the outcome partial.  Process
+    crashes are represented by the process result layer and therefore do not
+    need to be inferred here.
+    """
+
+    if report.get("stopped"):
+        return "stopped"
+    if _failure_count(report) or _resource_failure_count(report):
+        return "partial"
+    return "completed"
+
+
 def success_count(report: dict[str, Any]) -> int:
     return _number(
         report.get("successCount"),
@@ -93,7 +127,8 @@ def finalize_report(
         ),
     )
     finalized.setdefault("successCount", success_count(finalized))
-    finalized.setdefault("failureCount", _number(finalized.get("failureCount"), len(_list(finalized.get("failures")))))
+    finalized["failureCount"] = _failure_count(finalized)
     finalized.setdefault("failures", [])
     finalized.setdefault("resourceFailures", resource_failures(finalized))
+    finalized["outcome"] = derive_outcome(finalized)
     return finalized

@@ -1,12 +1,12 @@
 {
   "name": "wandao",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "check": "node --check main.js && node --check provider_script_routing.js && node --check provider_legacy_compat.js && node --check preload.js && node --check renderer/app.js && node --check renderer/providers.js && node --check renderer/provider_runtime.js && node --check renderer/task_report.js && node --check renderer/structured_logs.js && node --check renderer/time_format.js && node --check renderer/task_resume.js && node --check renderer/toc_tree.js && node --check scripts/npm_install_cn.js",
+    "check": "node --check main.js && node --check plugin_state_migration.js && node --check provider_script_routing.js && node --check provider_legacy_compat.js && node --check preload.js && node --check renderer/app.js && node --check renderer/providers.js && node --check renderer/provider_runtime.js && node --check renderer/task_report.js && node --check renderer/task_history.js && node --check renderer/form_drafts.js && node --check renderer/recent_inputs.js && node --check renderer/structured_logs.js && node --check renderer/time_format.js && node --check renderer/task_resume.js && node --check renderer/toc_tree.js && node --check renderer/toc_browser.js && node --check scripts/npm_install_cn.js",
     "install:cn": "node scripts/npm_install_cn.js",
     "prepare:python": "python scripts/prepare_python_runtime.py --target auto",
     "prepare:python:win": "python scripts/prepare_python_runtime.py --target win-x64",
@@ -61,6 +61,7 @@
       "process_result.js",
       "scan_stdout_relay.js",
       "command_security.js",
+      "plugin_state_migration.js",
       "assets/**/*",
       "provider_script_routing.js",
       "provider_legacy_compat.js",

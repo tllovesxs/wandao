@@ -214,6 +214,7 @@
       stopping: '\u6b63\u5728\u505c\u6b62',
       interrupted: '\u5df2\u4e2d\u65ad',
       completed: '\u5df2\u5b8c\u6210',
+      partial: '\u90e8\u5206\u5b8c\u6210',
       failed: '\u5931\u8d25',
       stopped: '\u5df2\u505c\u6b62'
     };
@@ -225,10 +226,7 @@
   }
 
   function taskStatusText(task) {
-    if (task?.status === 'completed' && hasResourceWarnings(task?.report?.stats || task?.stats || {})) {
-      return '\u5df2\u5b8c\u6210\uff08\u6709\u8d44\u6e90\u8b66\u544a\uff09';
-    }
-    return statusText(task?.status);
+    return statusText(deriveTaskStatus(task));
   }
 
   function formatDuration(ms) {
@@ -338,22 +336,74 @@
     return [];
   }
 
-  function taskFailureCount(task) {
+  function taskDocumentFailureCount(task) {
     const stats = task?.report?.stats || task?.stats || {};
     const raw = task?.report?.raw || task?.resultData || {};
     const explicitDocumentFailureKeys = ['failureCount', 'failedDocs', 'failed', 'errorCount'];
     const explicitKey = explicitDocumentFailureKeys.find((key) => Object.prototype.hasOwnProperty.call(raw, key));
     const hasResourceFailureLists = ['resourceFailures', 'imageFailures', 'attachmentFailures']
       .some((key) => Array.isArray(raw[key]) && raw[key].length > 0);
-    const documentFailures = explicitKey
-      ? Number(raw[explicitKey] || 0)
-      : (Array.isArray(raw.failures) ? raw.failures.length : (hasResourceFailureLists ? 0 : Number(stats.failed || 0)));
+    const declaredFailures = explicitKey ? Number(raw[explicitKey] || 0) : 0;
+    const listedFailures = Array.isArray(raw.failures) ? raw.failures.length : 0;
+    const statisticFailures = hasResourceFailureLists ? 0 : Number(stats.failed || 0);
+    return Math.max(
+      Number.isFinite(declaredFailures) ? declaredFailures : 0,
+      Number.isFinite(listedFailures) ? listedFailures : 0,
+      Number.isFinite(statisticFailures) ? statisticFailures : 0
+    );
+  }
+
+  function taskResourceFailureCount(task) {
+    const stats = task?.report?.stats || task?.stats || {};
     const resourceFailures = Number(stats.resourceFailed || 0);
     const typedResourceFailures = Number(stats.imageFailed || 0) + Number(stats.attachmentFailed || 0);
-    return (Number.isFinite(documentFailures) ? documentFailures : 0) + Math.max(
+    return Math.max(
       Number.isFinite(resourceFailures) ? resourceFailures : 0,
       Number.isFinite(typedResourceFailures) ? typedResourceFailures : 0
     );
+  }
+
+  function taskFailureCount(task) {
+    return taskDocumentFailureCount(task) + taskResourceFailureCount(task);
+  }
+
+  function deriveTaskStatus(task = {}, options = {}) {
+    const source = task && typeof task === 'object' ? task : {};
+    const result = options.result || source.result || null;
+    const explicitStatus = String(options.status || source.status || '').toLowerCase();
+    const report = source.report?.stats
+      ? source.report
+      : normalizeTaskReport(source.resultData || source.report || source, {
+        errorText: options.errorText || source.error,
+        provider: source.providerId,
+        mode: source.action
+      });
+    const stopped = explicitStatus === 'stopped'
+      || result?.code === 130
+      || result?.data?.stopped === true
+      || report?.stopped === true;
+
+    if (stopped) return 'stopped';
+    if (explicitStatus === 'running' || explicitStatus === 'stopping' || explicitStatus === 'interrupted') {
+      return explicitStatus;
+    }
+    const failureCount = taskFailureCount({ ...source, report });
+    const stats = report?.stats || {};
+    const completedCount = Math.max(
+      Number(stats.success || 0),
+      Number(stats.exported || 0),
+      Number(stats.imported || 0),
+      Number(stats.created || 0) + Number(stats.updated || 0),
+      Math.max(0, Number(stats.total || 0) - Number(stats.failed || 0))
+    );
+    if (options.thrownError || explicitStatus === 'failed' || (result && result.success === false)) {
+      if (failureCount > 0 && completedCount > 0) return 'partial';
+      return 'failed';
+    }
+    if (failureCount > 0) return 'partial';
+    if (explicitStatus === 'partial') return 'partial';
+    if (explicitStatus === 'completed' || result?.success === true) return 'completed';
+    return explicitStatus || 'failed';
   }
 
   const api = {
@@ -369,7 +419,10 @@
     createMarkdownTaskReport,
     taskArtifactPaths,
     taskFailurePreview,
-    taskFailureCount
+    taskFailureCount,
+    taskDocumentFailureCount,
+    taskResourceFailureCount,
+    deriveTaskStatus
   };
 
   root.WandaoTaskReport = api;

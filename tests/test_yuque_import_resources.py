@@ -108,6 +108,20 @@ class YuqueImportResourceTests(unittest.TestCase):
             self.assertNotIn("![[diagram.png]]", replaced)
             self.assertNotIn("<img", replaced)
 
+    def test_rejects_resources_outside_the_import_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "source"
+            root.mkdir()
+            (base / "private.png").write_bytes(b"private")
+            md = root / "doc.md"
+            markdown = "![外部](../private.png)\n![编码](%2e%2e/private.png)"
+
+            resources, warnings = scan_local_resources(markdown, md, root)
+
+            self.assertEqual(resources, [])
+            self.assertEqual([item["reason"] for item in warnings], ["unsafe_local_reference", "unsafe_local_reference"])
+
 
 if __name__ == "__main__":
     unittest.main()

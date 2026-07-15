@@ -17,7 +17,7 @@
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
   "toc": { "itemsPath": "nodes", "idKey": "nodeId", "exportIdKey": "exportId", "titleKey": "title", "parentIdKey": "parentNodeId", "selectableKey": "selectable", "selectionArg": "--doc-id", "selectableWhenExportId": false },
   "fields": [
-    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "history": "path", "actions": ["export"] },
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
     { "name": "update_existing", "label": "更新已有文档", "type": "checkbox", "arg": "--update-existing", "default": false, "advanced": true, "actions": ["export"] },
     { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },

@@ -15,8 +15,8 @@
   "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
   "retryFailures": { "arg": "--retry-failures", "label": "只重试失败项" },
   "fields": [
-    { "name": "target_book_url", "label": "目标语雀知识库 URL", "type": "text", "arg": "--target-book-url", "required": true, "actions": ["login", "saveConfig", "plan", "importOne", "import"] },
-    { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "actions": ["saveConfig", "plan", "importOne", "import"] },
+    { "name": "target_book_url", "label": "目标语雀知识库 URL", "type": "text", "arg": "--target-book-url", "required": true, "history": "url", "actions": ["login", "saveConfig", "plan", "importOne", "import"] },
+    { "name": "source_dir", "label": "本地 Markdown 目录", "type": "directory", "arg": "--source-dir", "required": true, "history": "path", "actions": ["saveConfig", "plan", "importOne", "import"] },
     { "name": "max_import", "label": "最多导入篇数（0 为全部）", "type": "number", "arg": "--max-import", "default": 0, "min": 0, "advanced": true, "actions": ["import"] },
     { "name": "skip_existing", "label": "跳过已存在文档", "type": "checkbox", "arg": "--skip-existing", "default": false, "advanced": true, "actions": ["importOne", "import"] },
     { "name": "retry_failures", "label": "只重试上次失败项", "type": "checkbox", "arg": "--retry-failures", "default": false, "advanced": true, "actions": ["import"] }

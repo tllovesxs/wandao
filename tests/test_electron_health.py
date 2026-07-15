@@ -54,6 +54,13 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("persistable.error = maskSensitiveText", app_js)
         self.assertIn("task.status === 'running' || task.status === 'stopping'", app_js)
         self.assertIn("task.status = 'interrupted'", app_js)
+        self.assertIn("if (task.argsUnavailable)", app_js)
+        self.assertIn("if (taskHistoryLoadPromise) await taskHistoryLoadPromise", app_js)
+        self.assertIn("任务历史尚未安全加载", app_js)
+        runner_start = app_js.index("async function runTrackedPythonCommand")
+        runner_end = app_js.index("async function runProviderCommand", runner_start)
+        runner = app_js[runner_start:runner_end]
+        self.assertLess(runner.index("await taskHistoryLoadPromise"), runner.index("startHistoryTask("))
 
     def test_python_process_lock_is_released_only_by_the_owned_process(self) -> None:
         main_js = read_text("wandao_electron/main.js")
@@ -63,11 +70,22 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("spawnSync('taskkill'", main_js)
         self.assertIn("process.kill(-proc.pid", main_js)
         self.assertIn("detached: process.platform !== 'win32'", main_js)
-        stop_start = main_js.index("ipcMain.handle('stop-python-process'")
-        stop_handler = main_js[stop_start : stop_start + 900]
+        stop_start = main_js.index("function requestPythonStop()")
+        stop_handler = main_js[stop_start : main_js.index("function writePythonInput", stop_start)]
         self.assertNotIn("pythonProcess = null", stop_handler)
         self.assertIn("pythonProcessStopping = true", stop_handler)
         self.assertIn("terminateProcessTree(pythonProcess)", stop_handler)
+        self.assertIn("async () => requestPythonStop()", main_js)
+        self.assertIn("const wasStopping = pythonProcess === proc && pythonProcessStopping", main_js)
+        self.assertIn("code: 130", main_js)
+
+    def test_main_process_prevents_duplicate_instances_and_handles_stdin_failures(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+
+        self.assertIn("app.requestSingleInstanceLock()", main_js)
+        self.assertIn("app.on('second-instance'", main_js)
+        self.assertIn("proc.stdin.on('error'", main_js)
+        self.assertIn("return writePythonInput(pythonProcess, text)", main_js)
 
     def test_process_and_task_logs_are_bounded(self) -> None:
         main_js = read_text("wandao_electron/main.js")
@@ -152,7 +170,11 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertLess(startup.index("renderProviderNavigation();"), startup.index("loadProviderManifests().then"))
         self.assertNotIn("await loadProviderManifests()", startup)
         self.assertIn("currentTool === 'home' || currentTool === 'platform-center'", startup)
-        self.assertEqual(startup.count("if (currentTool === DEFAULT_VIEW_ID) switchTool(DEFAULT_VIEW_ID);"), 2)
+        self.assertIn("loadAppPaths();", startup)
+        self.assertIn("if (opensProvider && appPathsStatus !== 'ready')", app_js)
+        self.assertIn("pendingProviderTool = targetTool", app_js)
+        self.assertIn("本机数据目录初始化失败", app_js)
+        self.assertNotIn(".catch(() => {\n    renderTaskHistory();", startup)
 
     def test_settings_log_toggle_does_not_rerender_whole_settings_page(self) -> None:
         app_js = read_text("wandao_electron/renderer/app.js")
@@ -207,6 +229,8 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertNotIn("CSC_LINK:", workflow)
         self.assertIn("actions/attest-build-provenance", workflow)
         self.assertIn("Generate release SBOM", workflow)
+        self.assertIn("release-artifacts/SHA256SUMS", workflow)
+        self.assertIn("release-artifacts/wandao.spdx.json", workflow)
 
     def test_bootstrap_node_runtime_is_pinned_and_verified(self) -> None:
         powershell = read_text("start-wandao.ps1")
@@ -273,7 +297,8 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("data-history-action=\"copy-failures\"", app_js)
         self.assertIn("function copyTaskFailures", app_js)
         self.assertIn("button.dataset.historyAction === 'copy-failures'", app_js)
-        self.assertIn("if (task.status === 'running') return false", app_js)
+        self.assertIn("if (task.status === 'running' || task.status === 'stopping') return false", app_js)
+        self.assertIn("WandaoTaskReport?.deriveTaskStatus", app_js)
         self.assertIn("该平台暂未声明失败项重试能力", app_js)
 
     def test_manifest_action_fields_can_be_scoped_per_action(self) -> None:
@@ -289,11 +314,123 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn('"excludeActions"', schema)
         self.assertIn("字段默认会参与所有动作", guide)
 
+    def test_feishu_import_keeps_credential_aware_page_for_installed_plugins(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        switch_start = app_js.index("function switchTool")
+        switch_end = app_js.index("// Initialize tool event handlers", switch_start)
+        switch_tool = app_js[switch_start:switch_end]
+
+        self.assertIn("if (currentTool === 'feishu-import') {", switch_tool)
+        self.assertIn("loadFeishuImportTool();", switch_tool)
+        self.assertNotIn("currentTool === 'feishu-import' && config.sourceKind !== 'plugin'", switch_tool)
+        self.assertIn("|| currentTool === 'feishu-import';", switch_tool)
+        command_start = app_js.index("async function runFeishuImportCommand")
+        command_end = app_js.index("function requireFeishuWikiUrl", command_start)
+        command = app_js[command_start:command_end]
+        self.assertIn("runProviderCommand(provider.script, args, {", command)
+        self.assertIn("providerId: 'feishu-import'", command)
+
+    def test_plugin_runtime_migrates_known_legacy_state_without_exposing_the_data_root(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        migration_js = read_text("wandao_electron/plugin_state_migration.js")
+        package = json.loads(read_text("wandao_electron/package.json"))
+
+        self.assertIn("migrateLegacyPluginState", main_js)
+        self.assertIn("legacyRoot: app.getPath('userData')", main_js)
+        self.assertIn(".youdao_auth.json", migration_js)
+        self.assertIn(".yuque_auth.json", migration_js)
+        self.assertIn(".wiz_auth.json", migration_js)
+        self.assertIn("yinxiang/yinxiang_china.db", migration_js)
+        self.assertIn(".feishu_import_config.json", migration_js)
+        self.assertNotIn("WANDAO_LEGACY_DATA_DIR", main_js)
+        self.assertIn("legacyRoot: pythonLibraryDir()", main_js)
+        self.assertIn("plugin_state_migration.js", package["build"]["files"])
+        self.assertIn("node --check plugin_state_migration.js", package["scripts"]["check"])
+
+    def test_feishu_and_ima_use_one_plugin_owned_config_path(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        index_html = read_text("wandao_electron/renderer/index.html")
+
+        self.assertIn("plugin-data/feishu/feishu_import_config.json", app_js)
+        self.assertIn("plugin-data/ima/ima_config.json", app_js)
+        self.assertIn("readJsonConfigWithMigration(configPath, legacyPaths", app_js)
+        self.assertIn("feishuImportConfigFallbackPaths()", app_js)
+        self.assertIn("JSON 文件格式损坏", app_js)
+        self.assertIn('id="feishu-import-space-id" data-draft="false"', app_js)
+        self.assertIn('id="ima-import-kb-select" data-draft="false"', index_html)
+        self.assertIn('id="ima-export-kb-id" data-draft="false"', index_html)
+
+    def test_feishu_setup_actions_distinguish_success_from_required_followup(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        provider = json.loads(read_text("plugins/feishu/providers/feishu-import/provider.json"))
+        setup_target = next(action for action in provider["actions"] if action["id"] == "setupTarget")
+
+        self.assertIn("--yes", setup_target["args"])
+        self.assertTrue(setup_target.get("confirm"))
+        self.assertNotEqual(setup_target["kind"], "check")
+        self.assertIn("function feishuActionAttentionMessage", app_js)
+        self.assertIn("data.loginRequired === true", app_js)
+        self.assertIn("data.hasBot === false", app_js)
+        self.assertIn("data.missingScopes.length", app_js)
+        self.assertIn("finishProgress('attention', attentionMessage)", app_js)
+
+    def test_manifest_action_history_defaults_follow_action_kind(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        onenote = json.loads(read_text("plugins/onenote/providers/onenote/provider.json"))
+
+        self.assertIn("function shouldTrackManifestAction", app_js)
+        self.assertIn("['import', 'export', 'upload'].includes", app_js)
+        self.assertNotIn("systems", onenote["requirements"])
+        self.assertEqual(onenote["requirements"]["system"], ["Windows"])
+        scan = next(action for action in onenote["actions"] if action["id"] == "scan")
+        self.assertFalse(scan["track"])
+
+    def test_yuque_import_restores_saved_non_sensitive_form_values(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        backend = read_text("plugins/yuque/backend/import_yuque.py")
+
+        self.assertIn("function loadYuqueImportConfigIntoForm", app_js)
+        self.assertIn("plugin-data/yuque/.yuque_import_config.json", app_js)
+        self.assertIn("await readJsonFileIfExists(pluginConfigPath)", app_js)
+        self.assertNotIn("runPythonCommand(provider.script, ['--show-config']", app_js)
+        self.assertIn("loadYuqueImportConfigIntoForm().catch", app_js)
+        self.assertIn("def saved_form_config", backend)
+        self.assertIn('parser.add_argument("--show-config"', backend)
+
     def test_scan_toc_passes_provider_id_to_python_process(self) -> None:
         app_js = read_text("wandao_electron/renderer/app.js")
+        start = app_js.index("async function handleScanToc")
+        end = app_js.index("// Handle export", start)
+        handler = app_js[start:end]
 
-        self.assertIn("runPythonCommand(config.script, args, {", app_js)
-        self.assertIn("providerId: toolId", app_js)
+        self.assertIn("runProviderCommand(config.script, args, {", handler)
+        self.assertIn("providerId: toolId", handler)
+        self.assertIn("track: false", handler)
+
+    def test_all_provider_commands_share_one_owned_running_lifecycle(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+
+        self.assertEqual(app_js.count("window.electronAPI.runPythonCommand("), 1)
+        self.assertEqual(app_js.count("setRunning("), 2)
+        self.assertIn("let activeCommandOwner = null", app_js)
+        self.assertIn("if (isRunning || activeCommandOwner)", app_js)
+        self.assertIn("if (activeCommandOwner === owner)", app_js)
+        self.assertIn("#content-area button, #content-area input", app_js)
+        self.assertIn("navigationLocked ? 'disabled aria-disabled", app_js)
+
+    def test_renderer_recovers_a_python_task_that_survives_reload(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        preload_js = read_text("wandao_electron/preload.js")
+        app_js = read_text("wandao_electron/renderer/app.js")
+
+        self.assertIn("get-python-process-state", main_js)
+        self.assertIn("broadcastPythonProcessState", main_js)
+        self.assertIn("python-process-state", preload_js)
+        self.assertIn("getPythonProcessState", preload_js)
+        self.assertIn("function initializePythonProcessStateSync", app_js)
+        self.assertIn("recoveredCommandOwner = Symbol", app_js)
+        self.assertIn("已恢复导航锁和全局停止按钮", app_js)
+        self.assertIn("mainPythonProcessState.taskId === task.id", app_js)
 
     def test_main_process_rejects_parallel_python_tasks(self) -> None:
         main_js = read_text("wandao_electron/main.js")
@@ -457,6 +594,9 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertEqual(plugin_resource["from"], "../plugins")
         self.assertIn("bundledPluginEntriesWithErrors", main_js)
         self.assertIn("installedPlugin?.enabled", main_js)
+        self.assertIn("compareVersions(installedPlugin.currentVersion, manifest.version) > 0", main_js)
+        self.assertIn("const bundledVersions = new Map", main_js)
+        self.assertIn("['plugin', preferredInstalledDiscovery]", main_js)
 
 
 if __name__ == "__main__":

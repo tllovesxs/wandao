@@ -53,6 +53,7 @@
       "name": "workspace_url",
       "label": "平台入口 URL",
       "type": "text",
+      "history": "url",
       "arg": "--workspace-url",
       "required": true,
       "placeholder": "https://example.com/workspace"
@@ -61,6 +62,7 @@
       "name": "output",
       "label": "输出目录",
       "type": "directory",
+      "history": "path",
       "arg": "--output",
       "required": true
     }

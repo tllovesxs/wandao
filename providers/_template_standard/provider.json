@@ -53,6 +53,7 @@
       "name": "source_dir",
       "label": "源目录或缓存目录",
       "type": "directory",
+      "history": "path",
       "arg": "--source-dir",
       "required": true,
       "placeholder": "选择要读取的目录，或改成你的平台入口 URL 字段"
@@ -61,6 +62,7 @@
       "name": "output",
       "label": "输出目录",
       "type": "directory",
+      "history": "path",
       "arg": "--output",
       "required": true
     },

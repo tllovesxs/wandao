@@ -177,6 +177,12 @@
         "advanced": {
           "type": "boolean"
         },
+        "history": {
+          "enum": ["url", "path", "text"]
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
         "actions": {
           "oneOf": [
             { "type": "string" },

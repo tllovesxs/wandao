@@ -21,7 +21,7 @@
     { "name": "api_key", "label": "ima API Key", "type": "password", "arg": "--api-key", "actions": ["saveConfig", "list", "scan", "export"] },
     { "name": "knowledge_base_id", "label": "知识库 ID", "type": "text", "arg": "--knowledge-base-id", "required": true, "actions": ["scan", "export"] },
     { "name": "knowledge_base_name", "label": "知识库名称", "type": "text", "arg": "--knowledge-base-name", "advanced": true, "actions": ["export"] },
-    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "history": "path", "actions": ["export"] },
     { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] }
   ],
   "actions": [

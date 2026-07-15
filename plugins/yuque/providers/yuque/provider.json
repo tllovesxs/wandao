@@ -17,8 +17,8 @@
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
   "toc": { "itemsPath": "toc", "idKey": "uuid", "exportIdKey": "doc_id", "titleKey": "title", "parentIdKey": "parent_uuid", "typeKey": "type", "selectableTypes": ["DOC"], "selectionArg": "--doc-id", "selectableWhenExportId": true },
   "fields": [
-    { "name": "book_url", "label": "语雀知识库 URL", "type": "text", "arg": "--book-url", "required": true, "actions": ["login", "scan", "export"] },
-    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "actions": ["export"] },
+    { "name": "book_url", "label": "语雀知识库 URL", "type": "text", "arg": "--book-url", "required": true, "history": "url", "actions": ["login", "scan", "export"] },
+    { "name": "output", "label": "输出目录", "type": "directory", "arg": "--output", "required": true, "history": "path", "actions": ["export"] },
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
     { "name": "update_existing", "label": "更新已有文档", "type": "checkbox", "arg": "--update-existing", "default": false, "advanced": true, "actions": ["export"] },
     { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },

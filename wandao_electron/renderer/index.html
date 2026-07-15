@@ -46,9 +46,7 @@
           <p id="tool-description">选择平台，或查看最近任务。</p>
         </section>
 
-        <div id="content-area"></div>
-
-        <section class="progress-section" id="progress-section" role="status" aria-live="polite" hidden>
+        <section class="progress-section" id="progress-section" aria-labelledby="progress-title" hidden>
           <div class="progress-header">
             <span id="progress-title">准备中</span>
             <span id="progress-percent">0%</span>
@@ -57,20 +55,51 @@
           <div class="progress-track" role="progressbar" aria-label="任务进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="progress-fill" id="progress-fill"></div>
           </div>
-          <div class="progress-detail" id="progress-detail">等待任务开始</div>
+          <div class="progress-detail" id="progress-detail" role="status" aria-live="polite" aria-atomic="true">等待任务开始</div>
+          <div class="sr-only" id="task-announcements" role="status" aria-live="polite" aria-atomic="true"></div>
+          <section class="task-result-card" id="task-result-card" aria-labelledby="task-result-title" tabindex="-1" hidden></section>
         </section>
+
+        <div id="content-area"></div>
 
         <section class="task-history-section" hidden>
           <div class="task-history-header">
             <div>
               <h3>任务历史</h3>
-              <p>记录最近导入导出任务，可复制报告或继续上次未完成任务。</p>
+              <p>按最近任务排序；可按关键词、状态或平台缩小范围。</p>
             </div>
             <div class="task-history-actions">
               <button class="btn-text" id="btn-history-refresh" type="button">刷新</button>
               <button class="btn-text" id="btn-history-resume-last" type="button">继续上次任务</button>
             </div>
           </div>
+          <div class="task-history-filters" role="search" aria-label="筛选任务历史">
+            <div class="task-history-filter task-history-filter-search">
+              <label for="task-history-search">搜索任务</label>
+              <input id="task-history-search" type="search" placeholder="名称、平台、操作或错误信息" autocomplete="off" aria-describedby="task-history-filter-summary">
+            </div>
+            <div class="task-history-filter">
+              <label for="task-history-status">状态</label>
+              <select id="task-history-status">
+                <option value="all">全部状态</option>
+                <option value="running">进行中</option>
+                <option value="stopping">正在停止</option>
+                <option value="interrupted">已中断</option>
+                <option value="completed">已完成</option>
+                <option value="partial">部分完成</option>
+                <option value="failed">失败</option>
+                <option value="stopped">已停止</option>
+              </select>
+            </div>
+            <div class="task-history-filter">
+              <label for="task-history-provider">平台</label>
+              <select id="task-history-provider">
+                <option value="all">全部平台</option>
+              </select>
+            </div>
+            <button class="btn-text task-history-clear" id="btn-history-clear-filters" type="button" disabled>清除筛选</button>
+          </div>
+          <p class="task-history-filter-summary" id="task-history-filter-summary" aria-live="polite"></p>
           <div class="task-history-list" id="task-history-list" aria-live="polite">
             <div class="task-history-empty">暂无任务历史。</div>
           </div>
@@ -101,7 +130,7 @@
       <section class="form-section">
         <div class="form-group">
           <label for="zsxq-group-url">知识星球 Group URL <span class="required">*</span></label>
-          <input type="text" id="zsxq-group-url" placeholder="https://wx.zsxq.com/group/...">
+          <input type="url" id="zsxq-group-url" data-history-kind="url" data-history-key="entry_url" data-history-label="知识星球 Group URL" placeholder="https://wx.zsxq.com/group/...">
         </div>
         <div class="form-row">
           <div class="form-group flex-1">
@@ -120,7 +149,7 @@
         <div class="form-group">
           <label for="zsxq-group-output">输出目录</label>
           <div class="input-with-button">
-            <input type="text" id="zsxq-group-output" placeholder="留空使用默认 exports/zsxq-group">
+            <input type="text" id="zsxq-group-output" data-history-kind="path" data-history-key="output" data-history-label="输出目录" placeholder="留空使用默认 exports/zsxq-group">
             <button class="btn-secondary" id="zsxq-group-browse-output">浏览</button>
           </div>
         </div>
@@ -180,12 +209,12 @@
       <section class="form-section">
         <div class="form-group">
           <label for="zsxq-column-url">知识星球专栏 URL <span class="required">*</span></label>
-          <input type="text" id="zsxq-column-url" placeholder="https://wx.zsxq.com/columns/...">
+          <input type="url" id="zsxq-column-url" data-history-kind="url" data-history-key="entry_url" data-history-label="知识星球专栏 URL" placeholder="https://wx.zsxq.com/columns/...">
         </div>
         <div class="form-group">
           <label for="zsxq-column-output">输出目录</label>
           <div class="input-with-button">
-            <input type="text" id="zsxq-column-output" placeholder="留空使用默认 exports/zsxq-column">
+            <input type="text" id="zsxq-column-output" data-history-kind="path" data-history-key="output" data-history-label="输出目录" placeholder="留空使用默认 exports/zsxq-column">
             <button class="btn-secondary" id="zsxq-column-browse-output">浏览</button>
           </div>
         </div>
@@ -245,12 +274,12 @@
       <section class="form-section">
         <div class="form-group">
           <label for="yuque-url">语雀知识库 URL <span class="required">*</span></label>
-          <input type="text" id="yuque-url" placeholder="https://www.yuque.com/<namespace>/<book>">
+          <input type="url" id="yuque-url" data-history-kind="url" data-history-key="book_url" data-history-label="语雀知识库 URL" placeholder="https://www.yuque.com/<namespace>/<book>">
         </div>
         <div class="form-group">
           <label for="yuque-output">输出目录</label>
           <div class="input-with-button">
-            <input type="text" id="yuque-output" placeholder="留空使用默认 exports/yuque">
+            <input type="text" id="yuque-output" data-history-kind="path" data-history-key="output" data-history-label="输出目录" placeholder="留空使用默认 exports/yuque">
             <button class="btn-secondary" id="yuque-browse-output">浏览</button>
           </div>
         </div>
@@ -293,12 +322,12 @@
       <section class="form-section">
         <div class="form-group">
           <label for="yuque-import-url">目标语雀知识库 URL <span class="required">*</span></label>
-          <input type="text" id="yuque-import-url" placeholder="https://www.yuque.com/<namespace>/<book>">
+          <input type="url" id="yuque-import-url" data-history-kind="url" data-history-key="target_book_url" data-history-label="目标语雀知识库 URL" placeholder="https://www.yuque.com/<namespace>/<book>">
         </div>
         <div class="form-group">
-          <label for="yuque-import-output">Markdown 目录</label>
+          <label for="yuque-import-output">Markdown 目录 <span class="required">*</span></label>
           <div class="input-with-button">
-            <input type="text" id="yuque-import-output" placeholder="留空使用默认 exports/yuque">
+            <input type="text" id="yuque-import-output" data-history-kind="path" data-history-key="source_dir" data-history-label="Markdown 目录" placeholder="选择要导入的本地 Markdown 目录">
             <button class="btn-secondary" id="yuque-import-browse-output">浏览</button>
           </div>
         </div>
@@ -365,12 +394,12 @@
       <section class="form-section">
         <div class="form-group">
           <label for="feishu-export-url">飞书 Wiki/云文档/文件夹 URL <span class="required">*</span></label>
-          <input type="text" id="feishu-export-url" placeholder="https://<tenant>.feishu.cn/wiki/<token>、/docx/<token> 或 /drive/folder/<token>">
+          <input type="url" id="feishu-export-url" data-history-kind="url" data-history-key="wiki_url" data-history-label="飞书文档 URL" placeholder="https://<tenant>.feishu.cn/wiki/<token>、/docx/<token> 或 /drive/folder/<token>">
         </div>
         <div class="form-group">
           <label for="feishu-export-output">输出目录</label>
           <div class="input-with-button">
-            <input type="text" id="feishu-export-output" placeholder="留空使用默认 exports/feishu">
+            <input type="text" id="feishu-export-output" data-history-kind="path" data-history-key="output" data-history-label="输出目录" placeholder="留空使用默认 exports/feishu">
             <button class="btn-secondary" id="feishu-export-browse-output">浏览</button>
           </div>
         </div>
@@ -409,12 +438,12 @@
       <section class="form-section">
         <div class="form-group">
           <label for="aliyun-url">阿里云 Thoughts 工作区 URL <span class="required">*</span></label>
-          <input type="text" id="aliyun-url" placeholder="https://thoughts.aliyun.com/workspaces/<id>/overview">
+          <input type="url" id="aliyun-url" data-history-kind="url" data-history-key="workspace_url" data-history-label="Thoughts 工作区 URL" placeholder="https://thoughts.aliyun.com/workspaces/<id>/overview">
         </div>
         <div class="form-group">
           <label for="aliyun-output">输出目录</label>
           <div class="input-with-button">
-            <input type="text" id="aliyun-output" placeholder="留空使用默认 exports/aliyun-thoughts">
+            <input type="text" id="aliyun-output" data-history-kind="path" data-history-key="output" data-history-label="输出目录" placeholder="留空使用默认 exports/aliyun-thoughts">
             <button class="btn-secondary" id="aliyun-browse-output">浏览</button>
           </div>
         </div>
@@ -464,7 +493,7 @@
         <div class="form-group">
           <label for="yinxiang-output">输出目录</label>
           <div class="input-with-button">
-            <input type="text" id="yinxiang-output" placeholder="留空使用默认 exports/yinxiang">
+            <input type="text" id="yinxiang-output" data-history-kind="path" data-history-key="output" data-history-label="输出目录" placeholder="留空使用默认 exports/yinxiang">
             <button class="btn-secondary" id="yinxiang-browse-output">浏览</button>
           </div>
         </div>
@@ -504,25 +533,25 @@
         <div class="form-group">
           <label for="yinxiang-import-source">Markdown 目录 <span class="required">*</span></label>
           <div class="input-with-button">
-            <input type="text" id="yinxiang-import-source" placeholder="选择包含 Markdown 文件的目录">
+            <input type="text" id="yinxiang-import-source" data-history-kind="path" data-history-key="source_dir" data-history-label="Markdown 目录" placeholder="选择包含 Markdown 文件的目录">
             <button class="btn-secondary" id="yinxiang-import-browse-source">浏览</button>
           </div>
         </div>
         <div class="form-group">
           <label for="yinxiang-import-source-file">单篇测试文件（可选）</label>
           <div class="input-with-button">
-            <input type="text" id="yinxiang-import-source-file" placeholder="留空则使用目录内第一篇">
+            <input type="text" id="yinxiang-import-source-file" data-history-kind="path" data-history-key="source_file" data-history-label="单篇测试文件" placeholder="留空则使用目录内第一篇">
             <button class="btn-secondary" id="yinxiang-import-browse-file">浏览</button>
           </div>
         </div>
         <div class="form-row">
           <div class="form-group flex-1">
             <label for="yinxiang-import-notebook">默认目标笔记本</label>
-            <input type="text" id="yinxiang-import-notebook" value="万能导导入">
+            <input type="text" id="yinxiang-import-notebook" data-history-kind="text" data-history-key="notebook" data-history-label="目标笔记本" data-history-default-value="万能导导入" value="万能导导入">
           </div>
           <div class="form-group flex-1">
             <label for="yinxiang-import-stack">默认笔记本组</label>
-            <input type="text" id="yinxiang-import-stack" placeholder="可留空">
+            <input type="text" id="yinxiang-import-stack" data-history-kind="text" data-history-key="stack" data-history-label="目标笔记本组" placeholder="可留空">
           </div>
         </div>
         <details class="advanced-section">
@@ -563,17 +592,17 @@
         <div class="form-row">
           <div class="form-group flex-1">
             <label for="ima-export-client-id">ima Client ID <span class="required">*</span></label>
-            <input type="text" id="ima-export-client-id" placeholder="从 ima API Key 页面获取">
+            <input type="text" id="ima-export-client-id" data-draft="false" placeholder="从 ima API Key 页面获取">
           </div>
           <div class="form-group flex-1">
             <label for="ima-export-api-key">ima API Key <span class="required">*</span></label>
-            <input type="password" id="ima-export-api-key" placeholder="只保存到本机配置">
+            <input type="password" id="ima-export-api-key" data-draft="false" placeholder="只保存到本机配置">
           </div>
         </div>
         <div class="form-group">
           <label for="ima-export-output">输出目录</label>
           <div class="input-with-button">
-            <input type="text" id="ima-export-output" placeholder="留空使用默认 exports/ima">
+            <input type="text" id="ima-export-output" data-history-kind="path" data-history-key="output" data-history-label="输出目录" placeholder="留空使用默认 exports/ima">
             <button class="btn-secondary" id="ima-export-browse-output">浏览</button>
           </div>
         </div>
@@ -583,7 +612,7 @@
             <div class="form-row">
               <div class="form-group flex-1">
                 <label for="ima-export-kb-id">指定知识库 ID（可选）</label>
-                <input type="text" id="ima-export-kb-id" placeholder="留空读取全部可访问知识库">
+                <input type="text" id="ima-export-kb-id" data-draft="false" placeholder="留空读取全部可访问知识库">
               </div>
               <div class="form-group flex-1">
                 <label for="ima-export-delay">请求延迟秒</label>
@@ -613,43 +642,47 @@
         <div class="form-row">
           <div class="form-group flex-1">
             <label for="ima-import-client-id">ima Client ID <span class="required">*</span></label>
-            <input type="text" id="ima-import-client-id" placeholder="从 ima API Key 页面获取">
+            <input type="text" id="ima-import-client-id" data-draft="false" placeholder="从 ima API Key 页面获取">
           </div>
           <div class="form-group flex-1">
             <label for="ima-import-api-key">ima API Key <span class="required">*</span></label>
-            <input type="password" id="ima-import-api-key" placeholder="只保存到本机配置">
+            <input type="password" id="ima-import-api-key" data-draft="false" placeholder="只保存到本机配置">
           </div>
         </div>
         <div class="form-group">
           <label for="ima-import-source">本地文件目录 <span class="required">*</span></label>
           <div class="input-with-button">
-            <input type="text" id="ima-import-source" placeholder="选择要导入 ima 知识库的本地目录">
+            <input type="text" id="ima-import-source" data-history-kind="path" data-history-key="source_dir" data-history-label="本地文件目录" placeholder="选择要导入 ima 知识库的本地目录">
             <button class="btn-secondary" id="ima-import-browse-source">浏览</button>
           </div>
         </div>
         <div class="form-group">
           <label for="ima-import-source-file">单文件测试（可选）</label>
           <div class="input-with-button">
-            <input type="text" id="ima-import-source-file" placeholder="留空则使用目录内第一个支持文件">
+            <input type="text" id="ima-import-source-file" data-history-kind="path" data-history-key="source_file" data-history-label="单文件测试" placeholder="留空则使用目录内第一个支持文件">
             <button class="btn-secondary" id="ima-import-browse-file">浏览</button>
           </div>
         </div>
         <div class="form-row">
           <div class="form-group flex-1">
             <label for="ima-import-kb-select">目标知识库 <span class="required">*</span></label>
-            <select id="ima-import-kb-select">
+            <select id="ima-import-kb-select" data-draft="false">
               <option value="">先点击“读取知识库”</option>
             </select>
           </div>
           <div class="form-group flex-1">
             <label for="ima-import-folder-id">目标文件夹</label>
             <div class="input-with-button">
-              <select id="ima-import-folder-id">
+              <select id="ima-import-folder-id" data-draft="false">
                 <option value="">知识库根目录</option>
               </select>
-              <button class="btn-secondary" id="ima-import-list-folders" type="button">读取文件夹</button>
+              <button class="btn-secondary" id="ima-import-list-folders" type="button" disabled aria-disabled="true" title="请先读取并选择目标知识库">读取文件夹</button>
             </div>
           </div>
+        </div>
+        <div class="ima-kb-guidance" id="ima-import-kb-guidance" role="status" aria-live="polite">
+          <p>下一步：读取可写知识库，然后选择本次导入的目标。</p>
+          <button class="btn-secondary" id="ima-import-read-kbs-inline" type="button">读取可写知识库</button>
         </div>
         <details class="advanced-section">
           <summary>导入选项</summary>
@@ -684,8 +717,8 @@
         <button class="btn-secondary" id="ima-import-save-config">保存 API 配置</button>
         <button class="btn-primary" id="ima-import-list-kbs">读取知识库</button>
         <button class="btn-primary" id="ima-import-plan">扫描目录</button>
-        <button class="btn-primary" id="ima-import-one">单文件导入测试</button>
-        <button class="btn-primary" id="ima-import-export">批量导入</button>
+        <button class="btn-primary" id="ima-import-one" disabled aria-disabled="true" title="请先读取并选择目标知识库">单文件导入测试</button>
+        <button class="btn-primary" id="ima-import-export" disabled aria-disabled="true" title="请先读取并选择目标知识库">批量导入</button>
         <button class="btn-danger" id="ima-import-stop" disabled>停止</button>
         <button class="btn-secondary" id="ima-import-open-dir">打开目录</button>
       </section>
@@ -699,6 +732,9 @@
   <script src="task_resume.js"></script>
   <script src="toc_tree.js"></script>
   <script src="task_report.js"></script>
+  <script src="task_history.js"></script>
+  <script src="form_drafts.js"></script>
+  <script src="recent_inputs.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

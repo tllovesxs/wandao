@@ -10,14 +10,35 @@ const { createScanStdoutRelay } = require('./scan_stdout_relay');
 const { extractSensitiveArguments } = require('./command_security');
 const { resolveProviderScript } = require('./provider_script_routing');
 const { resolveLegacyTemplateConfig } = require('./provider_legacy_compat');
+const { migrateLegacyPluginState } = require('./plugin_state_migration');
 
 let mainWindow;
 let pythonProcess = null;
 let pythonProcessStopping = false;
 let pythonStopFile = '';
+let pythonProcessMetadata = null;
 let shutdownConfirmed = false;
 const pluginRegistryCache = new Map();
 const MAX_PROCESS_OUTPUT_CHARS = 32 * 1024 * 1024;
+
+function currentPythonProcessState(extra = {}) {
+  return {
+    running: Boolean(pythonProcess),
+    stopping: Boolean(pythonProcess && pythonProcessStopping),
+    providerId: pythonProcessMetadata?.providerId || '',
+    taskId: pythonProcessMetadata?.taskId || '',
+    startedAt: pythonProcessMetadata?.startedAt || '',
+    ...extra
+  };
+}
+
+function broadcastPythonProcessState(extra = {}) {
+  const state = currentPythonProcessState(extra);
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('python-process-state', state);
+  }
+  return state;
+}
 
 const PROJECT_INFO = {
   name: '万能导 Wandao',
@@ -44,6 +65,11 @@ let pluginManagerInstance = null;
 
 if (process.env.WANDAO_USER_DATA_DIR) {
   app.setPath('userData', path.resolve(process.env.WANDAO_USER_DATA_DIR));
+}
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
 }
 
 function resolveAppAsset(fileName) {
@@ -73,14 +99,13 @@ function configureAppIdentity() {
 }
 
 function cleanupPythonProcess() {
-  if (pythonProcess) {
-    try {
-      terminateProcessTree(pythonProcess, { force: true });
-    } catch (_error) {
-      // Ignore shutdown cleanup errors.
-    }
-    pythonProcess = null;
-    pythonProcessStopping = false;
+  if (!pythonProcess) return false;
+  pythonProcessStopping = true;
+  try {
+    return terminateProcessTree(pythonProcess, { force: true });
+  } catch (_error) {
+    // Ignore shutdown cleanup errors. The close/error handler owns state release.
+    return false;
   }
 }
 
@@ -117,6 +142,52 @@ function terminateProcessTree(proc, { force = false } = {}) {
     return true;
   } catch (_error) {
     return proc.kill(force ? 'SIGKILL' : 'SIGTERM');
+  }
+}
+
+function requestPythonStop() {
+  if (!pythonProcess) {
+    return { success: false, error: '没有正在运行的任务' };
+  }
+  if (pythonProcessStopping) {
+    return { success: true, stopping: true };
+  }
+  pythonProcessStopping = true;
+  broadcastPythonProcessState();
+  if (pythonStopFile) {
+    fs.mkdirSync(path.dirname(pythonStopFile), { recursive: true });
+    fs.writeFileSync(pythonStopFile, 'stop', 'utf8');
+    const processAtRequest = pythonProcess;
+    setTimeout(() => {
+      if (pythonProcess === processAtRequest) terminateProcessTree(processAtRequest, { force: true });
+    }, 8000).unref();
+    return { success: true, stopping: true, cooperative: true };
+  }
+  const signaled = terminateProcessTree(pythonProcess);
+  if (!signaled) {
+    pythonProcessStopping = false;
+    broadcastPythonProcessState();
+    return { success: false, error: '无法停止当前任务，请稍后重试。' };
+  }
+  return { success: true, stopping: true };
+}
+
+function writePythonInput(proc, text, { end = false } = {}) {
+  if (!proc?.stdin || proc.stdin.destroyed || proc.stdin.writableEnded) {
+    return { success: false, error: '没有正在等待输入的任务' };
+  }
+  if (proc.stdinWriteError) {
+    return { success: false, error: proc.stdinWriteError };
+  }
+  try {
+    proc.stdin.write(String(text || '\n'), (error) => {
+      if (error) proc.stdinWriteError = error.message || String(error);
+    });
+    if (end) proc.stdin.end();
+    return { success: true };
+  } catch (error) {
+    proc.stdinWriteError = error.message || String(error);
+    return { success: false, error: proc.stdinWriteError };
   }
 }
 
@@ -183,7 +254,14 @@ function bundledPluginEntriesWithErrors() {
         seenPluginIds.add(manifest.id);
         const installedPlugin = installed.get(manifest.id);
         if (installedPlugin && !installedPlugin.enabled) continue;
-        if (installedPlugin?.enabled && installedPlugin.compatibility?.compatible) continue;
+        // A same-version installed copy may have been left behind by an older
+        // desktop build. Prefer the signed plugin that ships with the current
+        // app unless the installed plugin is a strictly newer update.
+        if (
+          installedPlugin?.enabled
+          && installedPlugin.compatibility?.compatible
+          && compareVersions(installedPlugin.currentVersion, manifest.version) > 0
+        ) continue;
         if (manifest.platforms?.length && !manifest.platforms.includes(process.platform)) continue;
         for (const relativePath of manifest.entrypoints.providers) {
           const safe = assertSafeRelativePath(relativePath, 'Provider 入口');
@@ -857,8 +935,18 @@ function discoverProviderManifests() {
   errors.push(...installedPluginDiscovery.errors.map((message) => `插件校验失败：${message}`));
   const bundledPluginDiscovery = bundledPluginEntriesWithErrors();
   errors.push(...bundledPluginDiscovery.errors.map((message) => `内置插件校验失败：${message}`));
+  const bundledVersions = new Map(
+    bundledPluginDiscovery.entries.map((entry) => [entry.pluginId, entry.pluginVersion])
+  );
+  const preferredInstalledDiscovery = {
+    ...installedPluginDiscovery,
+    entries: installedPluginDiscovery.entries.filter((entry) => {
+      const bundledVersion = bundledVersions.get(entry.pluginId);
+      return !bundledVersion || compareVersions(entry.pluginVersion, bundledVersion) > 0;
+    })
+  };
   for (const [sourceKind, discovery] of [
-    ['plugin', installedPluginDiscovery],
+    ['plugin', preferredInstalledDiscovery],
     ['bundled-plugin', bundledPluginDiscovery]
   ]) {
     for (const entry of discovery.entries) {
@@ -1078,6 +1166,16 @@ function executionEnv(options, pluginContext = null, secretEnvironment = {}) {
     PYTHONPATH: [...pluginPaths, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
   }, pluginContext ? pluginHostEnvironment() : process.env);
   if (!pluginContext) return env;
+  migrateLegacyPluginState({
+    pluginId: pluginContext.pluginId,
+    legacyRoot: app.getPath('userData'),
+    dataRoot: pluginContext.dataDir
+  });
+  migrateLegacyPluginState({
+    pluginId: pluginContext.pluginId,
+    legacyRoot: pythonLibraryDir(),
+    dataRoot: pluginContext.dataDir
+  });
   env.WANDAO_PLUGIN_ID = pluginContext.pluginId;
   env.WANDAO_PLUGIN_VERSION = pluginContext.plugin.currentVersion;
   env.WANDAO_PLUGIN_ROOT = pluginContext.root;
@@ -1356,7 +1454,7 @@ function buildApplicationMenu() {
       submenu: [
         {
           label: '停止当前任务',
-          click: cleanupPythonProcess
+          click: requestPythonStop
         },
         { type: 'separator' },
         process.platform === 'darwin'
@@ -1448,9 +1546,23 @@ function buildApplicationMenu() {
 }
 
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
   configureAppIdentity();
   buildApplicationMenu();
   createWindow();
+}).catch((error) => {
+  dialog.showErrorBox('万能导启动失败', error.message || String(error));
+  app.quit();
+});
+
+app.on('second-instance', () => {
+  if (!mainWindow) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
 });
 
 app.on('window-all-closed', () => {
@@ -1464,7 +1576,7 @@ app.on('before-quit', (event) => {
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  if (hasSingleInstanceLock && BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
 });
@@ -1569,21 +1681,34 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     pythonProcess = proc;
     pythonProcessStopping = false;
     pythonStopFile = stopFile;
+    pythonProcessMetadata = {
+      providerId: String(options.providerId || ''),
+      taskId: String(options.taskId || ''),
+      startedAt: new Date().toISOString()
+    };
+    broadcastPythonProcessState();
+    const sendPythonLog = (text) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('python-log', text);
+      }
+    };
+    proc.stdinWriteError = '';
+    proc.stdin.on('error', (error) => {
+      proc.stdinWriteError = error.message || String(error);
+      sendPythonLog(`任务输入通道已关闭：${proc.stdinWriteError}`, 'warn');
+    });
 
     if (options?.stdinText) {
-      proc.stdin.write(String(options.stdinText));
-      proc.stdin.end();
+      const stdinResult = writePythonInput(proc, options.stdinText, { end: true });
+      if (!stdinResult.success) {
+        sendPythonLog(`无法写入任务初始输入：${stdinResult.error}`, 'warn');
+      }
     }
 
     let stdout = '';
     let stderr = '';
     let stdoutOmitted = 0;
     let stderrOmitted = 0;
-    const sendPythonLog = (text) => {
-      if (mainWindow) {
-        mainWindow.webContents.send('python-log', text);
-      }
-    };
     const scanStdoutRelay = commandArgs.includes('--scan-toc')
       ? createScanStdoutRelay(sendPythonLog)
       : null;
@@ -1611,12 +1736,32 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     proc.on('close', (code) => {
       scanStdoutRelay?.flush();
       cleanupTemporaryDocIdFile(commandArgs);
+      const wasStopping = pythonProcess === proc && pythonProcessStopping;
       if (pythonProcess === proc) {
+        const finishedMetadata = pythonProcessMetadata;
         pythonProcess = null;
         pythonProcessStopping = false;
         pythonStopFile = '';
+        pythonProcessMetadata = null;
+        broadcastPythonProcessState({
+          running: false,
+          stopping: false,
+          providerId: finishedMetadata?.providerId || '',
+          taskId: finishedMetadata?.taskId || '',
+          lastStatus: wasStopping ? 'stopped' : 'finished'
+        });
       }
       try { fs.unlinkSync(stopFile); } catch (_error) { /* marker is best-effort */ }
+      if (code !== 0 && wasStopping) {
+        const parsed = parseLastJson(stdout);
+        resolve({
+          success: false,
+          error: '任务已由用户停止。',
+          code: 130,
+          data: parsed && Object.keys(parsed).length ? { ...parsed, stopped: true } : { stopped: true }
+        });
+        return;
+      }
       if (code === 0) {
         const result = parseProcessResult(stdout);
         if (result.ok) {
@@ -1639,56 +1784,39 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
 
     proc.on('error', (error) => {
       cleanupTemporaryDocIdFile(commandArgs);
+      const wasStopping = pythonProcess === proc && pythonProcessStopping;
       if (pythonProcess === proc) {
+        const finishedMetadata = pythonProcessMetadata;
         pythonProcess = null;
         pythonProcessStopping = false;
         pythonStopFile = '';
+        pythonProcessMetadata = null;
+        broadcastPythonProcessState({
+          running: false,
+          stopping: false,
+          providerId: finishedMetadata?.providerId || '',
+          taskId: finishedMetadata?.taskId || '',
+          lastStatus: wasStopping ? 'stopped' : 'failed'
+        });
       }
       try { fs.unlinkSync(stopFile); } catch (_error) { /* marker is best-effort */ }
-      resolve({ success: false, error: error.message || String(error) });
+      resolve(wasStopping
+        ? { success: false, error: '任务已由用户停止。', code: 130, data: { stopped: true } }
+        : { success: false, error: error.message || String(error) });
     });
   });
 });
 
-ipcMain.handle('stop-python-process', async () => {
-  if (pythonProcess) {
-    if (pythonProcessStopping) {
-      return { success: true, stopping: true };
-    }
-    pythonProcessStopping = true;
-    if (pythonStopFile) {
-      fs.mkdirSync(path.dirname(pythonStopFile), { recursive: true });
-      fs.writeFileSync(pythonStopFile, 'stop', 'utf8');
-      const processAtRequest = pythonProcess;
-      setTimeout(() => {
-        if (pythonProcess === processAtRequest) terminateProcessTree(processAtRequest, { force: true });
-      }, 8000).unref();
-      return { success: true, stopping: true, cooperative: true };
-    }
-    const signaled = terminateProcessTree(pythonProcess);
-    if (!signaled) {
-      pythonProcessStopping = false;
-      return { success: false, error: '无法停止当前任务，请稍后重试。' };
-    }
-    return { success: true, stopping: true };
-  }
-  return { success: false, error: '没有正在运行的任务' };
-});
+ipcMain.handle('stop-python-process', async () => requestPythonStop());
+
+ipcMain.handle('get-python-process-state', async () => currentPythonProcessState());
 
 ipcMain.handle('protect-task-args', async (event, args) => protectTaskArgs(args));
 
 ipcMain.handle('restore-task-args', async (event, payload) => restoreTaskArgs(payload));
 
 ipcMain.handle('send-python-input', async (event, text) => {
-  if (!pythonProcess || !pythonProcess.stdin || pythonProcess.stdin.destroyed) {
-    return { success: false, error: '没有正在等待输入的任务' };
-  }
-  try {
-    pythonProcess.stdin.write(text || '\n');
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message || String(error) };
-  }
+  return writePythonInput(pythonProcess, text);
 });
 
 ipcMain.handle('read-file', async (event, filePath) => {

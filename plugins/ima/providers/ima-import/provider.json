@@ -17,7 +17,7 @@
     { "name": "api_key", "label": "ima API Key", "type": "password", "arg": "--api-key", "actions": ["saveConfig", "list", "plan", "importOne", "import"] },
     { "name": "knowledge_base_id", "label": "目标知识库 ID", "type": "text", "arg": "--knowledge-base-id", "required": true, "actions": ["plan", "importOne", "import"] },
     { "name": "folder_id", "label": "目标文件夹 ID（可选）", "type": "text", "arg": "--folder-id", "advanced": true, "actions": ["importOne", "import"] },
-    { "name": "source_dir", "label": "本地待导入目录", "type": "directory", "arg": "--source-dir", "required": true, "actions": ["plan", "importOne", "import"] },
+    { "name": "source_dir", "label": "本地待导入目录", "type": "directory", "arg": "--source-dir", "required": true, "history": "path", "actions": ["plan", "importOne", "import"] },
     { "name": "include_referenced_assets", "label": "同时上传 Markdown 引用资源", "type": "checkbox", "arg": "--include-referenced-assets", "default": false, "advanced": true, "actions": ["importOne", "import"] },
     { "name": "max_import", "label": "最多导入数量（0 为全部）", "type": "number", "arg": "--max-import", "default": 0, "min": 0, "advanced": true, "actions": ["import"] }
   ],

@@ -11,8 +11,17 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 RUNNING_STATES = {"running", "interrupted"}
+DEFAULT_LEASE_SECONDS = 5 * 60
+
+
+class CheckpointInUseError(RuntimeError):
+    """Raised when another live run owns the requested checkpoint task."""
+
+
+class CheckpointLeaseLostError(RuntimeError):
+    """Raised when a stale run tries to modify a checkpoint after takeover."""
 
 
 def now_iso() -> str:
@@ -59,18 +68,29 @@ def resume_scope_key(provider_id: str, action: str, metadata: dict[str, Any]) ->
 
 
 class WandaoCheckpoint:
-    def __init__(self, path: Path, task_id: str, provider_id: str, action: str) -> None:
+    def __init__(
+        self,
+        path: Path,
+        task_id: str,
+        provider_id: str,
+        action: str,
+        *,
+        lease_seconds: float = DEFAULT_LEASE_SECONDS,
+    ) -> None:
         self.path = Path(path).expanduser().resolve()
         self.task_id = task_id
         self.provider_id = provider_id
         self.action = action
+        self.run_id = str(uuid.uuid4())
+        self.lease_seconds = max(1.0, float(lease_seconds))
+        self._lease_claimed = False
+        self._closed = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self._init_schema()
-        self.recover_interrupted()
 
     @classmethod
     def open(
@@ -79,11 +99,25 @@ class WandaoCheckpoint:
         task_id: str | None = None,
         provider_id: str = "",
         action: str = "",
+        *,
+        lease_seconds: float = DEFAULT_LEASE_SECONDS,
     ) -> "WandaoCheckpoint":
-        return cls(Path(path), task_id or str(uuid.uuid4()), provider_id, action)
+        return cls(
+            Path(path),
+            task_id or str(uuid.uuid4()),
+            provider_id,
+            action,
+            lease_seconds=lease_seconds,
+        )
 
     def close(self) -> None:
-        self.conn.close()
+        if self._closed:
+            return
+        try:
+            self.release_lease()
+        finally:
+            self.conn.close()
+            self._closed = True
 
     def _init_schema(self) -> None:
         with self.conn:
@@ -181,53 +215,179 @@ class WandaoCheckpoint:
             )
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_items_status ON items (task_id, status)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_resources_status ON resources (task_id, status)")
+            self._ensure_task_lease_columns()
             self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
-    def recover_interrupted(self) -> None:
-        ts = now_iso()
+    def _ensure_task_lease_columns(self) -> None:
+        """Migrate pre-lease checkpoint databases without rebuilding task history."""
+        existing = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(tasks)")
+        }
+        columns = {
+            "lease_id": "TEXT NOT NULL DEFAULT ''",
+            "lease_pid": "INTEGER",
+            "lease_heartbeat": "REAL",
+            "lease_expires_at": "REAL",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                try:
+                    self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+                except sqlite3.OperationalError as exc:
+                    # A second process can observe the old column list while the first
+                    # process is completing this one-time migration.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+
+    @staticmethod
+    def _lease_is_active(row: sqlite3.Row | None, now: float) -> bool:
+        if not row:
+            return False
+        lease_id = str(row["lease_id"] or "")
+        try:
+            expires_at = float(row["lease_expires_at"] or 0)
+        except (TypeError, ValueError):
+            expires_at = 0
+        return bool(lease_id) and expires_at > now
+
+    def _task_row(self) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM tasks WHERE task_id = ?",
+            (self.task_id,),
+        ).fetchone()
+
+    def _recover_interrupted_locked(self, ts: str) -> None:
+        self.conn.execute(
+            "UPDATE tasks SET status = 'interrupted', updated_at = ? WHERE task_id = ? AND status = 'running'",
+            (ts, self.task_id),
+        )
+        self.conn.execute(
+            "UPDATE items SET status = 'pending', updated_at = ? WHERE task_id = ? AND status = 'running'",
+            (ts, self.task_id),
+        )
+        self.conn.execute(
+            "UPDATE resources SET status = 'pending', updated_at = ? WHERE task_id = ? AND status = 'running'",
+            (ts, self.task_id),
+        )
+
+    def _raise_if_owned_by_other_run(self, row: sqlite3.Row | None, now: float) -> None:
+        if not self._lease_is_active(row, now):
+            return
+        owner = str(row["lease_id"] or "")
+        if owner == self.run_id:
+            return
+        pid = row["lease_pid"]
+        raise CheckpointInUseError(
+            f"checkpoint task '{self.task_id}' is already owned by another live run"
+            + (f" (pid {pid})" if pid else "")
+        )
+
+    def _renew_lease(self) -> None:
+        if not self._lease_claimed:
+            raise CheckpointLeaseLostError(
+                f"checkpoint task '{self.task_id}' is not claimed by this run; call start_task() first"
+            )
+        now = time.time()
+        expires_at = now + self.lease_seconds
         with self.conn:
-            self.conn.execute(
-                "UPDATE tasks SET status = 'interrupted', updated_at = ? WHERE task_id = ? AND status = 'running'",
-                (ts, self.task_id),
+            result = self.conn.execute(
+                """
+                UPDATE tasks
+                SET lease_heartbeat = ?, lease_expires_at = ?, updated_at = ?
+                WHERE task_id = ? AND lease_id = ? AND lease_expires_at > ?
+                """,
+                (now, expires_at, now_iso(), self.task_id, self.run_id, now),
             )
-            self.conn.execute(
-                "UPDATE items SET status = 'pending', updated_at = ? WHERE task_id = ? AND status = 'running'",
-                (ts, self.task_id),
-            )
-            self.conn.execute(
-                "UPDATE resources SET status = 'pending', updated_at = ? WHERE task_id = ? AND status = 'running'",
-                (ts, self.task_id),
+        if result.rowcount != 1:
+            self._lease_claimed = False
+            raise CheckpointLeaseLostError(
+                f"checkpoint lease for task '{self.task_id}' has expired or was taken over by another run"
             )
 
+    def heartbeat(self) -> None:
+        """Extend the current run lease after long-running work."""
+        self._renew_lease()
+
+    def release_lease(self) -> None:
+        """Release this run's lease without changing the checkpoint task outcome."""
+        if not self._lease_claimed or self._closed:
+            return
+        try:
+            with self.conn:
+                self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET lease_id = '', lease_pid = NULL, lease_heartbeat = NULL, lease_expires_at = NULL
+                    WHERE task_id = ? AND lease_id = ?
+                    """,
+                    (self.task_id, self.run_id),
+                )
+        finally:
+            self._lease_claimed = False
+
+    def recover_interrupted(self) -> None:
+        """Recover an unleased task explicitly; opening a database never mutates it."""
+        ts = now_iso()
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self._task_row()
+            now = time.time()
+            self._raise_if_owned_by_other_run(row, now)
+            if self._lease_is_active(row, now):
+                self.conn.commit()
+                return
+            self._recover_interrupted_locked(ts)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def reset_task(self) -> None:
-        with self.conn:
-            self.conn.execute("DELETE FROM events WHERE task_id = ?", (self.task_id,))
-            self.conn.execute("DELETE FROM resources WHERE task_id = ?", (self.task_id,))
-            self.conn.execute("DELETE FROM items WHERE task_id = ?", (self.task_id,))
-            self.conn.execute("DELETE FROM cursors WHERE task_id = ?", (self.task_id,))
-            self.conn.execute("DELETE FROM tasks WHERE task_id = ?", (self.task_id,))
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self._raise_if_owned_by_other_run(self._task_row(), time.time())
+            self._reset_task_locked()
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        self._lease_claimed = False
+
+    def _reset_task_locked(self) -> None:
+        self.conn.execute("DELETE FROM events WHERE task_id = ?", (self.task_id,))
+        self.conn.execute("DELETE FROM resources WHERE task_id = ?", (self.task_id,))
+        self.conn.execute("DELETE FROM items WHERE task_id = ?", (self.task_id,))
+        self.conn.execute("DELETE FROM cursors WHERE task_id = ?", (self.task_id,))
+        self.conn.execute("DELETE FROM tasks WHERE task_id = ?", (self.task_id,))
 
     def start_task(self, metadata: dict[str, Any] | None = None) -> None:
         metadata = metadata or {}
         ts = now_iso()
+        now = time.time()
+        expires_at = now + self.lease_seconds
         resume_key = resume_scope_key(self.provider_id, self.action, metadata)
-        previous = self.conn.execute(
-            "SELECT provider_id, action, resume_key FROM tasks WHERE task_id = ?",
-            (self.task_id,),
-        ).fetchone()
-        if previous and (
-            str(previous["provider_id"] or "") != self.provider_id
-            or str(previous["action"] or "") != self.action
-            or str(previous["resume_key"] or "") != resume_key
-        ):
-            self.reset_task()
-        with self.conn:
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            previous = self._task_row()
+            self._raise_if_owned_by_other_run(previous, now)
+            if previous and (
+                str(previous["provider_id"] or "") != self.provider_id
+                or str(previous["action"] or "") != self.action
+                or str(previous["resume_key"] or "") != resume_key
+            ):
+                self._reset_task_locked()
+                previous = None
+            elif previous and not self._lease_is_active(previous, now):
+                self._recover_interrupted_locked(ts)
+
             self.conn.execute(
                 """
                 INSERT INTO tasks (
                     task_id, provider_id, action, resume_key, args_hash, source, target, output_dir,
-                    status, current_stage, metadata_json, error_summary, created_at, updated_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, '', ?, ?, '')
+                    status, current_stage, metadata_json, error_summary, created_at, updated_at, completed_at,
+                    lease_id, lease_pid, lease_heartbeat, lease_expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, '', ?, ?, '', ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     provider_id = excluded.provider_id,
                     action = excluded.action,
@@ -241,7 +401,11 @@ class WandaoCheckpoint:
                     metadata_json = excluded.metadata_json,
                     error_summary = '',
                     updated_at = excluded.updated_at,
-                    completed_at = ''
+                    completed_at = '',
+                    lease_id = excluded.lease_id,
+                    lease_pid = excluded.lease_pid,
+                    lease_heartbeat = excluded.lease_heartbeat,
+                    lease_expires_at = excluded.lease_expires_at
                 """,
                 (
                     self.task_id,
@@ -256,31 +420,57 @@ class WandaoCheckpoint:
                     json_dumps(metadata),
                     ts,
                     ts,
+                    self.run_id,
+                    os.getpid(),
+                    now,
+                    expires_at,
                 ),
             )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        self._lease_claimed = True
 
     def complete_task(self, summary: dict[str, Any] | None = None) -> None:
+        self._renew_lease()
         ts = now_iso()
         with self.conn:
-            self.conn.execute(
+            result = self.conn.execute(
                 """
                 UPDATE tasks
                 SET status = 'completed', current_stage = 'completed', metadata_json = ?,
-                    updated_at = ?, completed_at = ?
-                WHERE task_id = ?
+                    updated_at = ?, completed_at = ?,
+                    lease_id = '', lease_pid = NULL, lease_heartbeat = NULL, lease_expires_at = NULL
+                WHERE task_id = ? AND lease_id = ?
                 """,
-                (json_dumps(summary or {}), ts, ts, self.task_id),
+                (json_dumps(summary or {}), ts, ts, self.task_id, self.run_id),
             )
+        if result.rowcount != 1:
+            self._lease_claimed = False
+            raise CheckpointLeaseLostError(f"checkpoint lease for task '{self.task_id}' was lost before completion")
+        self._lease_claimed = False
 
     def fail_task(self, error: str, status: str = "failed") -> None:
+        self._renew_lease()
         ts = now_iso()
         with self.conn:
-            self.conn.execute(
-                "UPDATE tasks SET status = ?, error_summary = ?, updated_at = ? WHERE task_id = ?",
-                (status, str(error), ts, self.task_id),
+            result = self.conn.execute(
+                """
+                UPDATE tasks
+                SET status = ?, error_summary = ?, updated_at = ?,
+                    lease_id = '', lease_pid = NULL, lease_heartbeat = NULL, lease_expires_at = NULL
+                WHERE task_id = ? AND lease_id = ?
+                """,
+                (status, str(error), ts, self.task_id, self.run_id),
             )
+        if result.rowcount != 1:
+            self._lease_claimed = False
+            raise CheckpointLeaseLostError(f"checkpoint lease for task '{self.task_id}' was lost before failure recording")
+        self._lease_claimed = False
 
     def save_cursor(self, name: str, value: dict[str, Any]) -> None:
+        self._renew_lease()
         ts = now_iso()
         with self.conn:
             self.conn.execute(
@@ -312,6 +502,7 @@ class WandaoCheckpoint:
     ) -> None:
         if not item_key:
             return
+        self._renew_lease()
         ts = now_iso()
         with self.conn:
             self.conn.execute(
@@ -348,6 +539,7 @@ class WandaoCheckpoint:
     def start_item(self, item_key: str, stage: str | None = None) -> None:
         if not item_key:
             return
+        self._renew_lease()
         ts = now_iso()
         with self.conn:
             self.conn.execute(
@@ -369,6 +561,7 @@ class WandaoCheckpoint:
     ) -> None:
         if not item_key:
             return
+        self._renew_lease()
         ts = now_iso()
         with self.conn:
             self.conn.execute(
@@ -395,6 +588,7 @@ class WandaoCheckpoint:
     def fail_item(self, item_key: str, error: str, retryable: bool = True) -> None:
         if not item_key:
             return
+        self._renew_lease()
         ts = now_iso()
         status = "failed" if retryable else "skipped"
         with self.conn:
@@ -448,6 +642,7 @@ class WandaoCheckpoint:
     ) -> None:
         if not resource_key:
             return
+        self._renew_lease()
         ts = now_iso()
         with self.conn:
             self.conn.execute(
@@ -472,6 +667,7 @@ class WandaoCheckpoint:
     def start_resource(self, resource_key: str) -> None:
         if not resource_key:
             return
+        self._renew_lease()
         ts = now_iso()
         with self.conn:
             self.conn.execute(
@@ -492,6 +688,7 @@ class WandaoCheckpoint:
     ) -> None:
         if not resource_key:
             return
+        self._renew_lease()
         ts = now_iso()
         with self.conn:
             self.conn.execute(
@@ -518,6 +715,7 @@ class WandaoCheckpoint:
     def fail_resource(self, resource_key: str, error: str, retryable: bool = True) -> None:
         if not resource_key:
             return
+        self._renew_lease()
         ts = now_iso()
         status = "failed" if retryable else "skipped"
         with self.conn:
@@ -549,6 +747,7 @@ class WandaoCheckpoint:
         resource_key: str = "",
         data: dict[str, Any] | None = None,
     ) -> None:
+        self._renew_lease()
         with self.conn:
             self.conn.execute(
                 """

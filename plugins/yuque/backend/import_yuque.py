@@ -56,6 +56,7 @@ from export_yuque import (
 from wandao_core.report import finalize_report
 from wandao_core.credentials import write_private_json
 from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_core.source_paths import inspect_local_reference, iter_regular_files_under_root, resolve_source_root
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -104,6 +105,14 @@ def load_config(config_file: Path) -> dict[str, Any]:
 def save_config(config_file: Path, data: dict[str, Any]) -> None:
     safe_data = {key: value for key, value in data.items() if value not in (None, "")}
     write_private_json(config_file, safe_data)
+
+
+def saved_form_config(config_file: Path) -> dict[str, str]:
+    config = load_config(config_file)
+    return {
+        "targetBookUrl": str(config.get("targetBookUrl") or ""),
+        "sourceDir": str(config.get("sourceDir") or ""),
+    }
 
 
 def configure_runtime(args: argparse.Namespace) -> None:
@@ -397,7 +406,7 @@ def is_markdown_doc_target(target: str) -> bool:
     return any(Path(urllib.parse.unquote(candidate)).suffix.lower() in MARKDOWN_DOC_EXTENSIONS for candidate in candidates)
 
 
-def resolve_local_target(md_path: Path, target: str) -> Path | None:
+def resolve_local_target(md_path: Path, target: str, source_root: Path | None = None) -> Path | None:
     target = normalize_link_target(target)
     if not target or is_remote_or_anchor(target):
         return None
@@ -406,11 +415,8 @@ def resolve_local_target(md_path: Path, target: str) -> Path | None:
     if stripped and stripped != target:
         candidates.append(stripped)
     for candidate in candidates:
-        parsed = urllib.parse.urlparse(candidate)
-        if parsed.scheme:
-            continue
-        local_path = (md_path.parent / urllib.parse.unquote(candidate)).resolve()
-        if local_path.exists() and local_path.is_file():
+        local_path, _reason = inspect_local_reference(source_root or md_path.parent, md_path, candidate)
+        if local_path:
             return local_path
     return None
 
@@ -507,20 +513,32 @@ def is_image_path(path: Path) -> bool:
     return bool(mime and mime.startswith("image/"))
 
 
-def scan_local_resources(markdown: str, md_path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def scan_local_resources(markdown: str, md_path: Path, source_root: Path | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     resources: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     seen: dict[str, dict[str, Any]] = {}
     for link in iter_markdown_links(markdown) + iter_extra_image_links(markdown):
         target = str(link.get("target") or "")
         normalized_target = normalize_link_target(target)
-        local_path = resolve_local_target(md_path, target)
+        local_path: Path | None = None
+        rejection_reason: str | None = None
+        candidates = [normalized_target]
+        stripped = strip_local_url_suffix(normalized_target)
+        if stripped and stripped != normalized_target:
+            candidates.append(stripped)
+        for candidate in candidates:
+            local_path, rejection_reason = inspect_local_reference(source_root or md_path.parent, md_path, candidate)
+            if local_path:
+                break
         if is_markdown_doc_target(normalized_target):
             # Markdown files are imported as documents, not uploaded as attachments.
             continue
         if not local_path:
             if normalized_target and not is_remote_or_anchor(normalized_target):
-                warnings.append({"target": normalized_target, "reason": "local_file_missing"})
+                warnings.append({
+                    "target": normalized_target,
+                    "reason": "local_file_missing" if rejection_reason == "missing_or_not_regular_file" else "unsafe_local_reference",
+                })
             continue
         key = str(local_path)
         if key in seen:
@@ -543,10 +561,12 @@ def scan_local_resources(markdown: str, md_path: Path) -> tuple[list[dict[str, A
 
 
 def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
-    if not source_dir.exists():
-        raise ExportError(f"Markdown 目录不存在：{source_dir}")
+    try:
+        source_dir = resolve_source_root(source_dir)
+    except ValueError as exc:
+        raise ExportError(str(exc)) from exc
     docs: list[dict[str, Any]] = []
-    for path in sorted(source_dir.rglob("*.md"), key=lambda p: str(p.relative_to(source_dir)).lower()):
+    for path in sorted(iter_regular_files_under_root(source_dir, suffixes={".md"}), key=lambda p: str(p.relative_to(source_dir)).lower()):
         rel_parts = path.relative_to(source_dir).parts
         if any(part.startswith(".") for part in rel_parts):
             continue
@@ -554,7 +574,7 @@ def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         body = strip_export_footer(text)
-        resources, resource_warnings = scan_local_resources(body, path)
+        resources, resource_warnings = scan_local_resources(body, path, source_dir)
         relative = path.relative_to(source_dir).as_posix()
         docs.append(
             {
@@ -1533,6 +1553,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--login-wait-seconds", type=float, default=0.0, help="Wait this many seconds before saving login cookies")
     parser.add_argument("--close-started-chrome", action="store_true", help="Close Chrome started by this script after login")
     parser.add_argument("--save-config", action="store_true", help="Save target URL and source dir locally")
+    parser.add_argument("--show-config", action="store_true", help="Print saved non-sensitive form values as JSON")
     parser.add_argument("--plan", action="store_true", help="Only scan local Markdown and verify target book")
     parser.add_argument("--dry-run", action="store_true", help="Same as --plan")
     parser.add_argument("--api-import-one", action="store_true", help="Import one Markdown file")
@@ -1563,6 +1584,9 @@ def main(argv: list[str]) -> int:
         return 2
     args = parse_args(argv)
     try:
+        if args.show_config:
+            print(json.dumps(saved_form_config(Path(args.config_file)), ensure_ascii=False, indent=2))
+            return 0
         if args.save_config:
             save_config(Path(args.config_file), config_args(args))
             print(json.dumps({"configFile": str(Path(args.config_file).resolve())}, ensure_ascii=False, indent=2))

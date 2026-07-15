@@ -1,4 +1,4 @@
-﻿# Obsidian 黑曜石 Vault 归档导出
+# Obsidian 黑曜石 Vault 归档导出
 
 将 Obsidian Vault 目录批量归档为可离线阅读的本地 Markdown 目录，保留原目录层级，自动识别并复制 Wiki 链接和 Markdown 相对路径引用的图片与附件。
 

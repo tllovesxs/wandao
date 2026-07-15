@@ -39,9 +39,24 @@ jobs:
       - name: Run project quality checks
         run: python scripts/quality_check.py
 
+  quality-gate:
+    name: Quality Gate
+    needs: quality
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every quality matrix job to pass
+        shell: bash
+        run: |
+          if [ "${{ needs.quality.result }}" != "success" ]; then
+            echo "Quality matrix result: ${{ needs.quality.result }}" >&2
+            exit 1
+          fi
+          echo "All quality matrix jobs passed."
+
   package-smoke:
     name: PR Windows Package Smoke
-    needs: quality
+    needs: quality-gate
     if: github.event_name == 'pull_request'
     runs-on: windows-latest
     steps:
@@ -69,7 +84,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.name }}
-    needs: quality
+    needs: quality-gate
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     runs-on: ${{ matrix.os }}
     strategy:

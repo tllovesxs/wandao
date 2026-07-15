@@ -23,18 +23,76 @@ const descendantExportIdsSource = appSource.slice(
   appSource.indexOf('function descendantExportIds(nodes, nodeId) {'),
   appSource.indexOf('\nfunction selectableTocIds(nodes) {')
 );
+const selectableTocIdsSource = appSource.slice(
+  appSource.indexOf('function selectableTocIds(nodes) {'),
+  appSource.indexOf('\nfunction renderToc(toolId) {')
+);
 const descendantExportIds = vm.runInNewContext(
   `${tocNodeMapsSource}\n${descendantExportIdsSource}\ndescendantExportIds;`,
   { window: { WandaoTocTree: require(path.join(repoRoot, 'wandao_electron', 'renderer', 'toc_tree.js')) } }
 );
 
-test('shared TOC renderer emits explicit depth markers and pixel indentation', () => {
-  assert.match(renderTocSource, /class="toc-item toc-depth-\$\{depth\}/);
-  assert.match(
-    renderTocSource,
-    /data-node-id="\$\{escapeHtml\(node\.nodeId\)\}"\s+data-depth="\$\{depth\}"/
+function createTocList() {
+  const list = {
+    _items: [],
+    _html: '',
+    querySelectorAll(selector) {
+      assert.equal(selector, '.toc-item[data-depth]');
+      return this._items;
+    }
+  };
+
+  Object.defineProperty(list, 'innerHTML', {
+    get() { return this._html; },
+    set(html) {
+      this._html = html;
+      this._items = Array.from(html.matchAll(/<button\b([^>]*)>/g), ([, attributes]) => {
+        const depth = attributes.match(/data-depth="([^"]+)"/)?.[1] || '';
+        const values = new Map();
+        return {
+          dataset: { depth },
+          style: {
+            setProperty(name, value) { values.set(name, value); },
+            getPropertyValue(name) { return values.get(name) || ''; }
+          }
+        };
+      });
+    }
+  });
+  return list;
+}
+
+test('shared TOC renderer applies depth indentation through CSSOM after rendering', () => {
+  const list = createTocList();
+  const status = { textContent: '' };
+  const tocStates = {
+    test: {
+      loaded: true,
+      selected: new Set(['child-export', 'grandchild-export']),
+      nodes: [
+        { nodeId: 'root', parentNodeId: '', title: 'Root', selectable: false, exportId: '' },
+        { nodeId: 'child', parentNodeId: 'root', title: 'Child', selectable: true, exportId: 'child-export' },
+        { nodeId: 'grandchild', parentNodeId: 'child', title: 'Grandchild', selectable: true, exportId: 'grandchild-export' }
+      ]
+    }
+  };
+  const renderToc = vm.runInNewContext(
+    `${tocNodeMapsSource}\n${descendantExportIdsSource}\n${selectableTocIdsSource}\n${renderTocSource}\nrenderToc;`,
+    {
+      tocStates,
+      window: { WandaoTocTree: require(path.join(repoRoot, 'wandao_electron', 'renderer', 'toc_tree.js')) },
+      document: { getElementById: (id) => (id === 'test-toc-list' ? list : (id === 'test-toc-status' ? status : null)) },
+      escapeHtml: (value) => String(value ?? '')
+    }
   );
-  assert.match(renderTocSource, /style="--depth:\$\{depth\};--toc-indent:\$\{depth \* 30\}px"/);
+
+  renderToc('test');
+  assert.deepEqual(
+    list._items.map((item) => item.style.getPropertyValue('--toc-indent')),
+    ['0px', '40px', '80px']
+  );
+  assert.match(renderTocSource, /data-depth="\$\{depth\}"/);
+  assert.doesNotMatch(renderTocSource, /style="--depth:/);
 });
 
 test('TOC selection includes a document itself and all selectable descendants', () => {

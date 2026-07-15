@@ -63,11 +63,12 @@ test('Feishu import tutorial bundles all referenced screenshots', () => {
   assert.match(markdown, /^# 飞书文档导入教程/m);
   assert.match(markdown, /^## 一、准备工作/m);
   assert.match(markdown, /^## 二、正式导出/m);
+  assert.match(markdown, /^## 提示/m);
   const imageReferences = Array.from(markdown.matchAll(/!\[[^\]]*\]\((\.\/images\/(\d+)\.png)\)/g));
-  assert.equal(imageReferences.length, 17);
+  assert.equal(imageReferences.length, 21);
   assert.deepEqual(
-    imageReferences.map((match) => Number(match[2])).sort((left, right) => left - right),
-    Array.from({ length: 17 }, (_, index) => index + 1)
+    [...new Set(imageReferences.map((match) => Number(match[2])))].sort((left, right) => left - right),
+    Array.from({ length: 20 }, (_, index) => index + 1)
   );
   imageReferences.forEach((match) => {
     assert.equal(fs.existsSync(path.join(tutorialRoot, match[1])), true, `missing ${match[1]}`);

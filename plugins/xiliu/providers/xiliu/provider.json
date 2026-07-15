@@ -6,7 +6,7 @@
   "name": "息流",
   "title": "息流文档导出",
   "navLabel": "息流导出",
-  "description": "将 FlowUs (息流) 文档导出为 Markdown，保留目录结构。",
+  "description": "将 FlowUs (息流) 文档导出为 Markdown。",
   "type": "hybrid",
   "group": "export",
   "trustLevel": "community",
@@ -97,6 +97,17 @@
       "step": 0.1,
       "advanced": true,
       "actions": ["export"]
+    },
+    {
+      "name": "task_timeout",
+      "label": "导入任务超时秒",
+      "type": "number",
+      "arg": "--task-timeout",
+      "default": 120,
+      "min": 30,
+      "step": 10,
+      "advanced": true,
+      "actions": ["import"]
     }
   ],
   "actions": [

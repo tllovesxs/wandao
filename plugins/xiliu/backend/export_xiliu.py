@@ -263,6 +263,22 @@ def throttle_request(args: argparse.Namespace | None) -> None:
         time.sleep(total)
 
 
+def _friendly_network_error(exc: Exception) -> str:
+    """将底层网络异常转为用户友好的错误信息。"""
+    msg = str(exc)
+    if "getaddrinfo failed" in msg or "Name or service not known" in msg:
+        return "DNS 解析失败，无法连接到 FlowUs 服务器，请检查网络连接"
+    if "Connection refused" in msg:
+        return "连接被拒绝，FlowUs 服务器可能暂时不可用"
+    if "timed out" in msg or "Timeout" in msg:
+        return "请求超时，请检查网络连接或稍后重试"
+    if "Connection reset" in msg or "Connection aborted" in msg:
+        return "连接被重置，请检查网络状况后重试"
+    if "SSL" in msg or "certificate" in msg:
+        return "SSL 证书验证失败，请检查系统时间或网络代理设置"
+    return f"网络请求失败：{exc}"
+
+
 class FlowUsClient:
     """FlowUs API client."""
 
@@ -336,11 +352,11 @@ class FlowUsClient:
                 last_error = exc
             except urllib.error.URLError as exc:
                 if attempt >= attempts:
-                    raise FlowUsError(f"请求 FlowUs 失败：{exc}") from exc
+                    raise FlowUsError(_friendly_network_error(exc.reason)) from exc
                 last_error = exc
             time.sleep(min(5.0, 0.8 * attempt))
 
-        raise FlowUsError(f"请求 FlowUs 失败：{last_error}")
+        raise FlowUsError(_friendly_network_error(last_error))
 
     def get_json(self, url: str, referer: str = "https://flowus.cn/") -> dict[str, Any]:
         content = self.request("GET", url, referer=referer)
@@ -390,7 +406,7 @@ def get_signed_url(client: FlowUsClient, block_id: str, oss_name: str) -> str:
                 if signed_url:
                     return signed_url
     except Exception as exc:
-        emit(f"获取签名URL失败: {exc}", level="warn")
+        emit(f"获取签名URL失败: {_friendly_network_error(exc)}", level="warn")
 
     # Fallback to direct CDN URL
     return build_image_url(oss_name)
@@ -585,7 +601,7 @@ def toc_json(args: argparse.Namespace) -> dict[str, Any]:
         raise FlowUsError("--doc-url is required for --scan-toc")
 
     doc_id = parse_flowus_url(url)
-    emit(f"正在获取文档目录: {doc_id}")
+    emit(f"正在获取文档目录")
 
     nodes = build_toc_tree(client, doc_id)
 
@@ -614,8 +630,8 @@ def toc_json(args: argparse.Namespace) -> dict[str, Any]:
             "index": per_level_index[node.id],
             "id": node.id,
             "title": node.title,
-            "isDir": node.is_dir,
             "parentId": node.parent_id,
+            "selectable": True,
             "icon": node.icon,
         })
 
@@ -854,7 +870,7 @@ def export_flowus(args: argparse.Namespace) -> dict[str, Any]:
     output = Path(args.output).expanduser().resolve() if args.output else Path.cwd() / "exports" / "flowus"
 
     doc_id = parse_flowus_url(url)
-    emit(f"开始导出 FlowUs 文档: {doc_id}")
+    emit(f"开始导出 FlowUs 文档")
 
     # Open checkpoint
     checkpoint = open_checkpoint_from_args(args, "xiliu", "export")
@@ -992,7 +1008,6 @@ def export_flowus(args: argparse.Namespace) -> dict[str, Any]:
             # If node is directory, create it
             if node.is_dir:
                 md_path.mkdir(parents=True, exist_ok=True)
-                emit(f"[{i}/{len(nodes)}] 创建目录: {node.title}")
 
             # If has content, write markdown file
             if markdown.strip():
@@ -1059,13 +1074,14 @@ def export_flowus(args: argparse.Namespace) -> dict[str, Any]:
 
     # Finalize checkpoint
     if checkpoint:
+        checkpoint.complete_task(result)
         checkpoint.close()
 
     finalize_report(result, provider="flowus-export")
 
     # Emit task completed event
     emit(
-        f"FlowUs 导出完成：成功 {exported}, 跳过 {skipped}, 失败 {failed}",
+        f"导出完成：成功 {exported}, 跳过 {skipped}, 未通过 {failed}",
         event="task.completed",
         level="success" if failed == 0 and len(image_failures) == 0 else "warn",
         stats={
@@ -1076,8 +1092,6 @@ def export_flowus(args: argparse.Namespace) -> dict[str, Any]:
             "imageFailureCount": len(image_failures),
         },
     )
-
-    emit(f"导出完成: 成功 {exported}, 跳过 {skipped}, 失败 {failed}")
     return result
 
 

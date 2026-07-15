@@ -36,6 +36,7 @@ from export_xiliu import (
     DEFAULT_PORT,
     FlowUsClient,
     FlowUsError,
+    _friendly_network_error,
     auth_path_from_args,
     default_auth_path,
     default_profile_path,
@@ -74,6 +75,19 @@ def emit(message: str, *, event: str = "log.message", level: str = "info", **fie
 
 def generate_uuid() -> str:
     return str(uuid.uuid4())
+
+
+def _api_error_msg(result: dict[str, Any]) -> str:
+    """Extract a sanitized error message from an API response.
+
+    Only returns the msg field and status code, never the full response
+    which may contain signed URLs, tokens, or other sensitive data.
+    """
+    msg = result.get("msg", "")
+    code = result.get("code", "?")
+    if msg:
+        return f"{msg} (code={code})"
+    return f"code={code}"
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +278,7 @@ def create_empty_page(
     data = client.request("POST", BLOCKS_TRANSACTIONS_API, data=operations, timeout=30)
     result = json.loads(data.decode("utf-8", errors="replace"))
     if result.get("code") != 200:
-        raise FlowUsError(f"创建页面失败：{result.get('msg', result)}")
+        raise FlowUsError(f"创建页面失败：{_api_error_msg(result)}")
 
     return page_id
 
@@ -295,7 +309,7 @@ def update_page_title(client: FlowUsClient, space_id: str, page_id: str, title: 
     data = client.request("POST", BLOCKS_TRANSACTIONS_API, data=operations, timeout=30)
     result = json.loads(data.decode("utf-8", errors="replace"))
     if result.get("code") != 200:
-        raise FlowUsError(f"更新页面标题失败：{result.get('msg', result)}")
+        raise FlowUsError(f"更新页面标题失败：{_api_error_msg(result)}")
 
 
 def upload_html_content(client: FlowUsClient, html_content: str) -> str:
@@ -309,7 +323,7 @@ def upload_html_content(client: FlowUsClient, html_content: str) -> str:
     data = client.request("POST", url, data=payload, timeout=120)
     result = json.loads(data.decode("utf-8", errors="replace"))
     if result.get("code") != 200:
-        raise FlowUsError(f"上传临时文件失败：{result.get('msg', result)}")
+        raise FlowUsError(f"上传临时文件失败：{_api_error_msg(result)}")
 
     oss_name = result.get("data", {}).get("ossName", "")
     if not oss_name:
@@ -335,7 +349,7 @@ def enqueue_import_task(client: FlowUsClient, block_id: str, space_id: str, oss_
     data = client.request("POST", ENQUEUE_TASK_API, data=payload, timeout=30)
     result = json.loads(data.decode("utf-8", errors="replace"))
     if result.get("code") != 200:
-        raise FlowUsError(f"导入任务创建失败：{result.get('msg', result)}")
+        raise FlowUsError(f"导入任务创建失败：{_api_error_msg(result)}")
 
     task_id = result.get("data", {}).get("taskId", "")
     if not task_id:
@@ -358,7 +372,7 @@ def poll_task_result(client: FlowUsClient, task_id: str, timeout: int = 120, int
         result = json.loads(data.decode("utf-8", errors="replace"))
 
         if result.get("code") != 200:
-            raise FlowUsError(f"查询任务状态失败：{result.get('msg', result)}")
+            raise FlowUsError(f"查询任务状态失败：{_api_error_msg(result)}")
 
         results = result.get("data", {}).get("results", {})
         task_result = results.get(task_id)
@@ -401,7 +415,7 @@ def get_upload_info(client: FlowUsClient, space_id: str, file_name: str, file_si
     data = client.request("POST", UPLOAD_INFO_API, data=payload, timeout=30)
     result = json.loads(data.decode("utf-8", errors="replace"))
     if result.get("code") != 200:
-        raise FlowUsError(f"获取上传凭证失败：{result.get('msg', result)}")
+        raise FlowUsError(f"获取上传凭证失败：{_api_error_msg(result)}")
 
     return result.get("data", {})
 
@@ -418,14 +432,14 @@ def extract_appid_from_token(token: str) -> str:
             payload_b64 += "=" * (4 - len(payload_b64) % 4)
             payload_bytes = base64.urlsafe_b64decode(payload_b64)
             payload = json.loads(payload_bytes)
-            emit(f"JWT payload keys: {list(payload.keys())}", level="debug")
+            emit("JWT payload decoded successfully", level="debug")
             return str(payload.get("key", ""))
     except Exception as e:
         emit(f"Failed to parse JWT: {e}", level="debug")
     return ""
 
 
-def upload_to_cos(upload_info: dict[str, Any], file_path: Path, appid: str = "") -> str:
+def upload_to_cos(upload_info: dict[str, Any], file_path: Path, appid: str = "", timeout: int = 60) -> str:
     """Upload a file to Tencent COS using temporary credentials.
 
     Returns the ossName of the uploaded file.
@@ -452,6 +466,7 @@ def upload_to_cos(upload_info: dict[str, Any], file_path: Path, appid: str = "")
     # Try multiple regions, starting with the most likely
     regions = ["ap-beijing", "ap-nanjing", "ap-guangzhou", "ap-shanghai", "ap-chengdu"]
     key_options = [key]
+    last_error: Exception | None = None
 
     for region in regions:
         for current_key in key_options:
@@ -509,7 +524,7 @@ def upload_to_cos(upload_info: dict[str, Any], file_path: Path, appid: str = "")
             req = urllib.request.Request(upload_url, data=file_content, headers=headers, method="PUT")
 
             try:
-                with urllib.request.urlopen(req, timeout=60) as response:
+                with urllib.request.urlopen(req, timeout=timeout) as response:
                     if response.status in (200, 204):
                         emit(f"COS 上传成功: region={region}", level="debug")
                         return oss_name
@@ -521,10 +536,11 @@ def upload_to_cos(upload_info: dict[str, Any], file_path: Path, appid: str = "")
                 emit(f"COS 上传失败: region={region}, HTTP {exc.code} - {detail[:200]}", level="debug")
                 continue
             except urllib.error.URLError as exc:
-                emit(f"COS 上传网络错误: region={region}, {exc.reason}", level="debug")
+                last_error = exc
+                emit(f"COS 上传网络错误: region={region}, {_friendly_network_error(exc.reason)}", level="debug")
                 continue
 
-    raise FlowUsError(f"COS 上传失败：所有组合都失败")
+    raise FlowUsError(f"COS 上传失败：{_friendly_network_error(last_error)}" if last_error else "COS 上传失败：所有 region 都无法连接")
 
 
 def search_resource(client: FlowUsClient, file_path: Path) -> str | None:
@@ -574,10 +590,10 @@ def create_signed_urls(client: FlowUsClient, block_id: str, oss_name: str, is_pu
         emit(f"  create_urls (attempt {attempt}): code={result.get('code')}", level="debug")
 
         if not isinstance(result, dict):
-            raise FlowUsError(f"获取签名 URL 失败：响应格式异常 - {result}")
+            raise FlowUsError(f"获取签名 URL 失败：响应格式异常 (code={result.get('code', '?')})")
 
         if result.get("code") != 200:
-            raise FlowUsError(f"获取签名 URL 失败：{result.get('msg', result)}")
+            raise FlowUsError(f"获取签名 URL 失败：{_api_error_msg(result)}")
 
         urls = result.get("data")
         if isinstance(urls, list) and urls and isinstance(urls[0], dict) and urls[0].get("url"):
@@ -592,7 +608,7 @@ def create_signed_urls(client: FlowUsClient, block_id: str, oss_name: str, is_pu
     raise FlowUsError("获取签名 URL 失败：多次重试后仍返回空")
 
 
-def upload_local_image(client: FlowUsClient, space_id: str, image_path: Path) -> tuple[str, str]:
+def upload_local_image(client: FlowUsClient, space_id: str, image_path: Path, timeout: int = 60) -> tuple[str, str]:
     """Upload a local image to FlowUs.
 
     Tries import_temp_file API first (simpler, returns registered ossName).
@@ -640,7 +656,7 @@ def upload_local_image(client: FlowUsClient, space_id: str, image_path: Path) ->
 
     token = upload_info.get("token", {})
     appid = extract_appid_from_token(token.get("accessKeyId", ""))
-    upload_to_cos(upload_info, image_path, appid=appid)
+    upload_to_cos(upload_info, image_path, appid=appid, timeout=timeout)
 
     emit(f"图片上传成功(COS): {file_name}", level="debug")
     return oss_name, file_secret
@@ -755,7 +771,7 @@ def create_image_block(
     data = client.request("POST", BLOCKS_TRANSACTIONS_API, data=operations, timeout=30)
     result = json.loads(data.decode("utf-8", errors="replace"))
     if result.get("code") != 200:
-        raise FlowUsError(f"创建图片块失败：{result.get('msg', result)}")
+        raise FlowUsError(f"创建图片块失败：{_api_error_msg(result)}")
 
 
 def update_block_ossname(client: FlowUsClient, space_id: str, block_id: str, signed_url: str) -> None:
@@ -782,7 +798,7 @@ def update_block_ossname(client: FlowUsClient, space_id: str, block_id: str, sig
     data = client.request("POST", BLOCKS_TRANSACTIONS_API, data=operations, timeout=30)
     result = json.loads(data.decode("utf-8", errors="replace"))
     if result.get("code") != 200:
-        raise FlowUsError(f"更新图片块 ossName 失败：{result.get('msg', result)}")
+        raise FlowUsError(f"更新图片块 ossName 失败：{_api_error_msg(result)}")
 
 
 def parse_markdown_image_positions(md_content: str) -> list[dict[str, Any]]:
@@ -1155,7 +1171,7 @@ def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
         matching = [t for t in targets if t["id"] == parent_id]
         if matching:
             space_id = matching[0]["spaceId"]
-            emit(f"从目标页面自动检测空间 ID: {space_id}")
+            emit("从目标页面自动检测空间 ID")
         else:
             raise FlowUsError(
                 f"页面 {parent_id} 不在可写入目标列表中。"
@@ -1165,7 +1181,7 @@ def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
     if not space_id:
         # Default to the first target's space
         space_id = targets[0]["spaceId"]
-        emit(f"自动选择空间: {targets[0]['spaceName']} ({space_id})")
+        emit(f"自动选择空间: {targets[0]['spaceName']}")
 
     # If no parent_id specified, find a valid parent from the targets
     if not parent_id:
@@ -1281,10 +1297,6 @@ def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
             if checkpoint:
                 checkpoint.fail_item(item_key, str(exc))
 
-    # Finalize
-    if checkpoint:
-        checkpoint.close()
-
     result = {
         "provider": "flowus-import",
         "spaceId": space_id,
@@ -1296,6 +1308,11 @@ def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
         "failed": failed,
         "failureCount": failed,
     }
+
+    # Finalize checkpoint
+    if checkpoint:
+        checkpoint.complete_task(result)
+        checkpoint.close()
 
     finalize_report(result, provider="flowus-import")
 
@@ -1310,7 +1327,7 @@ def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
         },
     )
 
-    emit(f"导入完成: 成功 {imported}, 跳过 {skipped}, 失败 {failed}")
+    emit(f"导入完成: 成功 {imported}, 跳过 {skipped}, 未通过 {failed}")
     return result
 
 

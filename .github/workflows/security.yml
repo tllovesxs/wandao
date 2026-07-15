@@ -42,7 +42,12 @@ jobs:
       - name: Audit Python dependencies
         run: |
           python -m pip install --disable-pip-version-check pip-audit
-          python -m pip_audit -r requirements.txt
+          # evernote-backup 1.13.1 pins click==8.1.8.  PYSEC-2026-2132 is
+          # reachable only through click.edit(), which neither Wandao nor
+          # evernote-backup invokes.  Keep auditing every other advisory;
+          # remove this narrowly-scoped exception when upstream releases a
+          # compatible evernote-backup version with Click >= 8.3.3.
+          python -m pip_audit -r requirements.txt --ignore-vuln PYSEC-2026-2132
 
   codeql:
     name: CodeQL (${{ matrix.language }})

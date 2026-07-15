@@ -661,24 +661,12 @@ class ExportNoDirectoryLogTests(unittest.TestCase):
         matches = re.findall(r'emit\(f"\[.*创建目录:', source)
         self.assertEqual(matches, [], f"Found emit calls with '创建目录:': {matches}")
 
-    def test_bundled_no_create_dir_in_batch_loop(self) -> None:
-        source = (REPO_ROOT / "providers/xiliu/export_xiliu.py").read_text(encoding="utf-8")
-        import re
-        matches = re.findall(r'emit\(f"\[.*创建目录:', source)
-        self.assertEqual(matches, [], f"Found emit calls with '创建目录:': {matches}")
-
 
 class ExportSingleCompletionMessageTests(unittest.TestCase):
     """Regression: export should emit exactly one completion message."""
 
     def test_only_one_completion_emit(self) -> None:
         source = (REPO_ROOT / "plugins/xiliu/backend/export_xiliu.py").read_text(encoding="utf-8")
-        import re
-        matches = re.findall(r'emit\([^)]*导出完成', source)
-        self.assertEqual(len(matches), 1, f"Expected 1 completion emit, found {len(matches)}")
-
-    def test_bundled_only_one_completion_emit(self) -> None:
-        source = (REPO_ROOT / "providers/xiliu/export_xiliu.py").read_text(encoding="utf-8")
         import re
         matches = re.findall(r'emit\([^)]*导出完成', source)
         self.assertEqual(len(matches), 1, f"Expected 1 completion emit, found {len(matches)}")
@@ -801,6 +789,32 @@ class ApiErrorSanitizationBehaviorTests(unittest.TestCase):
         error_msg = module._api_error_msg({})
         self.assertIn("code=?", error_msg)
 
+    def test_api_helpers_never_include_raw_response_in_errors(self) -> None:
+        module = _load_module("import_flowus")
+        sensitive_response = {
+            "code": 403,
+            "data": {
+                "token": "SECRET_TOKEN",
+                "url": "https://signed.example.com/file?signature=SECRET_SIGNATURE",
+            },
+        }
+        calls = [
+            (module.fetch_user_info, (MagicMock(get_json=MagicMock(return_value=sensitive_response)),)),
+            (module.fetch_user_spaces, (MagicMock(get_json=MagicMock(return_value=sensitive_response)), "user-1")),
+            (module.fetch_space_root, (MagicMock(get_json=MagicMock(return_value=sensitive_response)), "space-1")),
+            (module.fetch_page_blocks, (MagicMock(get_json=MagicMock(return_value=sensitive_response)), "page-1")),
+        ]
+
+        for helper, args in calls:
+            with self.subTest(helper=helper.__name__):
+                with self.assertRaises(module.FlowUsError) as ctx:
+                    helper(*args)
+                error = str(ctx.exception)
+                self.assertIn("403", error)
+                self.assertNotIn("SECRET_TOKEN", error)
+                self.assertNotIn("SECRET_SIGNATURE", error)
+                self.assertNotIn("signed.example.com", error)
+
 
 class CheckpointBehaviorTests(unittest.TestCase):
     """Behavioral tests for checkpoint resume/retry-failed filtering."""
@@ -885,6 +899,51 @@ class CheckpointBehaviorTests(unittest.TestCase):
             # pending-doc gets exported, done-doc is filtered out before the loop
             self.assertEqual(result["exported"], 1)
             self.assertEqual(result["totalNodes"], 1)  # filtered to 1 node
+
+
+class ImportCheckpointBehaviorTests(unittest.TestCase):
+    """Behavioral coverage for import resume and retry-failed filtering."""
+
+    def test_import_resume_and_retry_failed_filter_documents(self) -> None:
+        module = _load_module("import_flowus")
+        export_module = _load_module("export_xiliu")
+
+        for mode, statuses, expected_title in (
+            ("--resume", {"Completed.md": "completed", "Failed.md": "failed"}, "Failed"),
+            ("--retry-failed", {"Completed.md": "completed", "Failed.md": "failed", "Pending.md": "pending"}, "Failed"),
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                source_dir = Path(tmp) / "source"
+                source_dir.mkdir()
+                for relative in statuses:
+                    (source_dir / relative).write_text(f"# {Path(relative).stem}", encoding="utf-8")
+
+                args = module.parse_args([
+                    "--source-dir", str(source_dir),
+                    "--space-id", "space-1",
+                    mode,
+                ])
+                checkpoint = MagicMock()
+                checkpoint.item_status.side_effect = lambda key: statuses[key.removeprefix("xiliu:import:")]
+
+                with patch.object(export_module, "read_auth_payload", return_value={"token": "fake", "cookies": []}), \
+                     patch.object(module, "list_import_targets", return_value=[{
+                         "id": "parent-1", "name": "Root", "spaceId": "space-1", "role": "editor"
+                     }]), \
+                     patch.object(module, "open_checkpoint_from_args", return_value=checkpoint), \
+                     patch.object(module, "create_empty_page", return_value="page-1") as create_page, \
+                     patch.object(module, "upload_html_content", return_value="oss/test.html"), \
+                     patch.object(module, "enqueue_import_task", return_value="task-1"), \
+                     patch.object(module, "poll_task_result", return_value={"status": "success"}), \
+                     patch.object(module, "update_page_title"), \
+                     patch.object(module, "finalize_report"):
+                    result = module.import_flowus(args)
+
+                self.assertEqual(result["totalDocs"], 1)
+                self.assertEqual(result["imported"], 1)
+                create_page.assert_called_once_with(
+                    unittest.mock.ANY, "space-1", "parent-1", expected_title
+                )
 
 
 class LogSanitizationFullBehaviorTests(unittest.TestCase):
@@ -1165,14 +1224,20 @@ class ExportFlowUsEdgeCaseTests(unittest.TestCase):
                 module.export_flowus(args)
             self.assertIn("--doc-url", str(ctx.exception))
 
-    def test_no_nodes_raises(self) -> None:
+    def test_empty_source_allows_zero_docs(self) -> None:
         module = _load_module("export_xiliu")
-        args = module.parse_args(["--doc-url", "https://flowus.cn/demo", "--output", "out"])
-        with patch.object(module, "build_toc_tree", return_value=[]), \
-             patch.object(module, "read_auth_payload", return_value={"token": "fake", "cookies": []}):
-            with self.assertRaises(module.FlowUsError) as ctx:
-                module.export_flowus(args)
-            self.assertIn("未能获取到任何文档节点", str(ctx.exception))
+        for selection_args in ([], ["--doc-id", "stale-id"]):
+            with self.subTest(selection_args=selection_args):
+                args = module.parse_args(
+                    ["--doc-url", "https://flowus.cn/demo", "--output", "out", *selection_args]
+                )
+                with patch.object(module, "build_toc_tree", return_value=[]), \
+                     patch.object(module, "read_auth_payload", return_value={"token": "fake", "cookies": []}), \
+                     patch.object(module, "finalize_report"):
+                    result = module.export_flowus(args)
+                self.assertEqual(result["totalNodes"], 0)
+                self.assertEqual(result["exported"], 0)
+                self.assertEqual(result["failed"], 0)
 
     def test_incremental_skip_existing_file(self) -> None:
         module = _load_module("export_xiliu")

@@ -98,7 +98,7 @@ def fetch_user_info(client: FlowUsClient) -> dict[str, Any]:
     """Get current user info."""
     data = client.get_json(USERS_ME_API)
     if data.get("code") != 200:
-        raise FlowUsError(f"获取用户信息失败：{data.get('msg', data)}")
+        raise FlowUsError(f"获取用户信息失败：{_api_error_msg(data)}")
     return data.get("data", {})
 
 
@@ -107,7 +107,7 @@ def fetch_user_spaces(client: FlowUsClient, user_id: str) -> dict[str, Any]:
     url = USER_ROOT_API.format(user_id=user_id)
     data = client.get_json(url)
     if data.get("code") != 200:
-        raise FlowUsError(f"获取空间列表失败：{data.get('msg', data)}")
+        raise FlowUsError(f"获取空间列表失败：{_api_error_msg(data)}")
     return data.get("data", {})
 
 
@@ -116,7 +116,7 @@ def fetch_space_root(client: FlowUsClient, space_id: str) -> dict[str, Any]:
     url = SPACE_ROOT_API.format(space_id=space_id)
     data = client.get_json(url)
     if data.get("code") != 200:
-        raise FlowUsError(f"获取空间根目录失败：{data.get('msg', data)}")
+        raise FlowUsError(f"获取空间根目录失败：{_api_error_msg(data)}")
     return data.get("data", {})
 
 
@@ -714,7 +714,7 @@ def fetch_page_blocks(client: FlowUsClient, page_id: str) -> dict[str, Any]:
     referer = f"https://flowus.cn/{page_id}"
     data = client.get_json(url, referer=referer)
     if data.get("code") != 200:
-        raise FlowUsError(f"获取页面 blocks 失败：{data.get('msg', data)}")
+        raise FlowUsError(f"获取页面 blocks 失败：{_api_error_msg(data)}")
     return data.get("data", {}).get("blocks", {})
 
 

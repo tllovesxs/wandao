@@ -877,15 +877,14 @@ def export_flowus(args: argparse.Namespace) -> dict[str, Any]:
 
     # Build TOC
     nodes = build_toc_tree(client, doc_id)
-    if not nodes:
-        raise FlowUsError("未能获取到任何文档节点")
+    has_exportable_nodes = bool(nodes)
 
     # Filter nodes if --doc-id is specified
     selected_ids = getattr(args, 'selected_doc_ids', None)
     if selected_ids:
         selected_set = set(selected_ids)
         nodes = [n for n in nodes if n.id in selected_set]
-        if not nodes:
+        if has_exportable_nodes and not nodes:
             raise FlowUsError(
                 f"选中的文档 ID 均未在目录中找到（共 {len(selected_set)} 个）。"
                 "请重新读取目录后重试。"

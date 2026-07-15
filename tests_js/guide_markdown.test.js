@@ -73,3 +73,8 @@ test('Feishu import tutorial bundles all referenced screenshots', () => {
     assert.equal(fs.existsSync(path.join(tutorialRoot, match[1])), true, `missing ${match[1]}`);
   });
 });
+
+test('legacy Feishu import providers append their bundled guide after rendering the form', () => {
+  const feishuImportBranch = sourceBetween("  } else if (currentTool === 'feishu-import'", "  } else {");
+  assert.match(feishuImportBranch, /appendProviderGuideSection\(contentArea, config\);/);
+});

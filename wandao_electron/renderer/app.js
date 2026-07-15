@@ -3251,6 +3251,17 @@ function bindCollapsibleGuideImages(container, providerId) {
   loadImages();
 }
 
+function appendProviderGuideSection(container, provider) {
+  if (!container || !provider?.guideMarkdown) return;
+  const guideHost = container.querySelector('.form-section') || container;
+  guideHost.insertAdjacentHTML('beforeend', `
+    <details class="advanced-section plugin-guide-section">
+      <summary>\u5e73\u53f0\u8bf4\u660e / \u64cd\u4f5c\u6559\u7a0b</summary>
+      <div class="guide-content compact">${markdownToHtml(provider.guideMarkdown)}</div>
+    </details>
+  `);
+  bindCollapsibleGuideImages(container, provider.id);
+}
 function renderGuideProvider(provider) {
   const contentArea = document.getElementById('content-area');
   const capabilityItems = [
@@ -4020,6 +4031,7 @@ function switchTool(toolId) {
     // The dedicated page preserves the saved API configuration and the
     // browser-login completion handoff for both bundled and installed plugins.
     loadFeishuImportTool();
+    appendProviderGuideSection(contentArea, config);
   } else if (config.type === 'guide' || (!config.script && !template && !(config.actions || []).length)) {
     renderGuideProvider(config);
   } else if (template) {

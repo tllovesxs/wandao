@@ -408,5 +408,110 @@ class ObsidianExportTests(unittest.TestCase):
                 shutil.rmtree(outside_dir, ignore_errors=True)
 
 
+
+    # ---- Symlink / junction escape regression --------------------------------
+
+    def _make_junction(self, link: Path, target: Path) -> bool:
+        """Create a directory junction on Windows. Returns True on success."""
+        import subprocess
+        if link.exists():
+            return False
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True, check=True, text=True,
+            )
+            return True
+        except (subprocess.CalledProcessError, OSError):
+            return False
+
+    def test_escape_md_via_junction_not_exported(self) -> None:
+        """A directory junction pointing outside the vault must not leak .md files."""
+        with tempfile.TemporaryDirectory() as vault_tmp:
+            vault = Path(vault_tmp)
+            # Create a real .md inside vault
+            (vault / "safe.md").write_text("# safe", encoding="utf-8")
+
+            # Create outside directory with escape.md
+            outside = tempfile.mkdtemp(prefix="outside_vault_")
+            try:
+                (Path(outside) / "escape.md").write_text("# escape", encoding="utf-8")
+
+                # Create junction inside vault -> outside
+                junction = vault / "escape_junction"
+                if not self._make_junction(junction, Path(outside)):
+                    self.skipTest(
+                        "Junction creation not available (requires no admin on Windows; "
+                        "on macOS/Linux use ln -s for equivalent)."
+                    )
+
+                with tempfile.TemporaryDirectory() as out_tmp:
+                    out = Path(out_tmp) / "out"
+                    report = _run(
+                        "--vault", str(vault),
+                        "--output", str(out),
+                        "--export",
+                        "--progress-every", "0",
+                    )
+                    # Only safe.md should be exported
+                    self.assertEqual(report["totalDocs"], 1)
+                    self.assertTrue((out / "safe.md").exists())
+                    # escape.md must NOT appear anywhere in output
+                    escape_files = list(out.rglob("escape.md"))
+                    self.assertEqual(len(escape_files), 0,
+                                     f"escape.md leaked into output: {escape_files}")
+            finally:
+                import shutil
+                shutil.rmtree(outside, ignore_errors=True)
+
+    def test_resource_via_junction_not_indexed(self) -> None:
+        """Resources reachable only via a junction must not appear in file index or output."""
+        with tempfile.TemporaryDirectory() as vault_tmp:
+            vault = Path(vault_tmp)
+            (vault / "doc.md").write_text(
+                "![img](outside_junction/secret.png)\n",
+                encoding="utf-8",
+            )
+
+            outside = tempfile.mkdtemp(prefix="outside_vault_")
+            try:
+                (Path(outside) / "secret.png").write_bytes(b"outside-secret")
+
+                junction = vault / "outside_junction"
+                if not self._make_junction(junction, Path(outside)):
+                    self.skipTest("Junction creation not available on this system")
+
+                with tempfile.TemporaryDirectory() as out_tmp:
+                    out = Path(out_tmp) / "out"
+                    report = _run(
+                        "--vault", str(vault),
+                        "--output", str(out),
+                        "--export",
+                        "--progress-every", "0",
+                    )
+                    # secret.png must NOT be in _resources
+                    if (out / "_resources").exists():
+                        secret_files = list((out / "_resources").rglob("secret.png"))
+                        self.assertEqual(len(secret_files), 0,
+                                         f"secret.png leaked: {secret_files}")
+                    # Should be reported as missing
+                    self.assertGreater(len(report["resourceFailures"]), 0)
+            finally:
+                import shutil
+                shutil.rmtree(outside, ignore_errors=True)
+
+    def test_file_index_rejects_outside_resolved_entry(self) -> None:
+        """After resolving, entries outside vault are excluded from index (unit test)."""
+        with tempfile.TemporaryDirectory() as vault_tmp:
+            vault = Path(vault_tmp)
+            (vault / "real.md").write_text("# real", encoding="utf-8")
+
+            # Execute the script's _build_file_index via scan-toc
+            data = _run("--vault", str(vault), "--scan-toc")
+            self.assertEqual(data["totalDocs"], 1)
+            node_ids = {n["nodeId"] for n in data["nodes"]}
+            self.assertIn("doc:real.md", node_ids)
+
+
 if __name__ == "__main__":
     unittest.main()

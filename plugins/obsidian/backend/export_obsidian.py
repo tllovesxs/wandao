@@ -101,12 +101,20 @@ def _validate_output_not_in_vault(output: Path, vault: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _build_file_index(vault: Path) -> Dict[str, List[Path]]:
-    """Map every file name (lowercased) to a list of absolute vault paths."""
+    """Map every file name (lowercased) to a list of absolute vault paths.
+
+    Each entry is validated to be within the vault after resolving symlinks
+    and junctions, preventing escape via filesystem links.
+    """
     cache: Dict[str, List[Path]] = {}
     for entry in vault.rglob("*"):
         if entry.is_file() and not _is_hidden(entry, vault):
-            key = entry.name.lower()
-            cache.setdefault(key, []).append(entry)
+            try:
+                validated = _validate_vault_path(entry, vault)
+                key = validated.name.lower()
+                cache.setdefault(key, []).append(validated)
+            except ValueError:
+                continue
     return cache
 
 
@@ -157,9 +165,14 @@ def _resolve_resource(
     except ValueError:
         pass
 
-    # 3. filename-only lookup (only candidates already inside vault)
+    # 3. filename-only lookup (re-validate each candidate against vault)
     key = Path(ref).name.lower()
-    hits = [h for h in file_index.get(key, [])]
+    hits: List[Path] = []
+    for h in file_index.get(key, []):
+        try:
+            hits.append(_validate_vault_path(h, vault))
+        except ValueError:
+            continue
     if len(hits) == 1:
         return hits[0]
     if len(hits) > 1:
@@ -381,8 +394,13 @@ def export_cmd(
     else:
         selected = set()
         for entry in vault_abs.rglob("*.md"):
-            if not _is_hidden(entry, vault_abs):
-                selected.add(entry.relative_to(vault_abs).as_posix())
+            if _is_hidden(entry, vault_abs):
+                continue
+            try:
+                validated = _validate_vault_path(entry, vault_abs)
+                selected.add(validated.relative_to(vault_abs).as_posix())
+            except ValueError:
+                continue
 
     file_index = _build_file_index(vault_abs)
 

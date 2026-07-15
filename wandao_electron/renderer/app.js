@@ -3225,6 +3225,31 @@ function renderTrustBadge(provider) {
   return `<span class="trust-badge ${trustClass}">${escapeHtml(label)}</span>`;
 }
 
+async function hydrateGuideImages(container, providerId) {
+  const images = Array.from(container?.querySelectorAll?.('img[data-guide-image]') || []);
+  await Promise.all(images.map(async (image) => {
+    const imagePath = image.dataset.guideImage || '';
+    try {
+      const result = await window.electronAPI.readProviderGuideImage(providerId, imagePath);
+      if (!result?.success || !result.dataUrl) throw new Error(result?.error || '????????');
+      image.src = result.dataUrl;
+      image.removeAttribute('data-guide-image');
+    } catch (error) {
+      image.dataset.guideImageError = error?.message || String(error);
+    }
+  }));
+}
+
+function bindCollapsibleGuideImages(container, providerId) {
+  const details = container?.querySelector?.('.plugin-guide-section');
+  if (!details) return;
+  const loadImages = () => {
+    if (details.open) hydrateGuideImages(details, providerId);
+  };
+  details.addEventListener('toggle', loadImages);
+  loadImages();
+}
+
 function renderGuideProvider(provider) {
   const contentArea = document.getElementById('content-area');
   const capabilityItems = [
@@ -3258,6 +3283,7 @@ function renderGuideProvider(provider) {
       </section>
     </div>
   `;
+  hydrateGuideImages(contentArea, provider.id);
   contentArea.querySelectorAll('[data-open-url]').forEach((button) => {
     button.addEventListener('click', () => {
       window.electronAPI.openExternal(button.dataset.openUrl);
@@ -3412,6 +3438,7 @@ function renderManifestProviderForm(provider) {
       </section>
     </div>
   `;
+  bindCollapsibleGuideImages(contentArea, provider.id);
   initializeManifestProviderHandlers(provider, actions, fields);
 }
 

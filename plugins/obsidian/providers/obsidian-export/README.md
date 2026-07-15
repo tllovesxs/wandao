@@ -48,6 +48,7 @@
 
 - `filesystem:read`：扫描 Vault 目录，读取 Markdown 和资源文件。
 - `filesystem:write`：将归档写入输出目录。
+- `process`：万能导安全模型要求声明此权限以运行 Python 导出脚本。
 
 本插件不访问网络，不保存凭证，仅操作本地文件系统。
 

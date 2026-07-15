@@ -23,6 +23,7 @@
   },
   "permissions": [
     "filesystem:read",
-    "filesystem:write"
+    "filesystem:write",
+    "process"
   ]
 }

@@ -1276,7 +1276,6 @@ function renderTaskResultCard(task = latestFinishedTask()) {
   }
 
   const status = taskDisplayStatus(task);
-  const taskResultExpanded = status !== 'completed';
   const paths = taskArtifactPaths(task);
   const failurePreview = taskFailurePreview(task);
   const wpsFailureLines = task.providerId === 'wps-export' ? taskFailurePreview(task, 100) : [];
@@ -1295,22 +1294,14 @@ function renderTaskResultCard(task = latestFinishedTask()) {
   card.className = `task-result-card ${escapeHtml(status)}`;
   card.hidden = false;
   card.innerHTML = `
-    <details class="task-result-disclosure"${taskResultExpanded ? ' open' : ''}>
-      <summary class="task-result-header">
+    <div class="task-result-header">
       <div>
         <p class="task-result-kicker">最新任务结果</p>
         <h3 id="task-result-title">${escapeHtml(task.title || task.providerTitle || '未命名任务')}</h3>
       </div>
-      <div class="task-result-header-meta">
-        <span class="task-status ${escapeHtml(status)}">${escapeHtml(taskHistoryStatusText(task))}</span>
-        <span class="task-result-toggle" aria-hidden="true">
-          <span class="task-result-toggle-collapsed">展开详情</span>
-          <span class="task-result-toggle-expanded">收起详情</span>
-        </span>
-      </div>
-    </summary>
-    <div class="task-result-details">
-      <p class="task-result-summary">${escapeHtml(taskSummary(task))}</p>
+      <span class="task-status ${escapeHtml(status)}">${escapeHtml(taskHistoryStatusText(task))}</span>
+    </div>
+    <p class="task-result-summary">${escapeHtml(taskSummary(task))}</p>
     ${documentNotice}
     ${resourceNotice}
     ${failurePreview.length ? (task.providerId === 'wps-export' ? `
@@ -1333,9 +1324,7 @@ function renderTaskResultCard(task = latestFinishedTask()) {
       ${failureCount ? '<button class="btn-text" type="button" data-task-result-action="copy-failures" aria-describedby="task-result-failures-title">复制失败项</button>' : ''}
       <button class="btn-text" type="button" data-task-result-action="copy">复制报告</button>
       <button class="btn-text" type="button" data-task-result-action="task-center">查看任务中心</button>
-      </div>
     </div>
-    </details>
   `;
 }
 
@@ -3438,9 +3427,6 @@ function renderManifestProviderForm(provider) {
   const actions = Array.isArray(provider.actions) && provider.actions.length
     ? provider.actions
     : [{ id: 'run', label: provider.isImport ? '开始导入' : '开始导出', script: provider.script }];
-  const loginDoneButton = actions.some((action) => action.kind === 'login')
-    ? `<button class="btn-secondary" id="${provider.id}-login-done" type="button" hidden disabled>我已完成登录，保存凭证</button>`
-    : '';
   const guideHtml = provider.guideMarkdown ? `
     <details class="advanced-section plugin-guide-section">
       <summary>平台说明 / 操作教程</summary>
@@ -3473,9 +3459,8 @@ function renderManifestProviderForm(provider) {
           <button class="${action.danger ? 'btn-danger' : (action.secondary ? 'btn-secondary' : 'btn-primary')}" data-manifest-action="${escapeHtml(action.id || action.label)}" type="button">
             ${escapeHtml(action.label || action.id || '执行')}
           </button>
-          ${provider.id === 'wps-export' && action.kind === 'login' ? loginDoneButton : ''}
         `).join('')}
-        ${provider.id !== 'wps-export' ? loginDoneButton : ''}
+        ${actions.some((action) => action.kind === 'login') ? `<button class="btn-secondary" id="${provider.id}-login-done" type="button" hidden disabled>我已完成登录，保存凭证</button>` : ''}
         <button class="btn-danger" id="${provider.id}-stop" disabled>停止</button>
       </section>
     </div>

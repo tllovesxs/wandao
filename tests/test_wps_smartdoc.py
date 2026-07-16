@@ -45,9 +45,7 @@ class WPSDocumentTests(unittest.TestCase):
         self.assertEqual([node["file_id"] for node in nodes], ["101", "102"])
         self.assertEqual(nodes[0]["title"], "智能文档 A")
         self.assertEqual(nodes[0]["group_id"], "7")
-        self.assertEqual(nodes[0]["document_kind"], "o")
         self.assertEqual(nodes[1]["title"], "普通文档")
-        self.assertEqual(nodes[1]["document_kind"], "d")
         self.assertEqual([node["type"] for node in nodes], ["file", "file"])
         self.assertEqual(source.get_root()["title"], "WPS 文档")
         self.assertEqual(transport.calls[0][0], "GET")
@@ -205,64 +203,6 @@ class WPSDocumentTests(unittest.TestCase):
         args = export_wps.build_parser().parse_args(["--progress-every", "1"])
 
         self.assertEqual(args.progress_every, 1)
-
-    def test_identified_smart_document_exports_markdown_without_requesting_original_download(self):
-        encoded = base64.b64encode(json.dumps({
-            "blocks": [{
-                "id": "doc",
-                "type": "doc",
-                "content": [{"type": "paragraph", "content": [{"type": "text", "content": "Smart body"}]}],
-            }],
-        }).encode("utf-8")).decode("ascii")
-        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
-        source.open_download.return_value = "https://download.wpscdn.cn/file/101"
-        source.query_content.return_value = {"detail": {"result": encoded}}
-        root = export_wps.WPSNode(
-            id=export_wps.WPS_DOCUMENT_ROOT_ID, file_id="", title="WPS Documents", parent_id=None, type="folder"
-        )
-        node = export_wps.WPSNode(
-            id="101",
-            file_id="101",
-            title="Smart document.otl",
-            parent_id=export_wps.WPS_DOCUMENT_ROOT_ID,
-            type="file",
-            group_id="7",
-            document_kind="o",
-        )
-
-        with tempfile.TemporaryDirectory() as directory:
-            task = export_wps.WPSExportTask(source, Path(directory))
-            report = task.export([root, node], ["101"])
-            exported = Path(directory) / "WPS Documents" / "Smart document.md"
-
-            self.assertEqual(report["successCount"], 1)
-            self.assertEqual(report["failureCount"], 0)
-            self.assertEqual(exported.read_text(encoding="utf-8"), "Smart body\n")
-            source.open_download.assert_not_called()
-            source.query_content.assert_called_once_with("101")
-
-    def test_regular_document_keeps_original_filename_and_download_path(self):
-        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
-        source.open_download.return_value = "https://download.wpscdn.cn/file/102"
-        node = export_wps.WPSNode(
-            id="102",
-            file_id="102",
-            title="Regular document.docx",
-            parent_id=None,
-            type="file",
-            document_kind="d",
-        )
-
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(export_wps, "download_original_file") as download:
-            task = export_wps.WPSExportTask(source, Path(directory))
-            report = task.export([node], ["102"])
-            expected = Path(directory) / "Regular document.docx"
-
-        self.assertEqual(report["successCount"], 1)
-        self.assertEqual(report["failureCount"], 0)
-        source.open_download.assert_called_once_with("102", None)
-        source.query_content.assert_not_called()
-        download.assert_called_once_with("https://download.wpscdn.cn/file/102", expected)
 
     def test_smart_document_falls_back_to_markdown_when_original_download_is_unavailable(self):
         encoded = base64.b64encode(json.dumps({

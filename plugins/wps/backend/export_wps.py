@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""WPS Smart Document Markdown and cloud original-file exporter.
+"""WPS document original-file exporter.
 
-The provider converts WPS Smart Documents to Markdown, downloads ordinary cloud files in their original formats, and excludes device/local documents. It deliberately keeps
+The provider reads downloadable WPS cloud documents, including Smart Documents, while excluding device/local documents. It deliberately keeps
 the desktop contract small: login, scan, export, and clear-auth. Browser cookies
 stay in an isolated profile and every command writes exactly one JSON result to
 stdout; human-readable prompts/errors use stderr.
@@ -84,15 +84,6 @@ class WPSNode:
     group_id: str | None = None
     size: int | None = None
     mtime: int | float | str | None = None
-    document_kind: str | None = None
-
-    @property
-    def is_smart_document(self) -> bool:
-        kind = str(self.document_kind or "").strip().casefold()
-        return (
-            kind in {"o", "otl", "smart", "smartdoc", "smart_document", "smart-document"}
-            or Path(self.title).suffix.casefold() == ".otl"
-        )
 
 
 class WPSJSONTransport(Protocol):
@@ -944,14 +935,6 @@ def _is_exportable_document(item: Mapping[str, Any]) -> bool:
     return True
 
 
-def _document_kind(item: Mapping[str, Any]) -> str | None:
-    for key in ("filetype", "file_type", "sub_type", "subType", "document_type", "documentType"):
-        value = item.get(key)
-        if value is not None and str(value).strip():
-            return str(value).strip().casefold()
-    return None
-
-
 def _normalize_document_item(item: Mapping[str, Any], parent_id: str | None) -> dict[str, Any]:
     identifier = _text(item, "fileid", "file_id", "id")
     title = _title(item, "未命名文档", identifier)
@@ -969,7 +952,6 @@ def _normalize_document_item(item: Mapping[str, Any], parent_id: str | None) -> 
         "group_id": str(item.get("groupid") or item.get("group_id") or "") or None,
         "size": size,
         "mtime": item.get("mtime", item.get("modify_time", item.get("modified_time"))),
-        "document_kind": _document_kind(item),
     }
 
 
@@ -992,7 +974,6 @@ def _normalize_api_item(item: Mapping[str, Any], parent_id: str | None) -> dict[
         "group_id": str(item.get("groupid") or item.get("group_id") or "") or None,
         "size": size,
         "mtime": item.get("mtime", item.get("modified_time")),
-        "document_kind": _document_kind(item),
     }
 
 
@@ -1114,32 +1095,28 @@ class WPSExportTask:
                         chain.append(parent.title)
                     current = parent.parent_id
                 parents.extend(reversed(chain))
-                markdown_name = f"{Path(node.title).stem or node.title}.md"
-                target_name = markdown_name if node.is_smart_document else node.title
-                target = safe_target(self.output, [*parents, target_name], used)
+                target = safe_target(self.output, [*parents, node.title], used)
                 try:
-                    if target.exists():
-                        skipped += 1
-                        if self.checkpoint:
-                            self.checkpoint.complete_item(node.file_id, str(target))
-                        continue
-                    if node.is_smart_document:
+                    try:
+                        url = self.source.open_download(node.file_id, node.group_id)
+                    except WPSApiError as exc:
+                        if not _can_fallback_to_smart_content(exc):
+                            raise
+                        markdown_name = f"{Path(node.title).stem or node.title}.md"
+                        target = safe_target(self.output, [*parents, markdown_name], used)
+                        if target.exists():
+                            skipped += 1
+                            if self.checkpoint:
+                                self.checkpoint.complete_item(node.file_id, str(target))
+                            continue
                         write_smart_document(self.source.query_content(node.file_id), target)
                     else:
-                        try:
-                            url = self.source.open_download(node.file_id, node.group_id)
-                        except WPSApiError as exc:
-                            if not _can_fallback_to_smart_content(exc):
-                                raise
-                            target = safe_target(self.output, [*parents, markdown_name], used)
-                            if target.exists():
-                                skipped += 1
-                                if self.checkpoint:
-                                    self.checkpoint.complete_item(node.file_id, str(target))
-                                continue
-                            write_smart_document(self.source.query_content(node.file_id), target)
-                        else:
-                            download_original_file(url, target)
+                        if target.exists():
+                            skipped += 1
+                            if self.checkpoint:
+                                self.checkpoint.complete_item(node.file_id, str(target))
+                            continue
+                        download_original_file(url, target)
                     success += 1
                     if self.checkpoint:
                         self.checkpoint.complete_item(node.file_id, str(target))
@@ -1210,7 +1187,7 @@ def export_wps(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Export WPS Smart Documents as Markdown and other cloud files in their original formats.")
+    parser = argparse.ArgumentParser(description="Export original files from WPS Smart Documents.")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--login", action="store_true")
     modes.add_argument("--scan-toc", action="store_true")

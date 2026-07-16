@@ -101,7 +101,8 @@ const fixtures = {
       { id: 'doc', title: 'Doc', parentId: 'folder', selectable: true }
     ] },
     rootId: 'xiliu:folder', docId: 'xiliu:doc', parentId: 'xiliu:folder', exportId: 'doc',
-    args: ['--doc-id', 'doc'],
+    args: ['--doc-id', 'doc']
+  },
   'wps-export': {
     payload: { nodes: [
       { id: 'smart-documents', file_id: '', title: 'WPS Documents', parent_id: '', type: 'folder' },

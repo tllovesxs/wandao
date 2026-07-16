@@ -27,7 +27,7 @@ class WPSDocumentTests(unittest.TestCase):
             "status": 200,
             "payload": {
                 "files": [
-                    {"fileid": "101", "fname": "智能文档 A", "filetype": "o", "modify_time": 123},
+                    {"fileid": "101", "groupid": "7", "fname": "智能文档 A", "filetype": "o", "modify_time": 123},
                     {"fileid": "102", "fname": "普通文档", "filetype": "d"},
                     {"fileid": "103", "fname": "设备文档", "filetype": "d", "location": "device"},
                     {"fileid": "104", "fname": "文件夹", "type": "folder"},
@@ -44,6 +44,7 @@ class WPSDocumentTests(unittest.TestCase):
         self.assertIsNone(cursor)
         self.assertEqual([node["file_id"] for node in nodes], ["101", "102"])
         self.assertEqual(nodes[0]["title"], "智能文档 A")
+        self.assertEqual(nodes[0]["group_id"], "7")
         self.assertEqual(nodes[1]["title"], "普通文档")
         self.assertEqual([node["type"] for node in nodes], ["file", "file"])
         self.assertEqual(source.get_root()["title"], "WPS 文档")
@@ -69,6 +70,13 @@ class WPSDocumentTests(unittest.TestCase):
 
         self.assertIsNone(cursor)
         self.assertEqual([node["file_id"] for node in nodes], ["201"])
+
+    def test_search_forbidden_is_reported_as_an_expired_session(self):
+        transport = FakeTransport([{"status": 403, "payload": {"result": "loginRequired"}}])
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        with self.assertRaises(export_wps.WPSAuthExpiredError):
+            source.list_children(export_wps.WPS_DOCUMENT_ROOT_ID)
 
     def test_search_paginates_using_total_when_next_offset_is_absent(self):
         transport = FakeTransport([{
@@ -100,6 +108,80 @@ class WPSDocumentTests(unittest.TestCase):
         self.assertEqual(url, "https://download.wpscdn.cn/file/101?signature=secret")
         self.assertIn("/api/v3/office/file/101/download", transport.calls[0][1])
         self.assertNotIn("groups/special", transport.calls[0][1])
+
+    def test_unsupported_office_download_uses_group_original_file_endpoint(self):
+        transport = FakeTransport([
+            {"status": 403, "payload": {"result": "unSupport", "errno": 10000}},
+            {"status": 200, "payload": {"fileinfo": {"url": "https://download.wpscdn.cn/file/101?signature=secret"}}},
+        ])
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        url = source.open_download("101", "7")
+
+        self.assertEqual(url, "https://download.wpscdn.cn/file/101?signature=secret")
+        self.assertIn("/api/v3/office/file/101/download", transport.calls[0][1])
+        self.assertIn("drive.wps.cn/api/v3/groups/7/files/101/download", transport.calls[1][1])
+
+    def test_smart_document_group_rejection_still_allows_markdown_fallback(self):
+        transport = FakeTransport([
+            {"status": 403, "payload": {"result": "unSupport", "errno": 10000}},
+            {"status": 403, "payload": {"result": "notAllowType"}},
+        ])
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        with self.assertRaises(export_wps.WPSDownloadUnavailableError) as caught:
+            source.open_download("101", "7")
+
+        self.assertTrue(caught.exception.allow_content_query)
+        self.assertNotIsInstance(caught.exception, export_wps.WPSAuthExpiredError)
+
+    def test_online_only_sheet_is_reported_as_unsupported_not_session_expired(self):
+        transport = FakeTransport([
+            {"status": 403, "payload": {"result": "unSupport", "errno": 10000}},
+            {"status": 403, "payload": {"result": "ErrForbidDownloadLinkFile"}},
+        ])
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        with self.assertRaises(export_wps.WPSDownloadUnavailableError) as caught:
+            source.open_download("101", "7")
+
+        self.assertFalse(caught.exception.allow_content_query)
+        self.assertIn("智能表格", str(caught.exception))
+        self.assertNotIsInstance(caught.exception, export_wps.WPSAuthExpiredError)
+
+    def test_real_unauthorized_download_stays_an_authentication_error(self):
+        transport = FakeTransport([{"status": 401, "payload": {}}])
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        with self.assertRaises(export_wps.WPSAuthExpiredError):
+            source.open_download("101", "7")
+
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_unknown_forbidden_download_rechecks_session_before_reporting_expiry(self):
+        transport = FakeTransport([
+            {"status": 403, "payload": {"result": "forbidden"}},
+            {"status": 403, "payload": {"result": "loginRequired"}},
+        ])
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        with self.assertRaises(export_wps.WPSAuthExpiredError):
+            source.open_download("101", "7")
+
+        self.assertIn("/3rd/drive/api/v6/search/files", transport.calls[1][1])
+
+    def test_unknown_forbidden_download_with_valid_session_is_not_auth_expiry(self):
+        transport = FakeTransport([
+            {"status": 403, "payload": {"result": "forbidden"}},
+            {"status": 200, "payload": {"files": []}},
+        ])
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        with self.assertRaises(export_wps.WPSDownloadUnavailableError) as caught:
+            source.open_download("101", "7")
+
+        self.assertNotIsInstance(caught.exception, export_wps.WPSAuthExpiredError)
+        self.assertIn("下载权限", str(caught.exception))
 
     def test_smart_document_content_query_is_read_only(self):
         transport = FakeTransport([{
@@ -142,14 +224,14 @@ class WPSDocumentTests(unittest.TestCase):
         }).encode("utf-8")).decode("ascii")
         source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
         source.open_download.side_effect = export_wps.WPSDownloadUnavailableError(
-            "Original download unavailable", status=404
+            "Original download unavailable", status=404, allow_content_query=True
         )
         source.query_content.return_value = {"detail": {"result": encoded}}
         root = export_wps.WPSNode(
             id=export_wps.WPS_DOCUMENT_ROOT_ID, file_id="", title="WPS Documents", parent_id=None, type="folder"
         )
         node = export_wps.WPSNode(
-            id="101", file_id="101", title="Smart document", parent_id=export_wps.WPS_DOCUMENT_ROOT_ID, type="file"
+            id="101", file_id="101", title="Smart document", parent_id=export_wps.WPS_DOCUMENT_ROOT_ID, type="file", group_id="7"
         )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -164,6 +246,7 @@ class WPSDocumentTests(unittest.TestCase):
                 exported.read_text(encoding="utf-8"),
                 "# Internal title\n\n## Section\n\nBody**bold**\n\n- Item\n",
             )
+            source.open_download.assert_called_once_with("101", "7")
             source.query_content.assert_called_once_with("101")
 
     def test_auth_failure_does_not_fall_back_to_content_query(self):

@@ -52,9 +52,11 @@ WPS_DOCUMENT_URL = "https://365.kdocs.cn"
 WPS_HOME_URL = WPS_DOCUMENT_URL
 WPS_DEBUG_PORT = 9237
 API_HOST = "365.kdocs.cn"
+DRIVE_API_HOST = "drive.wps.cn"
 WPS_DOCUMENT_ROOT_ID = "smart-documents"
 WPS_DOCUMENT_SEARCH_PATH = "/3rd/drive/api/v6/search/files"
 WPS_DOCUMENT_DOWNLOAD_PATH = "/api/v3/office/file/{file_id}/download"
+WPS_GROUP_DOWNLOAD_PATH = "/api/v3/groups/{group_id}/files/{file_id}/download"
 WPS_DOCUMENT_EXECUTE_PATH = "/api/v3/office/file/{file_id}/core/execute"
 AUTH_SESSION_COOKIE_NAMES = frozenset({"wps_sid", "kso_sid"})
 AUTH_REQUEST_COOKIE_NAMES = frozenset({"csrf"})
@@ -62,7 +64,7 @@ AUTH_COOKIE_NAMES = AUTH_SESSION_COOKIE_NAMES | AUTH_REQUEST_COOKIE_NAMES
 AUTH_COOKIE_FIELDS = frozenset({
     "name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "expires"
 })
-API_HOSTS = frozenset({"365.kdocs.cn", "drive.kdocs.cn", "www.kdocs.cn", "docs.wps.cn", "account.kdocs.cn", "account.wps.cn"})
+API_HOSTS = frozenset({"365.kdocs.cn", "drive.kdocs.cn", "drive.wps.cn", "www.kdocs.cn", "docs.wps.cn", "account.kdocs.cn", "account.wps.cn"})
 DOWNLOAD_SUFFIXES = ("kdocs.cn", "wps.cn", "wpscdn.cn")
 FORBIDDEN_PATH_CHARS = '<>:"/\\|?*'
 WINDOWS_RESERVED_NAMES = {
@@ -79,6 +81,7 @@ class WPSNode:
     title: str
     parent_id: str | None
     type: str
+    group_id: str | None = None
     size: int | None = None
     mtime: int | float | str | None = None
 
@@ -94,10 +97,18 @@ class WPSJSONTransport(Protocol):
 
 
 class WPSApiError(ExportError):
-    def __init__(self, message: str, *, status: int = 0, retry_after: float | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int = 0,
+        retry_after: float | None = None,
+        result_code: str = "",
+    ) -> None:
         super().__init__(safe_error_text(message))
         self.status = int(status)
         self.retry_after = retry_after
+        self.result_code = safe_error_text(result_code)[:100]
 
 
 class WPSAuthExpiredError(WPSApiError):
@@ -109,7 +120,9 @@ class WPSRateLimitError(WPSApiError):
 
 
 class WPSDownloadUnavailableError(WPSApiError):
-    pass
+    def __init__(self, message: str, *, allow_content_query: bool = False, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.allow_content_query = bool(allow_content_query)
 
 
 def safe_error_text(value: Any) -> str:
@@ -423,10 +436,10 @@ class WPSDocumentDataSource:
         self.request_delay = max(0.0, float(request_delay))
         self.sleep = sleep
 
-    def _url(self, path: str) -> str:
+    def _url(self, path: str, *, host: str = API_HOST) -> str:
         if not path.startswith("/") or "?" in path or "#" in path:
             raise ValueError("WPS API path must be explicit and query-free")
-        return validate_api_url(f"https://{API_HOST}{path}")
+        return validate_api_url(f"https://{host}{path}")
 
     def _request(
         self,
@@ -449,14 +462,45 @@ class WPSDocumentDataSource:
         if status == 0:
             raise WPSApiError("WPS API 网络请求失败", status=0)
         retry = _retry_after(headers.get("Retry-After"))
-        if status in (401, 403):
-            raise WPSAuthExpiredError("WPS 登录会话已过期", status=status)
+        raw_payload = raw.get("payload", raw.get("data", {}))
+        payload = raw_payload if isinstance(raw_payload, Mapping) else {"data": raw_payload}
+        result_code = _response_error_code(payload)
+        if status == 401:
+            raise WPSAuthExpiredError("WPS 登录会话已过期", status=status, result_code=result_code)
+        if status == 403:
+            raise WPSApiError("WPS API 拒绝了当前请求", status=status, result_code=result_code)
         if status == 429:
-            raise WPSRateLimitError("WPS 请求频率受限", status=status, retry_after=retry)
+            raise WPSRateLimitError("WPS 请求频率受限", status=status, retry_after=retry, result_code=result_code)
         if status < 200 or status >= 300:
-            raise WPSApiError(f"WPS API 请求失败 HTTP {status}", status=status, retry_after=retry)
-        payload = raw.get("payload", raw.get("data", {}))
-        return payload if isinstance(payload, Mapping) else {"data": payload}
+            raise WPSApiError(
+                f"WPS API 请求失败 HTTP {status}",
+                status=status,
+                retry_after=retry,
+                result_code=result_code,
+            )
+        return payload
+
+    def _raise_forbidden_download(self, exc: WPSApiError) -> None:
+        """Distinguish an expired session from a file-specific 403 response."""
+        try:
+            self._request(
+                "GET",
+                self._url(WPS_DOCUMENT_SEARCH_PATH),
+                {"offset": 0, "count": 1, "searchname": ""},
+            )
+        except WPSAuthExpiredError:
+            raise
+        except WPSApiError as verify_exc:
+            if verify_exc.status in {401, 403}:
+                raise WPSAuthExpiredError("WPS 登录会话已过期", status=verify_exc.status) from verify_exc
+            raise WPSDownloadUnavailableError(
+                "WPS 暂时无法确认当前文件的下载权限，请稍后重试",
+                status=exc.status,
+            ) from exc
+        raise WPSDownloadUnavailableError(
+            "WPS 当前文件没有下载权限或暂不支持原始文件导出",
+            status=exc.status,
+        ) from exc
 
     def get_root(self) -> dict[str, Any]:
         return {
@@ -479,7 +523,12 @@ class WPSDocumentDataSource:
             "order": "desc",
             "searchname": "",
         }
-        payload = self._request("GET", self._url(WPS_DOCUMENT_SEARCH_PATH), params)
+        try:
+            payload = self._request("GET", self._url(WPS_DOCUMENT_SEARCH_PATH), params)
+        except WPSApiError as exc:
+            if exc.status == 403:
+                raise WPSAuthExpiredError("WPS 登录会话已过期", status=exc.status) from exc
+            raise
         raw_items = _items(payload)
         items: list[dict[str, Any]] = []
         for item in raw_items:
@@ -504,7 +553,7 @@ class WPSDocumentDataSource:
             return items, None
         return items, _encode_cursor({"offset": next_offset})
 
-    def open_download(self, file_id: str) -> str:
+    def open_download(self, file_id: str, group_id: str | None = None) -> str:
         safe_id = urllib.parse.quote(str(file_id), safe="")
         try:
             payload = _unwrap(self._request(
@@ -512,16 +561,68 @@ class WPSDocumentDataSource:
                 self._url(WPS_DOCUMENT_DOWNLOAD_PATH.format(file_id=safe_id)),
                 {"isblocks": "false"},
             ))
+        except WPSAuthExpiredError:
+            raise
         except WPSApiError as exc:
+            code = exc.result_code.casefold()
+            if exc.status == 403 and code == "unsupport":
+                if not group_id:
+                    raise WPSDownloadUnavailableError(
+                        "WPS 智慧文档没有可下载的原始文件，将尝试导出为 Markdown",
+                        status=exc.status,
+                        allow_content_query=True,
+                    ) from exc
+                return self._open_group_download(safe_id, group_id)
+            if exc.status == 403 and code == "fileuploadnotcomplete":
+                raise WPSDownloadUnavailableError(
+                    "WPS 文件尚未上传完成，暂时无法导出",
+                    status=exc.status,
+                ) from exc
+            if exc.status == 403:
+                self._raise_forbidden_download(exc)
             if type(exc) is WPSApiError and exc.status in {400, 404, 405, 422}:
                 raise WPSDownloadUnavailableError(
-                    "WPS 文档没有可下载的原始文件", status=exc.status
+                    "WPS 文档没有可下载的原始文件，将尝试导出为 Markdown",
+                    status=exc.status,
+                    allow_content_query=True,
                 ) from exc
             raise
-        url = payload.get("url") or payload.get("download_url") or payload.get("downloadUrl")
-        if not isinstance(url, str) or not url.strip():
-            raise WPSDownloadUnavailableError("WPS 文档没有可下载的原始文件")
-        return validate_download_url(url)
+        return _download_url_from_payload(payload)
+
+    def _open_group_download(self, safe_file_id: str, group_id: str) -> str:
+        safe_group_id = urllib.parse.quote(str(group_id), safe="")
+        try:
+            payload = _unwrap(self._request(
+                "GET",
+                self._url(
+                    WPS_GROUP_DOWNLOAD_PATH.format(group_id=safe_group_id, file_id=safe_file_id),
+                    host=DRIVE_API_HOST,
+                ),
+            ))
+        except WPSAuthExpiredError:
+            raise
+        except WPSApiError as exc:
+            code = exc.result_code.casefold()
+            if exc.status == 403 and code == "notallowtype":
+                raise WPSDownloadUnavailableError(
+                    "WPS 智慧文档没有可下载的原始文件，将尝试导出为 Markdown",
+                    status=exc.status,
+                    allow_content_query=True,
+                ) from exc
+            if exc.status == 403 and code == "errforbiddownloadlinkfile":
+                raise WPSDownloadUnavailableError(
+                    "WPS 在线智能表格暂不支持原始文件导出",
+                    status=exc.status,
+                ) from exc
+            if exc.status == 403 and code in {"errnotsupportckt", "fileuploadnotcomplete"}:
+                raise WPSDownloadUnavailableError(
+                    "WPS 文件上传未完成或当前类型不支持原始文件导出",
+                    status=exc.status,
+                ) from exc
+            if exc.status == 403:
+                self._raise_forbidden_download(exc)
+            raise
+        return _download_url_from_payload(payload)
 
     def query_content(self, file_id: str) -> Mapping[str, Any]:
         safe_id = urllib.parse.quote(str(file_id), safe="")
@@ -703,7 +804,35 @@ def write_smart_document(payload: Mapping[str, Any], target: Path) -> Path:
 
 
 def _can_fallback_to_smart_content(exc: WPSApiError) -> bool:
-    return isinstance(exc, WPSDownloadUnavailableError)
+    return isinstance(exc, WPSDownloadUnavailableError) and exc.allow_content_query
+
+
+def _response_error_code(payload: Mapping[str, Any]) -> str:
+    current: Any = payload
+    for _ in range(3):
+        if not isinstance(current, Mapping):
+            break
+        for key in ("result", "code", "error", "errno"):
+            value = current.get(key)
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                return safe_error_text(value)[:100]
+        current = current.get("data")
+    return ""
+
+
+def _download_url_from_payload(payload: Mapping[str, Any]) -> str:
+    fileinfo = payload.get("fileinfo") if isinstance(payload.get("fileinfo"), Mapping) else {}
+    url = (
+        payload.get("url")
+        or payload.get("download_url")
+        or payload.get("downloadUrl")
+        or fileinfo.get("url")
+        or fileinfo.get("static_url")
+        or fileinfo.get("download_url")
+    )
+    if not isinstance(url, str) or not url.strip():
+        raise WPSDownloadUnavailableError("WPS 文档没有可下载的原始文件")
+    return validate_download_url(url)
 
 
 def _retry_after(value: Any) -> float | None:
@@ -810,6 +939,7 @@ def _normalize_document_item(item: Mapping[str, Any], parent_id: str | None) -> 
         "title": title,
         "parent_id": str(parent_id) if parent_id not in (None, "") else None,
         "type": "file",
+        "group_id": str(item.get("groupid") or item.get("group_id") or "") or None,
         "size": size,
         "mtime": item.get("mtime", item.get("modify_time", item.get("modified_time"))),
     }
@@ -831,6 +961,7 @@ def _normalize_api_item(item: Mapping[str, Any], parent_id: str | None) -> dict[
         "title": _title(item, "未命名文件", str(identifier)),
         "parent_id": str(parent) if parent not in (None, "") else None,
         "type": "folder" if folder else "file",
+        "group_id": str(item.get("groupid") or item.get("group_id") or "") or None,
         "size": size,
         "mtime": item.get("mtime", item.get("modified_time")),
     }
@@ -957,7 +1088,7 @@ class WPSExportTask:
                 target = safe_target(self.output, [*parents, node.title], used)
                 try:
                     try:
-                        url = self.source.open_download(node.file_id)
+                        url = self.source.open_download(node.file_id, node.group_id)
                     except WPSApiError as exc:
                         if not _can_fallback_to_smart_content(exc):
                             raise
@@ -1017,7 +1148,12 @@ def scan_wps(args: argparse.Namespace) -> dict[str, Any]:
     try:
         load_auth_state(cdp, getattr(args, "auth_file", None))
         source = WPSDocumentDataSource(transport=CDPJSONTransport(cdp), request_delay=args.request_delay, sleep=time.sleep)
-        return {"nodes": [asdict(node) for node in scan_tree(source, source.get_root())]}
+        nodes = []
+        for node in scan_tree(source, source.get_root()):
+            public_node = asdict(node)
+            public_node.pop("group_id", None)
+            nodes.append(public_node)
+        return {"nodes": nodes}
     finally:
         close_owned_browser(cdp, process)
 

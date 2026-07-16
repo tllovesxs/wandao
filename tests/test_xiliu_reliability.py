@@ -200,6 +200,57 @@ class XiliuImportCheckpointBehaviorTests(unittest.TestCase):
 
 
 class XiliuExportReliabilityTests(unittest.TestCase):
+    def test_title_only_pages_do_not_create_markdown_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "out"
+            nodes = [
+                export_xiliu.FlowUsNode("root", "Root", True),
+                export_xiliu.FlowUsNode("empty", "Empty", False, parent_id="root"),
+            ]
+            documents = {
+                "root": {
+                    "code": 200,
+                    "data": {"blocks": {
+                        "root": {
+                            "type": 0,
+                            "title": "Root",
+                            "data": {"segments": [{"type": 0, "text": "Root", "enhancer": {}}]},
+                            "subNodes": ["empty"],
+                        },
+                        "empty": {
+                            "type": 0,
+                            "title": "Empty",
+                            "data": {"segments": [{"type": 0, "text": "Empty", "enhancer": {}}]},
+                            "subNodes": [],
+                        },
+                    }},
+                },
+                "empty": {
+                    "code": 200,
+                    "data": {"blocks": {
+                        "empty": {
+                            "type": 0,
+                            "title": "Empty",
+                            "data": {"segments": [{"type": 0, "text": "Empty", "enhancer": {}}]},
+                            "subNodes": [],
+                        }
+                    }},
+                },
+            }
+            args = export_xiliu.parse_args([
+                "--doc-url", "https://flowus.cn/root", "--output", str(output)
+            ])
+            with (
+                patch.object(export_xiliu, "FlowUsClient", lambda *_: FakeClient(documents)),
+                patch.object(export_xiliu, "build_toc_tree", lambda *_args, **_kwargs: nodes),
+            ):
+                result = export_xiliu.export_flowus(args)
+
+            self.assertEqual(result["exported"], 0)
+            self.assertTrue((output / "Root").is_dir())
+            self.assertFalse((output / "Root" / "Root.md").exists())
+            self.assertFalse((output / "Root" / "Empty.md").exists())
+
     def test_deep_selection_keeps_ancestors_and_collision_paths_are_stable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp)
@@ -295,7 +346,7 @@ class XiliuExportReliabilityTests(unittest.TestCase):
                 patch.object(
                     export_xiliu,
                     "convert_flowus_blocks_to_markdown",
-                    lambda *_args: ("# Doc", 0, []),
+                    lambda *_args: ("# Doc\n\ncontent", 0, []),
                 ),
             ):
                 resumed = export_xiliu.export_flowus(resumed_args)
@@ -323,9 +374,14 @@ class XiliuExportReliabilityTests(unittest.TestCase):
                     "child": {
                         "type": 0,
                         "title": "Child",
-                        "subNodes": [],
+                        "subNodes": ["text"],
                         "data": {"segments": [{"type": 0, "text": "Child", "enhancer": {}}]},
-                    }
+                    },
+                    "text": {
+                        "type": 1,
+                        "data": {"segments": [{"type": 0, "text": "content", "enhancer": {}}]},
+                        "subNodes": [],
+                    },
                 }},
             }
             documents = {"root": root_response, "child": export_xiliu.FlowUsError("offline")}
@@ -363,8 +419,8 @@ class XiliuExportReliabilityTests(unittest.TestCase):
             def convert(*_args):
                 calls["count"] += 1
                 if calls["count"] == 1:
-                    return "# Doc", 1, [{"url": "oss/image.png", "error": "controlled image failure"}]
-                return "# Doc", 1, []
+                    return "# Doc\n\n![image](图片下载失败)", 1, [{"url": "oss/image.png", "error": "controlled image failure"}]
+                return "# Doc\n\n![image](images/image.png)", 1, []
 
             def run(extra: list[str]):
                 args = export_xiliu.parse_args([

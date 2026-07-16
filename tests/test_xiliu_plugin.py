@@ -238,7 +238,10 @@ class PartialMatchSelectionTests(unittest.TestCase):
             module.FlowUsNode(id="doc-b", title="Doc B", is_dir=False),
         ]
         # Mock to succeed on doc-a: need get_doc to return valid blocks
-        mock_doc = {"code": 200, "data": {"blocks": {"doc-a": {"type": 0, "title": "Doc A", "data": {"segments": [{"type": 0, "text": "Doc A", "enhancer": {}}]}, "subNodes": []}}}}
+        mock_doc = {"code": 200, "data": {"blocks": {
+            "doc-a": {"type": 0, "title": "Doc A", "data": {"segments": [{"type": 0, "text": "Doc A", "enhancer": {}}]}, "subNodes": ["text"]},
+            "text": {"type": 1, "data": {"segments": [{"type": 0, "text": "content", "enhancer": {}}]}, "subNodes": []},
+        }}}
         with patch.object(module, "build_toc_tree", return_value=mock_nodes), \
              patch.object(module, "read_auth_payload", return_value={"token": "fake", "cookies": []}), \
              patch.object(module, "FlowUsClient") as MockClient:

@@ -808,6 +808,14 @@ def convert_flowus_blocks_to_markdown(
     return "\n".join(lines).strip(), image_count, image_failures
 
 
+def _has_markdown_body(markdown: str, page_title: str) -> bool:
+    """Return whether converted Markdown contains content beyond the generated page title."""
+    lines = markdown.strip().splitlines()
+    if lines and lines[0].strip() == f"# {page_title}".strip():
+        lines = lines[1:]
+    return bool("\n".join(lines).strip())
+
+
 def export_single_doc(
     client: FlowUsClient,
     node: FlowUsNode,
@@ -822,15 +830,15 @@ def export_single_doc(
     doc = client.get_doc(node.id)
 
     # Convert to Markdown
-    markdown = convert_flowus_blocks_to_markdown(doc, node.id)
+    markdown, _, _ = convert_flowus_blocks_to_markdown(doc, node.id)
 
     # If node is a directory (has children), create directory
     if node.is_dir:
         dir_path = output_dir / node.safe_title
         dir_path.mkdir(parents=True, exist_ok=True)
 
-    # If content is empty, just return directory path or skip
-    if not markdown.strip():
+    # A generated page-title heading alone is not document content.
+    if not _has_markdown_body(markdown, node.title):
         if node.is_dir:
             emit(f"页面内容为空，仅创建目录: {node.title}", level="warn")
             return dir_path
@@ -996,7 +1004,7 @@ def _export_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, 
 
             if node.is_dir:
                 md_root.mkdir(parents=True, exist_ok=True)
-            if markdown.strip():
+            if _has_markdown_body(markdown, node.title):
                 if args.incremental and args.update_existing and file_path.exists():
                     try:
                         if file_path.read_text(encoding="utf-8") == markdown:

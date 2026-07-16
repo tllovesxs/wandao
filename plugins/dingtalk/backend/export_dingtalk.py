@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,10 @@ DEFAULT_AUTH_FILE = ".dingtalk_auth.json"
 FORBIDDEN_FILENAME_CHARS = r'<>:"/\\|?*'
 SUPPORTED_DOCUMENT_TYPES = {"alidoc"}
 MAX_RESOURCE_BYTES = 25 * 1024 * 1024
+DOCUMENT_REQUEST_TIMEOUT_SECONDS = 45
+ASSET_REQUEST_TIMEOUT_SECONDS = 15
+ASSET_DOWNLOAD_WORKERS = 6
+ASSET_DIRECT_RETRIES = 3
 
 
 @dataclass(frozen=True)
@@ -140,16 +145,24 @@ def read_limited_response(response: Any, max_bytes: int = MAX_RESOURCE_BYTES) ->
     return raw
 
 
-def download_direct_asset(source: str) -> tuple[bytes, str]:
+def download_direct_asset(source: str, timeout: int = ASSET_REQUEST_TIMEOUT_SECONDS) -> tuple[bytes, str]:
     """Fetch a signed DingTalk/OSS asset when browser fetch is blocked by CORS."""
     current = source
     opener = urllib.request.build_opener(NoRedirect())
     for _ in range(4):
         if not is_trusted_asset_url(current):
             raise ExportError("资源跳转到了不受信任的域名")
-        request = urllib.request.Request(current, headers={"User-Agent": "Wandao-DingTalk-Export/1.0"})
+        request = urllib.request.Request(
+            current,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Referer": "https://alidocs.dingtalk.com/",
+            },
+        )
         try:
-            with opener.open(request, timeout=45) as response:
+            with opener.open(request, timeout=timeout) as response:
                 return read_limited_response(response), str(response.headers.get("Content-Type") or "")
         except urllib.error.HTTPError as exc:
             if exc.code not in {301, 302, 303, 307, 308}:
@@ -159,6 +172,20 @@ def download_direct_asset(source: str) -> tuple[bytes, str]:
                 raise ExportError(f"HTTP {exc.code} 未提供跳转地址") from exc
             current = urllib.parse.urljoin(current, location)
     raise ExportError("资源重定向次数过多")
+
+
+def download_direct_asset_with_retry(source: str) -> tuple[bytes, str]:
+    """Retry only a small number of transient TLS/read failures for signed assets."""
+    last_error: Exception | None = None
+    for attempt in range(ASSET_DIRECT_RETRIES):
+        try:
+            return download_direct_asset(source)
+        except Exception as exc:  # noqa: BLE001 - preserve the final reason in the resource report.
+            last_error = exc
+            if attempt + 1 < ASSET_DIRECT_RETRIES:
+                time.sleep(0.8 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 def js_string(value: Any) -> str:
@@ -253,7 +280,10 @@ def connect_dingtalk_browser(args: argparse.Namespace, initial_url: str = ENTRY_
 # Kept in page memory only. It never serializes accessToken/cookies to Python logs.
 DINGTALK_HELPER_JS = r"""
 (() => {
-  if (window.__wandaoDingTalk && window.__wandaoDingTalk.version === 1) return true;
+  // Bump this protocol whenever the helper behavior changes.  The plugin
+  // browser stays alive between actions, so keeping the old helper version
+  // would silently bypass a newly installed timeout or safety fix.
+  if (window.__wandaoDingTalk && window.__wandaoDingTalk.version === 4) return true;
   const base = location.origin;
   const fetchWithTimeout = async (url, options = {}, timeoutMs = 45000) => {
     const controller = new AbortController();
@@ -265,6 +295,17 @@ DINGTALK_HELPER_JS = r"""
       throw error;
     } finally {
       clearTimeout(timer);
+    }
+  };
+  const readArrayBufferWithTimeout = async (response, timeoutMs = 15000) => {
+    let timer = null;
+    try {
+      return await Promise.race([
+        response.arrayBuffer(),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`图片读取超时（${Math.ceil(timeoutMs / 1000)} 秒）`)), timeoutMs); })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   };
   const requestJson = async (path, options = {}, timeoutMs = 45000) => {
@@ -291,7 +332,7 @@ DINGTALK_HELPER_JS = r"""
     return payload.data || {};
   };
   const api = {
-    version: 1,
+    version: 4,
     profile: async () => {
       const data = await requestJson('/api/users/getUserInfo', { method: 'POST' });
       const user = data.user || {};
@@ -309,9 +350,9 @@ DINGTALK_HELPER_JS = r"""
       body: JSON.stringify({ dentryKey, pageMode: 2, fetchBody: true })
     }, 45000),
     asset: async (url) => {
-      const response = await fetch(url, { credentials: 'include' });
+      const response = await fetchWithTimeout(url, { credentials: 'include' }, 15000);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const buffer = await response.arrayBuffer();
+      const buffer = await readArrayBufferWithTimeout(response, 15000);
       const bytes = new Uint8Array(buffer);
       let binary = '';
       for (let index = 0; index < bytes.length; index += 32768) binary += String.fromCharCode(...bytes.subarray(index, index + 32768));
@@ -613,7 +654,7 @@ def document_payload(cdp: CDPClient, entry: DingEntry, args: argparse.Namespace)
     if not entry.key:
         raise ExportError("钉钉文档缺少 dentryKey，无法读取正文。")
     throttle_request(args)
-    return call_helper(cdp, "content", entry.key, entry.doc_key, timeout=55)
+    return call_helper(cdp, "content", entry.key, entry.doc_key, timeout=DOCUMENT_REQUEST_TIMEOUT_SECONDS + 10)
 
 
 def asset_extension(content_type: str, source: str) -> str:
@@ -627,47 +668,115 @@ def asset_extension(content_type: str, source: str) -> str:
     return suffix if re.fullmatch(r"\.[a-z0-9]{1,8}", suffix) else ".bin"
 
 
-def download_image(cdp: CDPClient, image: ImageRef, assets_dir: Path, index: int, args: argparse.Namespace) -> tuple[str, dict[str, str] | None]:
-    source = image.source
-    if not is_trusted_asset_url(source):
-        return source, {"url": safe_resource_url(source), "error": "图片地址不在受信任的钉钉资源域名中"}
-    check_stopped(args)
-    throttle_request(args)
-    try:
-        payload = call_helper(cdp, "asset", source, timeout=120)
-        raw = base64.b64decode(str(payload.get("base64") or ""), validate=True)
-        if not raw:
-            raise ExportError("图片响应为空")
-        content_type = str(payload.get("contentType") or "")
-    except Exception as browser_exc:  # Browser fetch can be blocked by OSS CORS.
-        try:
-            raw, content_type = download_direct_asset(source)
-        except Exception as direct_exc:  # noqa: BLE001 - resource failures should not discard a document.
-            return source, {
-                "url": safe_resource_url(source),
-                "error": f"浏览器读取失败：{browser_exc}；受限直连下载失败：{direct_exc}",
-            }
+def save_image(
+    raw: bytes,
+    content_type: str,
+    source: str,
+    assets_dir: Path,
+    index: int,
+    asset_prefix: str = "",
+) -> str:
     extension = asset_extension(content_type, source)
-    filename = f"image-{index:03d}{extension}"
+    prefix = f"{safe_path_segment(asset_prefix, 'document', 32)}-" if asset_prefix else ""
+    filename = f"{prefix}image-{index:03d}{extension}"
     assets_dir.mkdir(parents=True, exist_ok=True)
     target = assets_dir / filename
     target.write_bytes(raw)
-    return f"assets/{markdown_path(filename)}", None
+    return f"assets/{markdown_path(filename)}"
 
 
-def rewrite_images(cdp: CDPClient, rendered: RenderResult, markdown: str, md_path: Path, args: argparse.Namespace) -> tuple[str, list[dict[str, str]], int]:
+def download_image_in_browser(cdp: CDPClient, source: str) -> tuple[bytes, str]:
+    """Load a private/cross-origin image in Chrome, then read its CDP response body.
+
+    ``fetch`` is subject to the image host's CORS policy. An ``Image`` element
+    uses the same authenticated browser request path as the normal document
+    renderer; DevTools can then read the completed response without weakening
+    the URL allowlist.
+    """
+    cdp.send("Network.enable")
+    cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
+    try:
+        expression = (
+            "new Promise((resolve, reject) => {"
+            "const image = new Image();"
+            "image.onload = () => { image.remove(); resolve(true); };"
+            "image.onerror = () => { image.remove(); reject(new Error('image load failed')); };"
+            f"image.src = {js_string(source)};"
+            "})"
+        )
+        cdp.evaluate(expression, timeout=ASSET_REQUEST_TIMEOUT_SECONDS + 5)
+        event = cdp.wait_for_event(
+            "Network.responseReceived",
+            timeout=10,
+            predicate=lambda message: str(message.get("params", {}).get("response", {}).get("url") or "") == source,
+        )
+        request_id = str(event.get("params", {}).get("requestId") or "")
+        if not request_id:
+            raise ExportError("浏览器图片响应缺少请求标识。")
+        response = event.get("params", {}).get("response", {})
+        headers = response.get("headers") if isinstance(response, dict) else {}
+        content_type = ""
+        if isinstance(headers, dict):
+            content_type = next((str(value) for key, value in headers.items() if str(key).lower() == "content-type"), "")
+        body_response = cdp.send("Network.getResponseBody", {"requestId": request_id}, timeout=ASSET_REQUEST_TIMEOUT_SECONDS + 10)
+        result = body_response.get("result", {})
+        body = result.get("body") if isinstance(result, dict) else ""
+        if not isinstance(body, str) or not body:
+            raise ExportError("浏览器图片响应为空")
+        raw = base64.b64decode(body, validate=True) if result.get("base64Encoded") else body.encode("utf-8")
+        if not raw:
+            raise ExportError("图片响应为空")
+        return raw, content_type
+    finally:
+        cdp.send("Network.setCacheDisabled", {"cacheDisabled": False})
+
+
+def rewrite_images(
+    cdp: CDPClient,
+    rendered: RenderResult,
+    markdown: str,
+    md_path: Path,
+    args: argparse.Namespace,
+    asset_prefix: str = "",
+) -> tuple[str, list[dict[str, str]], int]:
     failures: list[dict[str, str]] = []
     saved = 0
     assets_dir = md_path.parent / "assets"
     replacements: dict[str, str] = {}
-    for index, image in enumerate(rendered.images, start=1):
-        if image.source in replacements:
-            continue
-        local_path, failure = download_image(cdp, image, assets_dir, index, args)
-        replacements[image.source] = local_path
-        if failure:
-            failures.append(failure)
-        else:
+    unique_images: list[ImageRef] = []
+    seen_sources: set[str] = set()
+    for image in rendered.images:
+        if image.source not in seen_sources:
+            seen_sources.add(image.source)
+            unique_images.append(image)
+    direct_jobs: dict[int, tuple[ImageRef, Any]] = {}
+    with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS, thread_name_prefix="wandao-dingtalk-asset") as pool:
+        for index, image in enumerate(unique_images, start=1):
+            if not is_trusted_asset_url(image.source):
+                continue
+            check_stopped(args)
+            throttle_request(args)
+            direct_jobs[index] = (image, pool.submit(download_direct_asset_with_retry, image.source))
+        for index, image in enumerate(unique_images, start=1):
+            emit(args, f"正在下载钉钉图片：{index}/{len(unique_images)}", event="asset.download.started", progress={"current": index, "total": len(unique_images)})
+            if not is_trusted_asset_url(image.source):
+                replacements[image.source] = image.source
+                failures.append({"url": safe_resource_url(image.source), "error": "图片地址不在受信任的钉钉资源域名中"})
+                continue
+            _, job = direct_jobs[index]
+            try:
+                raw, content_type = job.result()
+            except Exception as direct_exc:
+                try:
+                    raw, content_type = download_image_in_browser(cdp, image.source)
+                except Exception as browser_exc:  # noqa: BLE001 - a resource failure should not discard its document.
+                    replacements[image.source] = image.source
+                    failures.append({
+                        "url": safe_resource_url(image.source),
+                        "error": f"受限直连下载失败：{direct_exc}；浏览器读取失败：{browser_exc}",
+                    })
+                    continue
+            replacements[image.source] = save_image(raw, content_type, image.source, assets_dir, index, asset_prefix)
             saved += 1
     for source, local_path in replacements.items():
         markdown = markdown.replace(f"]({source})", f"]({local_path})")
@@ -817,7 +926,14 @@ def export_dingtalk(args: argparse.Namespace) -> dict[str, Any]:
                 renderer = DingMarkdownRenderer(args.source_url)
                 markdown = renderer.render_document(document, entry.title)
                 rendered = RenderResult(markdown=markdown, images=renderer.images, warnings=renderer.warnings)
-                markdown, resource_errors, saved = rewrite_images(cdp, rendered, markdown, md_path, args)
+                markdown, resource_errors, saved = rewrite_images(
+                    cdp,
+                    rendered,
+                    markdown,
+                    md_path,
+                    args,
+                    asset_prefix=safe_path_segment(entry.uuid, "document", 32),
+                )
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 md_path.write_text(markdown, encoding="utf-8")
                 image_success += saved

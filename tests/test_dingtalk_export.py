@@ -217,9 +217,15 @@ class DingTalkExportTests(unittest.TestCase):
             dingtalk.read_limited_response(FakeResponse(), max_bytes=5)
 
     def test_document_requests_have_a_bounded_browser_timeout(self) -> None:
+        self.assertIn("version === 4", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("version: 4", dingtalk.DINGTALK_HELPER_JS)
         self.assertIn("fetchWithTimeout", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("readArrayBufferWithTimeout", dingtalk.DINGTALK_HELPER_JS)
         self.assertIn("AbortController", dingtalk.DINGTALK_HELPER_JS)
         self.assertIn("}, 45000)", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("}, 15000)", dingtalk.DINGTALK_HELPER_JS)
+        self.assertEqual(dingtalk.ASSET_DOWNLOAD_WORKERS, 6)
+        self.assertEqual(dingtalk.ASSET_DIRECT_RETRIES, 3)
         original = dingtalk.call_helper
         calls = []
 
@@ -236,7 +242,39 @@ class DingTalkExportTests(unittest.TestCase):
             dingtalk.call_helper = original
 
         self.assertEqual(calls[0][0], "content")
-        self.assertEqual(calls[0][2]["timeout"], 55)
+        self.assertEqual(calls[0][2]["timeout"], dingtalk.DOCUMENT_REQUEST_TIMEOUT_SECONDS + 10)
+
+    def test_browser_image_fallback_uses_a_native_image_and_cdp_response_body(self) -> None:
+        class FakeCdp:
+            def __init__(self):
+                self.calls = []
+
+            def send(self, method, params=None, timeout=0):
+                self.calls.append((method, params, timeout))
+                if method == "Network.getResponseBody":
+                    return {"result": {"body": "aW1hZ2U=", "base64Encoded": True}}
+                return {"result": {}}
+
+            def evaluate(self, _expression, timeout=0):
+                return True
+
+            def wait_for_event(self, _method, timeout=0, predicate=None):
+                event = {"params": {"requestId": "request-1", "response": {"url": "https://img.alicdn.com/a.png", "headers": {"content-type": "image/png"}}}}
+                if not predicate(event):
+                    raise AssertionError("response predicate did not match")
+                return event
+
+        cdp = FakeCdp()
+        raw, content_type = dingtalk.download_image_in_browser(cdp, "https://img.alicdn.com/a.png")
+        self.assertEqual(raw, b"image")
+        self.assertEqual(content_type, "image/png")
+        self.assertEqual([call[0] for call in cdp.calls], ["Network.enable", "Network.setCacheDisabled", "Network.getResponseBody", "Network.setCacheDisabled"])
+
+    def test_document_asset_prefix_prevents_same_folder_image_overwrite(self) -> None:
+        self.assertEqual(
+            dingtalk.safe_path_segment("../doc:uuid", "document", 32),
+            "-doc-uuid",
+        )
 
     def test_login_prints_a_task_result_without_an_inline_prompt(self) -> None:
         class FakeCdp:

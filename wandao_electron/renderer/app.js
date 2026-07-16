@@ -3576,10 +3576,9 @@ function buildManifestActionArgs(provider, action, fields) {
   }
   const actionKind = String(action.kind || action.id || '').toLowerCase();
   if (provider.checkpoint?.supported && ['export', 'import', 'run'].includes(actionKind) && !args.includes('--checkpoint-file')) {
-    const outputField = fields.find(isManifestOutputField);
-    const output = outputField ? manifestFieldValue(provider, outputField) : '';
-    const checkpointFile = providerCheckpointFile(provider.id, output);
-    if (checkpointFile) args.push('--checkpoint-file', checkpointFile, '--resume');
+    const fieldValues = Object.fromEntries(fields.map((field) => [field.name, manifestFieldValue(provider, field)]));
+    const checkpointArgs = window.WandaoTaskResume?.providerCheckpointArgs(provider, fieldValues) || [];
+    args.push(...checkpointArgs);
   }
   return args;
 }

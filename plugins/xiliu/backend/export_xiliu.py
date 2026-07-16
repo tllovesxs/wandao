@@ -50,6 +50,8 @@ from wandao_core.browser import (
     CDPClient,
     DEFAULT_PORT,
     ExportError,
+    ExportStopped,
+    check_stopped,
     chrome_debug_available,
     default_data_dir,
     default_state_path,
@@ -506,90 +508,85 @@ def parse_flowus_url(url: str) -> str:
     return doc_id
 
 
-def build_toc_tree(client: FlowUsClient, root_doc_id: str) -> list[FlowUsNode]:
-    """Build table of contents tree from a root document.
-
-    FlowUs API returns blocks where:
-    - type 0 = Page (can have children pages)
-    - type 1, 5, 7, 9 = Content blocks (text, heading, divider, etc.)
-
-    Recursively fetches each sub-page to discover nested pages.
-    """
+def build_toc_tree(
+    client: FlowUsClient,
+    root_doc_id: str,
+    *,
+    failures: list[dict[str, Any]] | None = None,
+    args: argparse.Namespace | None = None,
+) -> list[FlowUsNode]:
+    """Build the complete FlowUs page tree and report unreadable child subtrees."""
     visited: set[str] = set()
     nodes: list[FlowUsNode] = []
+    subtree_failures = failures if failures is not None else []
 
-    def fetch_doc(doc_id: str) -> dict[str, Any]:
+    def fetch_doc(doc_id: str, *, is_root: bool = False, parent_id: str = "") -> dict[str, Any]:
+        check_stopped(args)
         if doc_id in visited:
             return {}
         visited.add(doc_id)
-
         try:
             response = client.get_doc(doc_id)
-            # API returns { "code": 200, "data": { "blocks": { ... } } }
-            if response.get("code") == 200:
-                return response.get("data", {}).get("blocks", {})
-            return {}
         except FlowUsError as exc:
-            emit(f"获取文档失败 {doc_id}: {exc}", level="warn")
+            if is_root:
+                raise FlowUsError(f"读取根目录失败：{exc}") from exc
+            subtree_failures.append({
+                "type": "subtree", "documentId": doc_id, "parentId": parent_id,
+                "stage": "scan", "error": str(exc),
+            })
             return {}
+        if response.get("code") != 200:
+            error = f"API code={response.get('code', '?')}"
+            if is_root:
+                raise FlowUsError(f"读取根目录失败：{error}")
+            subtree_failures.append({
+                "type": "subtree", "documentId": doc_id, "parentId": parent_id,
+                "stage": "scan", "error": error,
+            })
+            return {}
+        blocks = response.get("data", {}).get("blocks", {})
+        if not blocks or doc_id not in blocks:
+            error = "响应中没有 blocks" if not blocks else "响应中缺少目标页面 block"
+            if is_root:
+                raise FlowUsError(f"读取根目录失败：{error}")
+            subtree_failures.append({
+                "type": "subtree", "documentId": doc_id, "parentId": parent_id,
+                "stage": "scan", "error": error,
+            })
+            return {}
+        return blocks
 
     def extract_title(block: dict[str, Any]) -> str:
-        """Extract title from a block."""
-        # Try title field first
         title = block.get("title", "")
         if title:
             return title
+        segments = block.get("data", {}).get("segments", [])
+        return segments[0].get("text", "") if segments else "未命名"
 
-        # Try segments
-        data = block.get("data", {})
-        segments = data.get("segments", [])
-        if segments:
-            return segments[0].get("text", "")
-
-        return "未命名"
-
-    def process_block(block_id: str, blocks: dict[str, Any], parent_id: str = "") -> None:
+    def process_page(block_id: str, blocks: dict[str, Any], parent_id: str = "") -> None:
+        check_stopped(args)
         block = blocks.get(block_id)
-        if not block:
+        if not block or block.get("type", 0) != 0:
             return
+        page_children = [
+            child_id for child_id in block.get("subNodes", [])
+            if isinstance(child_id, str) and blocks.get(child_id, {}).get("type") == 0
+        ]
+        nodes.append(FlowUsNode(
+            id=block_id,
+            title=extract_title(block),
+            is_dir=bool(page_children),
+            parent_id=parent_id,
+            raw=block,
+        ))
+        for child_id in page_children:
+            child_blocks = fetch_doc(child_id, parent_id=block_id)
+            if child_blocks:
+                process_page(child_id, child_blocks, parent_id=block_id)
 
-        block_type = block.get("type", 0)
-        sub_nodes = block.get("subNodes", [])
-
-        # Only type 0 blocks are pages (containers)
-        is_page = block_type == 0
-
-        if is_page:
-            title = extract_title(block)
-            node = FlowUsNode(
-                id=block_id,
-                title=title,
-                is_dir=bool(sub_nodes),
-                parent_id=parent_id,
-                raw=block,
-            )
-            nodes.append(node)
-
-            # Process child pages
-            for child_id in sub_nodes:
-                if isinstance(child_id, str):
-                    # First check if child is a page in current blocks
-                    child_block = blocks.get(child_id, {})
-                    if child_block.get("type") == 0:
-                        # It's a page - fetch its content to find nested pages
-                        child_blocks = fetch_doc(child_id)
-                        if child_blocks:
-                            process_block(child_id, child_blocks, parent_id=block_id)
-                    # else: content block, skip for TOC
-
-    # Fetch and process the root document
-    blocks = fetch_doc(root_doc_id)
-    if blocks:
-        # Process the root block and all its children
-        process_block(root_doc_id, blocks)
-
+    root_blocks = fetch_doc(root_doc_id, is_root=True)
+    process_page(root_doc_id, root_blocks)
     return nodes
-
 
 def toc_json(args: argparse.Namespace) -> dict[str, Any]:
     """Output table of contents as JSON."""
@@ -603,7 +600,8 @@ def toc_json(args: argparse.Namespace) -> dict[str, Any]:
     doc_id = parse_flowus_url(url)
     emit(f"正在获取文档目录")
 
-    nodes = build_toc_tree(client, doc_id)
+    failures: list[dict[str, Any]] = []
+    nodes = build_toc_tree(client, doc_id, failures=failures, args=args)
 
     # Build parent -> children mapping to calculate per-level index
     children_map: dict[str, list[str]] = {}
@@ -640,6 +638,7 @@ def toc_json(args: argparse.Namespace) -> dict[str, Any]:
         "rootId": doc_id,
         "nodeCount": len(toc),
         "nodes": toc,
+        "failures": failures,
     }
 
 
@@ -858,241 +857,245 @@ def export_single_doc(
     return md_path
 
 
-def export_flowus(args: argparse.Namespace) -> dict[str, Any]:
-    """Main export function."""
+def _stable_output_components(nodes: list[FlowUsNode]) -> dict[str, str]:
+    groups: dict[tuple[str, str], list[FlowUsNode]] = {}
+    for node in nodes:
+        safe = node.safe_title
+        groups.setdefault((node.parent_id, safe.casefold()), []).append(node)
+    components: dict[str, str] = {}
+    for siblings in groups.values():
+        collision = len(siblings) > 1
+        for node in siblings:
+            suffix = sanitize_filename(node.id, fallback="id", max_len=12)
+            components[node.id] = f"{node.safe_title}-{suffix}" if collision else node.safe_title
+    return components
+
+
+def _export_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, Any]:
     auth_file = auth_path_from_args(args)
     client = FlowUsClient(auth_file, args)
-
     url = args.doc_url
     if not url:
         raise FlowUsError("--doc-url is required for export")
-
     output = Path(args.output).expanduser().resolve() if args.output else Path.cwd() / "exports" / "flowus"
-
     doc_id = parse_flowus_url(url)
-    emit(f"开始导出 FlowUs 文档")
+    emit("开始导出 FlowUs 文档")
 
-    # Open checkpoint
-    checkpoint = open_checkpoint_from_args(args, "xiliu", "export")
-
-    # Build TOC
-    nodes = build_toc_tree(client, doc_id)
-    has_exportable_nodes = bool(nodes)
-
-    # Filter nodes if --doc-id is specified
-    selected_ids = getattr(args, 'selected_doc_ids', None)
+    tree_failures: list[dict[str, Any]] = []
+    all_nodes = build_toc_tree(client, doc_id, failures=tree_failures, args=args)
+    full_node_map = {node.id: node for node in all_nodes}
+    components = _stable_output_components(all_nodes)
+    selected_ids = set(getattr(args, "selected_doc_ids", None) or [])
+    nodes = [node for node in all_nodes if not selected_ids or node.id in selected_ids]
+    if selected_ids and all_nodes and not nodes:
+        raise FlowUsError(
+            f"选中的文档 ID 均未在目录中找到（共 {len(selected_ids)} 个）。请重新读取目录后重试。"
+        )
     if selected_ids:
-        selected_set = set(selected_ids)
-        nodes = [n for n in nodes if n.id in selected_set]
-        if has_exportable_nodes and not nodes:
-            raise FlowUsError(
-                f"选中的文档 ID 均未在目录中找到（共 {len(selected_set)} 个）。"
-                "请重新读取目录后重试。"
-            )
         emit(f"已选择 {len(nodes)} 个文档进行导出")
-
     emit(f"共发现 {len(nodes)} 个文档节点")
 
-    # Start checkpoint task
     if checkpoint:
-        checkpoint.start_task(
-            {
-                "docId": doc_id,
-                "docUrl": url,
-                "totalNodes": len(nodes),
-                "resume": bool(getattr(args, "resume", False)),
-                "retryFailed": bool(getattr(args, "retry_failed", False)),
-            }
-        )
+        checkpoint.start_task({
+            "source": url,
+            "target": str(output),
+            "outputDir": str(output),
+            "docId": doc_id,
+            "docUrl": url,
+            "totalNodes": len(nodes),
+            "resume": bool(getattr(args, "resume", False)),
+            "retryFailed": bool(getattr(args, "retry_failed", False)),
+        })
+        for failure in tree_failures:
+            failed_id = str(failure.get("documentId") or "")
+            if not failed_id:
+                continue
+            failed_key = f"xiliu:doc:{failed_id}"
+            checkpoint.upsert_item(
+                failed_key,
+                title=failed_id,
+                source_id=failed_id,
+                parent_key=f"xiliu:doc:{failure.get('parentId')}" if failure.get("parentId") else "",
+                metadata={**failure, "docId": failed_id, "stage": "scan"},
+            )
+            checkpoint.fail_item(failed_key, str(failure.get("error") or "子树读取失败"))
         for node in nodes:
-            checkpoint.upsert_item(f"xiliu:doc:{node.id}", title=node.title)
-
-    # Build node map for path construction
-    node_map = {n.id: n for n in nodes}
+            checkpoint.upsert_item(
+                f"xiliu:doc:{node.id}", title=node.title, source_id=node.id,
+                parent_key=f"xiliu:doc:{node.parent_id}" if node.parent_id else "",
+                metadata={"docId": node.id, "parentId": node.parent_id, "stage": "listed"},
+            )
 
     def get_output_path(node: FlowUsNode) -> Path:
-        """Get the output path for a node based on its parent hierarchy."""
-        parts = []
+        ancestors: list[FlowUsNode] = []
         current = node
-        # Walk up the parent chain
-        while current.parent_id and current.parent_id in node_map:
-            parent = node_map[current.parent_id]
-            parts.append(parent.safe_title)
-            current = parent
-        parts.reverse()
+        seen: set[str] = set()
+        while current.parent_id and current.parent_id in full_node_map and current.parent_id not in seen:
+            seen.add(current.parent_id)
+            current = full_node_map[current.parent_id]
+            ancestors.append(current)
+        path = output
+        for ancestor in reversed(ancestors):
+            path /= components[ancestor.id]
+        component = components[node.id]
+        return path / component if node.is_dir else path / f"{component}.md"
 
-        # Build the directory path
-        dir_path = output
-        for part in parts:
-            dir_path = dir_path / part
-
-        # If node is_dir, it becomes a directory; otherwise it's a .md file
-        if node.is_dir:
-            return dir_path / node.safe_title
-        else:
-            return dir_path / f"{node.safe_title}.md"
-
-    # Filter nodes for resume / retry-failed mode
     is_resume = bool(getattr(args, "resume", False))
     is_retry_failed = bool(getattr(args, "retry_failed", False))
     if checkpoint and is_retry_failed:
-        nodes = [n for n in nodes if checkpoint.item_status(f"xiliu:doc:{n.id}") == "failed"]
+        nodes = [node for node in nodes if checkpoint.item_status(f"xiliu:doc:{node.id}") == "failed"]
         emit(f"只重试失败项：剩余 {len(nodes)} 个文档")
     elif checkpoint and is_resume:
-        nodes = [n for n in nodes if checkpoint.item_status(f"xiliu:doc:{n.id}") != "completed"]
+        nodes = [node for node in nodes if checkpoint.item_status(f"xiliu:doc:{node.id}") != "completed"]
         emit(f"断点续跑：跳过已完成项，剩余 {len(nodes)} 个文档")
 
-    # Export each node
     exported = 0
     skipped = 0
-    failed = 0
+    document_failures: list[dict[str, Any]] = []
+    resource_failures: list[dict[str, Any]] = []
     total_images = 0
-    image_failures: list[dict[str, str]] = []
-    output_files: list[str] = []
 
-    for i, node in enumerate(nodes, 1):
+    for index, node in enumerate(nodes, 1):
+        check_stopped(args)
         item_key = f"xiliu:doc:{node.id}"
+        file_path = get_output_path(node)
+        if node.is_dir:
+            file_path = file_path / f"{components[node.id]}.md"
         try:
-            # Get output path first to check file existence
-            md_path = get_output_path(node)
-            if node.is_dir:
-                file_path = md_path / f"{node.safe_title}.md"
-            else:
-                file_path = md_path
-
-            # Incremental mode: skip if file exists
-            if args.incremental and file_path.exists():
-                if not args.update_existing:
-                    emit(f"[{i}/{len(nodes)}] 跳过已存在文件: {file_path.name}")
-                    skipped += 1
-                    if checkpoint:
-                        checkpoint.complete_item(item_key, local_path=str(file_path), metadata={"skippedExisting": True})
-                    continue
-                try:
-                    existing = file_path.read_text(encoding="utf-8")
-                    # Will compare after conversion
-                except Exception:
-                    pass
-
-            # Resume / retry-failed mode: check checkpoint, but verify file still exists
-            if checkpoint and (is_resume or is_retry_failed) and checkpoint.item_status(item_key) == "completed":
-                # Verify file still exists
-                if file_path.exists():
-                    skipped += 1
-                    continue
-                else:
-                    # File was deleted, reset checkpoint and re-export
-                    emit(f"[{i}/{len(nodes)}] 文件已删除，重新导出: {node.title}")
-                    checkpoint.upsert_item(item_key, title=node.title)
-
-            # Start item tracking
+            if args.incremental and file_path.exists() and not args.update_existing:
+                skipped += 1
+                if checkpoint:
+                    checkpoint.upsert_item(item_key, title=node.title, metadata={"docId": node.id, "stage": "completed"})
+                    checkpoint.complete_item(item_key, local_path=str(file_path), metadata={"docId": node.id, "skippedExisting": True})
+                continue
+            if checkpoint and (is_resume or is_retry_failed) and checkpoint.item_status(item_key) == "completed" and file_path.exists():
+                skipped += 1
+                continue
             if checkpoint:
-                checkpoint.start_item(item_key, "content")
+                checkpoint.upsert_item(item_key, title=node.title, metadata={"docId": node.id, "stage": "downloading"})
+                checkpoint.start_item(item_key, "downloading")
 
-            # Download document
+            check_stopped(args)
             doc = client.get_doc(node.id)
+            md_root = get_output_path(node)
+            image_saver = ImageSaver(client=client, output_dir=md_root if node.is_dir else md_root.parent, doc_id=node.id)
+            markdown, image_count, image_errors = convert_flowus_blocks_to_markdown(doc, node.id, image_saver)
+            total_images += image_count
+            node_resource_failures = [
+                {
+                    "itemKey": item_key,
+                    "documentId": node.id,
+                    "title": node.title,
+                    "type": "image",
+                    "source": failure.get("url", ""),
+                    "error": failure.get("error", "图片下载失败"),
+                }
+                for failure in image_errors
+            ]
+            resource_failures.extend(node_resource_failures)
 
-            # Create image saver for this document
-            image_saver = ImageSaver(
-                client=client,
-                output_dir=md_path.parent if not node.is_dir else md_path,
-                doc_id=node.id,
-            )
-
-            # Convert to Markdown with image support
-            markdown, img_count, img_failures = convert_flowus_blocks_to_markdown(doc, node.id, image_saver)
-            total_images += img_count
-            image_failures.extend(img_failures)
-
-            # If node is directory, create it
             if node.is_dir:
-                md_path.mkdir(parents=True, exist_ok=True)
-
-            # If has content, write markdown file
+                md_root.mkdir(parents=True, exist_ok=True)
             if markdown.strip():
-                # Check if content changed (for update_existing mode)
                 if args.incremental and args.update_existing and file_path.exists():
                     try:
-                        existing = file_path.read_text(encoding="utf-8")
-                        if existing == markdown:
+                        if file_path.read_text(encoding="utf-8") == markdown:
                             skipped += 1
-                            if checkpoint:
-                                checkpoint.complete_item(item_key, local_path=str(file_path), metadata={"skippedExisting": True})
+                            if checkpoint and not node_resource_failures:
+                                checkpoint.upsert_item(item_key, title=node.title, metadata={"docId": node.id, "stage": "completed"})
+                                checkpoint.complete_item(item_key, local_path=str(file_path), metadata={"docId": node.id, "skippedExisting": True})
                             continue
-                    except Exception:
+                    except OSError:
                         pass
-
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_text(markdown, encoding="utf-8")
                 exported += 1
-                output_files.append(str(file_path))
-
-                # Log image download status
-                if img_count > 0:
-                    emit(f"[{i}/{len(nodes)}] 导出成功: {node.title} (含 {img_count} 张图片)")
-                else:
-                    emit(f"[{i}/{len(nodes)}] 导出成功: {node.title}")
-
-                # Complete item in checkpoint
-                if checkpoint:
-                    checkpoint.complete_item(item_key, local_path=str(file_path), metadata={"docId": node.id, "images": img_count})
-
             elif not node.is_dir:
-                emit(f"[{i}/{len(nodes)}] 跳过（内容为空）: {node.title}")
                 skipped += 1
+
+            if node_resource_failures:
+                failure = {
+                    "itemKey": item_key,
+                    "documentId": node.id,
+                    "title": node.title,
+                    "stage": "resources",
+                    "error": f"{len(node_resource_failures)} 个图片资源下载失败",
+                }
+                document_failures.append(failure)
                 if checkpoint:
-                    checkpoint.complete_item(item_key, metadata={"reason": "empty"})
-
-        except FlowUsError as exc:
-            failed += 1
-            emit(f"[{i}/{len(nodes)}] 导出失败 {node.title}: {exc}", level="error")
+                    checkpoint.upsert_item(item_key, title=node.title, metadata={"docId": node.id, "stage": "resources", "localPath": str(file_path)})
+                    checkpoint.fail_item(item_key, failure["error"])
+            elif checkpoint:
+                checkpoint.upsert_item(item_key, title=node.title, metadata={"docId": node.id, "stage": "completed"})
+                checkpoint.complete_item(item_key, local_path=str(file_path), metadata={"docId": node.id, "images": image_count})
+            emit(f"[{index}/{len(nodes)}] 导出成功: {node.title}" + (f" (含 {image_count} 张图片)" if image_count else ""))
+        except ExportStopped:
             if checkpoint:
+                checkpoint.upsert_item(item_key, title=node.title, metadata={"docId": node.id, "stage": "stopped"})
+                checkpoint.fail_item(item_key, "用户已停止当前任务")
+            raise
+        except Exception as exc:
+            failure = {
+                "itemKey": item_key, "documentId": node.id, "title": node.title,
+                "stage": "content", "error": str(exc),
+            }
+            document_failures.append(failure)
+            if checkpoint:
+                checkpoint.upsert_item(item_key, title=node.title, metadata={"docId": node.id, "stage": "failed"})
                 checkpoint.fail_item(item_key, str(exc))
+            emit(f"[{index}/{len(nodes)}] 导出失败 {node.title}: {exc}", level="error")
 
-    # Report image failures
-    if image_failures:
-        emit(f"图片下载失败 {len(image_failures)} 张:", level="warn")
-        for failure in image_failures[:5]:  # Show first 5
-            emit(f"  - {failure.get('url', 'unknown')}: {failure.get('error', 'unknown')}", level="warn")
-
-    result = {
+    failures = tree_failures + document_failures
+    result = finalize_report({
         "provider": "flowus",
+        "mode": "export",
         "rootId": doc_id,
         "totalNodes": len(nodes),
-        "exported": exported,
-        "skipped": skipped,
-        "failed": failed,
-        "totalImages": total_images,
-        "imageFailures": len(image_failures),
-        "outputDir": str(output),
         "totalDocs": len(nodes),
+        "exported": exported,
         "exportedDocs": exported,
+        "skipped": skipped,
         "skippedDocs": skipped,
-        "failureCount": failed,
-    }
-
-    # Finalize checkpoint
+        "failed": len(failures),
+        "failureCount": len(failures),
+        "failures": failures,
+        "totalImages": total_images,
+        "imageFailures": resource_failures,
+        "imageFailureCount": len(resource_failures),
+        "resourceFailures": resource_failures,
+        "resourceFailureCount": len(resource_failures),
+        "outputDir": str(output),
+        "stopped": False,
+    }, provider="flowus-export", mode="export", output=output)
     if checkpoint:
         checkpoint.complete_task(result)
-        checkpoint.close()
-
-    finalize_report(result, provider="flowus-export")
-
-    # Emit task completed event
     emit(
-        f"导出完成：成功 {exported}, 跳过 {skipped}, 未通过 {failed}",
+        f"导出完成：成功 {exported}, 跳过 {skipped}, 未通过 {len(failures)}",
         event="task.completed",
-        level="success" if failed == 0 and len(image_failures) == 0 else "warn",
+        level="success" if not failures and not resource_failures else "warn",
         stats={
-            "exportedDocs": exported,
-            "skippedDocs": skipped,
-            "totalImages": total_images,
-            "failureCount": failed,
-            "imageFailureCount": len(image_failures),
+            "exportedDocs": exported, "skippedDocs": skipped,
+            "failureCount": len(failures), "resourceFailureCount": len(resource_failures),
         },
     )
     return result
 
+
+def export_flowus(args: argparse.Namespace) -> dict[str, Any]:
+    checkpoint = open_checkpoint_from_args(args, "xiliu", "export")
+    try:
+        return _export_flowus_impl(args, checkpoint)
+    except ExportStopped:
+        if checkpoint and getattr(checkpoint, "_lease_claimed", False):
+            checkpoint.fail_task("用户已停止当前任务", status="stopped")
+        raise
+    except Exception as exc:
+        if checkpoint and getattr(checkpoint, "_lease_claimed", False):
+            checkpoint.fail_task(str(exc), status="failed")
+        raise
+    finally:
+        if checkpoint:
+            checkpoint.close()
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="导出 FlowUs (息流) 文档为 Markdown")
@@ -1133,7 +1136,7 @@ def main(argv: list[str]) -> int:
             if not args.output:
                 raise FlowUsError("--output is required unless --login or --scan-toc is used")
             result = export_flowus(args)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExportStopped):
         emit("FlowUs 导出已停止。", event="task.stopped", level="warn")
         print("Interrupted.", file=sys.stderr)
         return 130

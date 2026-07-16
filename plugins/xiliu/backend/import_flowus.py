@@ -28,6 +28,7 @@ import hmac
 from pathlib import Path
 from typing import Any
 
+from wandao_core.browser import ExportStopped, check_stopped, wait_with_stop
 from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_core.logging import emit_legacy
 from wandao_core.report import finalize_report
@@ -358,11 +359,18 @@ def enqueue_import_task(client: FlowUsClient, block_id: str, space_id: str, oss_
     return task_id
 
 
-def poll_task_result(client: FlowUsClient, task_id: str, timeout: int = 120, interval: float = 3.0) -> dict[str, Any]:
+def poll_task_result(
+    client: FlowUsClient,
+    task_id: str,
+    timeout: int = 120,
+    interval: float = 3.0,
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
     """Poll for task completion. Returns task result."""
     start = time.time()
 
     while True:
+        check_stopped(args)
         elapsed = time.time() - start
         if elapsed > timeout:
             raise FlowUsError(f"导入任务超时（{timeout}秒）：{task_id}")
@@ -378,7 +386,7 @@ def poll_task_result(client: FlowUsClient, task_id: str, timeout: int = 120, int
         task_result = results.get(task_id)
 
         if not task_result:
-            time.sleep(interval)
+            wait_with_stop(args, interval)
             continue
 
         status = task_result.get("status", "")
@@ -393,7 +401,7 @@ def poll_task_result(client: FlowUsClient, task_id: str, timeout: int = 120, int
             raise FlowUsError(f"导入任务失败：{msg}")
 
         # Still processing, wait
-        time.sleep(interval)
+        wait_with_stop(args, interval)
 
 
 # ---------------------------------------------------------------------------
@@ -1149,70 +1157,119 @@ def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
 # Main import function
 # ---------------------------------------------------------------------------
 
-def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
-    """Main import function."""
+def _checkpoint_metadata(checkpoint: Any) -> dict[str, dict[str, Any]]:
+    if not checkpoint:
+        return {}
+    records = checkpoint.completed_items() + checkpoint.pending_items()
+    metadata: dict[str, dict[str, Any]] = {}
+    for record in records:
+        try:
+            value = json.loads(str(record.get("metadata_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            value = {}
+        metadata[str(record.get("item_key") or "")] = value if isinstance(value, dict) else {}
+    return metadata
+
+
+def _persist_import_item(
+    checkpoint: Any,
+    item_key: str,
+    doc: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    parent_key: str = "",
+) -> None:
+    if not checkpoint:
+        return
+    checkpoint.upsert_item(
+        item_key,
+        title=str(doc.get("title") or ""),
+        source_id=str(doc.get("relative") or ""),
+        parent_key=parent_key,
+        metadata=metadata,
+    )
+
+
+def _ensure_parent_pages(
+    client: FlowUsClient,
+    checkpoint: Any,
+    args: argparse.Namespace,
+    space_id: str,
+    root_parent_id: str,
+    folders: list[str],
+    folder_pages: dict[str, str],
+    checkpoint_metadata: dict[str, dict[str, Any]],
+) -> tuple[str, str]:
+    current_parent = root_parent_id
+    parent_key = ""
+    parts: list[str] = []
+    for folder in folders:
+        check_stopped(args)
+        parts.append(folder)
+        relative = Path(*parts).as_posix()
+        item_key = f"xiliu:folder:{relative}"
+        metadata = {
+            **checkpoint_metadata.get(item_key, {}),
+            "kind": "folder",
+            "relativePath": relative,
+            "parentRelative": Path(*parts[:-1]).as_posix() if len(parts) > 1 else "",
+            "parentPageId": current_parent,
+            "stage": "listed",
+        }
+        page_id = folder_pages.get(relative) or str(metadata.get("pageId") or "")
+        if checkpoint:
+            checkpoint.upsert_item(item_key, title=folder, parent_key=parent_key, source_id=relative, metadata=metadata)
+        if not page_id:
+            if checkpoint:
+                checkpoint.start_item(item_key, "create-folder")
+            check_stopped(args)
+            page_id = create_empty_page(client, space_id, current_parent, folder)
+            metadata.update({"pageId": page_id, "stage": "folder-created"})
+            if checkpoint:
+                checkpoint.upsert_item(item_key, title=folder, parent_key=parent_key, source_id=relative, metadata=metadata)
+                checkpoint.complete_item(item_key, target_id=page_id, metadata=metadata)
+        folder_pages[relative] = page_id
+        checkpoint_metadata[item_key] = metadata
+        current_parent = page_id
+        parent_key = item_key
+    return current_parent, parent_key
+
+
+def _import_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, Any]:
     auth_file = auth_path_from_args(args)
     client = FlowUsClient(auth_file, args)
-
     source_dir = Path(args.source_dir).expanduser().resolve()
-    space_id = args.space_id
-    parent_id = args.parent_id
+    space_id = str(args.space_id or "")
+    parent_id = str(args.parent_id or "")
 
     if not source_dir.exists():
         raise FlowUsError(f"源目录不存在：{source_dir}")
 
-    # Get available targets
     targets = list_import_targets(client)
     if not targets:
         raise FlowUsError("没有找到可写入的页面。请先点击'列出可导入目标'确认有写入权限。")
-
-    # Auto-detect space_id from parent_id if not specified
-    if parent_id and not space_id:
-        matching = [t for t in targets if t["id"] == parent_id]
-        if matching:
-            space_id = matching[0]["spaceId"]
-            emit("从目标页面自动检测空间 ID")
-        else:
-            raise FlowUsError(
-                f"页面 {parent_id} 不在可写入目标列表中。"
-                "请先点击'列出可导入目标'确认有写入权限。"
-            )
-
-    if not space_id:
-        # Default to the first target's space
-        space_id = targets[0]["spaceId"]
-        emit(f"自动选择空间: {targets[0]['spaceName']}")
-
-    # If no parent_id specified, find a valid parent from the targets
     if not parent_id:
-        space_targets = [t for t in targets if t.get("spaceId") == space_id]
-        if not space_targets:
-            raise FlowUsError(
-                f"在空间 {space_id} 中没有找到可写入的页面。"
-                "请先点击'列出可导入目标'确认有写入权限，或手动指定 --parent-id。"
-            )
-        parent_id = space_targets[0]["id"]
-        emit(f"自动选择目标页面: {space_targets[0]['name']} ({parent_id})")
-    else:
-        # Validate parent_id is in the targets
-        matching = [t for t in targets if t["id"] == parent_id]
-        if not matching:
-            emit(f"警告: 页面 {parent_id} 不在可写入目标列表中，导入可能会失败", level="warn")
-        else:
-            emit(f"目标页面: {matching[0]['name']} ({parent_id})")
+        raise FlowUsError("请选择明确的 FlowUs 目标页面后再开始导入。")
+    matching = [target for target in targets if target.get("id") == parent_id]
+    if not matching:
+        raise FlowUsError("所选目标页面已不可用，请重新点击'列出可导入目标'并选择。")
+    selected_target = matching[0]
+    target_space_id = str(selected_target.get("spaceId") or "")
+    if space_id and target_space_id and space_id != target_space_id:
+        raise FlowUsError("所选空间与目标页面不匹配，请重新选择目标页面。")
+    space_id = target_space_id or space_id
+    if not space_id:
+        raise FlowUsError("无法确定目标空间，请重新读取并选择目标页面。")
 
-    # Scan markdown files
     docs = scan_markdown_docs(source_dir)
     if not docs:
         raise FlowUsError(f"源目录中没有找到 Markdown 文件：{source_dir}")
-
     emit(f"开始导入到 FlowUs：共 {len(docs)} 篇文档", event="task.started", totals={"documents": len(docs)})
-
-    # Open checkpoint
-    checkpoint = open_checkpoint_from_args(args, "xiliu", "import")
 
     if checkpoint:
         checkpoint.start_task({
+            "source": str(source_dir),
+            "target": f"{space_id}:{parent_id}",
             "spaceId": space_id,
             "parentId": parent_id,
             "sourceDir": str(source_dir),
@@ -1221,115 +1278,173 @@ def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
             "retryFailed": bool(getattr(args, "retry_failed", False)),
         })
 
-    # Filter for resume / retry-failed mode
+    checkpoint_metadata = _checkpoint_metadata(checkpoint)
+    for doc in docs:
+        item_key = f"xiliu:import:{doc['relative']}"
+        existing = checkpoint_metadata.get(item_key, {})
+        parent_relative = Path(*doc["folders"]).as_posix() if doc["folders"] else ""
+        metadata = {
+            **existing,
+            "kind": "document",
+            "relativePath": doc["relative"],
+            "folders": list(doc["folders"]),
+            "parentRelative": parent_relative,
+            "stage": str(existing.get("stage") or "listed"),
+        }
+        _persist_import_item(checkpoint, item_key, doc, metadata)
+        checkpoint_metadata[item_key] = metadata
+
     is_resume = bool(getattr(args, "resume", False))
     is_retry_failed = bool(getattr(args, "retry_failed", False))
     if checkpoint and is_retry_failed:
-        docs = [d for d in docs if checkpoint.item_status(f"xiliu:import:{d['relative']}") == "failed"]
+        docs = [doc for doc in docs if checkpoint.item_status(f"xiliu:import:{doc['relative']}") == "failed"]
         emit(f"只重试失败项：剩余 {len(docs)} 篇文档")
     elif checkpoint and is_resume:
-        docs = [d for d in docs if checkpoint.item_status(f"xiliu:import:{d['relative']}") != "completed"]
+        docs = [doc for doc in docs if checkpoint.item_status(f"xiliu:import:{doc['relative']}") != "completed"]
         emit(f"断点续跑：跳过已完成项，剩余 {len(docs)} 篇文档")
 
-    # Import each document
+    folder_pages: dict[str, str] = {}
+    for key, metadata in checkpoint_metadata.items():
+        if key.startswith("xiliu:folder:") and metadata.get("pageId"):
+            folder_pages[str(metadata.get("relativePath") or key.removeprefix("xiliu:folder:"))] = str(metadata["pageId"])
+
     imported = 0
     skipped = 0
-    failed = 0
+    failures: list[dict[str, Any]] = []
     total = len(docs)
 
-    for i, doc in enumerate(docs, 1):
+    for index, doc in enumerate(docs, 1):
+        check_stopped(args)
         item_key = f"xiliu:import:{doc['relative']}"
         title = doc["title"]
-
+        metadata = dict(checkpoint_metadata.get(item_key, {}))
         try:
-            # Check resume / retry-failed
-            if checkpoint and (is_resume or is_retry_failed) and checkpoint.item_status(item_key) == "completed":
-                skipped += 1
-                continue
-
+            parent_page_id, parent_key = _ensure_parent_pages(
+                client, checkpoint, args, space_id, parent_id, list(doc["folders"]),
+                folder_pages, checkpoint_metadata,
+            )
+            metadata.update({"parentPageId": parent_page_id, "stage": "preparing"})
+            _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
             if checkpoint:
-                checkpoint.start_item(item_key, "content")
+                checkpoint.start_item(item_key, "preparing")
 
-            # Count local images for logging
             doc_dir = Path(doc["path"]).parent
-            local_images = extract_local_images(doc["content"], doc_dir)
-            image_count = len(local_images)
-            if image_count:
-                emit(f"[{i}/{total}] 含 {image_count} 张本地图片（将内嵌到 HTML 中）...")
-
-            # Convert markdown to HTML with images inlined as base64 data URLs
+            image_count = len(extract_local_images(doc["content"], doc_dir))
             html_content = markdown_to_html(doc["content"], title, source_dir=doc_dir)
 
-            # Create empty page
-            page_id = create_empty_page(client, space_id, parent_id, title)
+            page_id = str(metadata.get("pageId") or "")
+            relative_path = Path(str(doc["relative"]))
+            is_directory_page = bool(doc["folders"] and relative_path.stem == doc["folders"][-1])
+            if not page_id and is_directory_page:
+                page_id = parent_page_id
+                metadata.update({"pageId": page_id, "stage": "folder-page-reused"})
+                _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+            elif not page_id:
+                check_stopped(args)
+                page_id = create_empty_page(client, space_id, parent_page_id, title)
+                metadata.update({"pageId": page_id, "stage": "page-created"})
+                _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
 
-            # Upload HTML content
-            oss_name = upload_html_content(client, html_content)
-
-            # Enqueue import task
-            task_id = enqueue_import_task(client, page_id, space_id, oss_name)
-
-            # Poll for completion
             task_timeout = int(getattr(args, "task_timeout", 120) or 120)
-            poll_task_result(client, task_id, timeout=task_timeout, interval=3.0)
+            task_id = str(metadata.get("taskId") or "")
+            if task_id:
+                try:
+                    poll_task_result(client, task_id, timeout=task_timeout, interval=3.0, args=args)
+                except FlowUsError:
+                    metadata.pop("taskId", None)
+                    metadata["stage"] = "task-failed"
+                    _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+                    if not is_retry_failed:
+                        raise
+                    task_id = ""
 
-            # Update title (import task may overwrite it)
+            if not task_id:
+                check_stopped(args)
+                metadata["stage"] = "uploading-content"
+                _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+                oss_name = upload_html_content(client, html_content)
+
+                check_stopped(args)
+                metadata["stage"] = "enqueueing-import"
+                _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+                task_id = enqueue_import_task(client, page_id, space_id, oss_name)
+                metadata.update({"taskId": task_id, "stage": "polling-import"})
+                _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+                poll_task_result(client, task_id, timeout=task_timeout, interval=3.0, args=args)
+
+            check_stopped(args)
             update_page_title(client, space_id, page_id, title)
 
             imported += 1
-            if image_count > 0:
-                emit(f"[{i}/{total}] 导入成功: {title} (含 {image_count} 张图片)")
-            else:
-                emit(f"[{i}/{total}] 导入成功: {title}")
-
+            metadata.update({"pageId": page_id, "title": title, "stage": "completed"})
+            _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
             if checkpoint:
-                checkpoint.complete_item(item_key, metadata={"pageId": page_id, "title": title})
-
-        except FlowUsError as exc:
-            failed += 1
-            emit(f"[{i}/{total}] 导入失败 {title}: {exc}", level="error")
+                checkpoint.complete_item(item_key, target_id=page_id, metadata=metadata)
+            emit(f"[{index}/{total}] 导入成功: {title}" + (f" (含 {image_count} 张图片)" if image_count else ""))
+        except ExportStopped:
+            metadata["stage"] = "stopped"
+            _persist_import_item(checkpoint, item_key, doc, metadata)
             if checkpoint:
-                checkpoint.fail_item(item_key, str(exc))
-
+                checkpoint.fail_item(item_key, "用户已停止当前任务")
+            raise
         except Exception as exc:
-            failed += 1
-            emit(f"[{i}/{total}] 导入失败 {title}: {exc}", level="error")
+            metadata["stage"] = "failed"
+            _persist_import_item(checkpoint, item_key, doc, metadata)
             if checkpoint:
                 checkpoint.fail_item(item_key, str(exc))
+            failure = {
+                "itemKey": item_key,
+                "relativePath": doc["relative"],
+                "title": title,
+                "stage": metadata["stage"],
+                "pageId": str(metadata.get("pageId") or ""),
+                "error": str(exc),
+            }
+            failures.append(failure)
+            emit(f"[{index}/{total}] 导入失败 {title}: {exc}", level="error")
 
-    result = {
+    result = finalize_report({
         "provider": "flowus-import",
+        "mode": "import",
         "spaceId": space_id,
         "parentId": parent_id,
         "sourceDir": str(source_dir),
         "totalDocs": total,
         "imported": imported,
+        "importedDocs": imported,
         "skipped": skipped,
-        "failed": failed,
-        "failureCount": failed,
-    }
-
-    # Finalize checkpoint
+        "skippedDocs": skipped,
+        "failed": len(failures),
+        "failureCount": len(failures),
+        "failures": failures,
+        "stopped": False,
+    }, provider="flowus-import", mode="import", output=source_dir)
     if checkpoint:
         checkpoint.complete_task(result)
-        checkpoint.close()
-
-    finalize_report(result, provider="flowus-import")
-
     emit(
-        f"FlowUs 导入完成：成功 {imported}, 跳过 {skipped}, 失败 {failed}",
+        f"FlowUs 导入完成：成功 {imported}, 跳过 {skipped}, 未通过 {len(failures)}",
         event="task.completed",
-        level="success" if failed == 0 else "warn",
-        stats={
-            "importedDocs": imported,
-            "skippedDocs": skipped,
-            "failureCount": failed,
-        },
+        level="success" if not failures else "warn",
+        stats={"importedDocs": imported, "skippedDocs": skipped, "failureCount": len(failures)},
     )
-
-    emit(f"导入完成: 成功 {imported}, 跳过 {skipped}, 未通过 {failed}")
     return result
 
+
+def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
+    checkpoint = open_checkpoint_from_args(args, "xiliu", "import")
+    try:
+        return _import_flowus_impl(args, checkpoint)
+    except ExportStopped:
+        if checkpoint and getattr(checkpoint, "_lease_claimed", False):
+            checkpoint.fail_task("用户已停止当前任务", status="stopped")
+        raise
+    except Exception as exc:
+        if checkpoint and getattr(checkpoint, "_lease_claimed", False):
+            checkpoint.fail_task(str(exc), status="failed")
+        raise
+    finally:
+        if checkpoint:
+            checkpoint.close()
 
 def scan_targets(args: argparse.Namespace) -> dict[str, Any]:
     """List available import targets."""
@@ -1337,11 +1452,21 @@ def scan_targets(args: argparse.Namespace) -> dict[str, Any]:
     client = FlowUsClient(auth_file, args)
 
     targets = list_import_targets(client)
+    enriched_targets = [
+        {**target, "label": f"{target.get('spaceName', '未命名空间')} / {target.get('name', '未命名页面')}"}
+        for target in targets
+    ]
+    spaces_by_id: dict[str, dict[str, str]] = {}
+    for target in targets:
+        space_id = str(target.get("spaceId") or "")
+        if space_id:
+            spaces_by_id.setdefault(space_id, {"id": space_id, "name": str(target.get("spaceName") or space_id)})
 
     return {
         "provider": "flowus-import",
-        "targetCount": len(targets),
-        "targets": targets,
+        "targetCount": len(enriched_targets),
+        "targets": enriched_targets,
+        "spaces": list(spaces_by_id.values()),
     }
 
 
@@ -1385,7 +1510,7 @@ def main(argv: list[str]) -> int:
             if not args.source_dir:
                 raise FlowUsError("--source-dir is required")
             result = import_flowus(args)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExportStopped):
         emit("FlowUs 导入已停止。", event="task.stopped", level="warn")
         print("Interrupted.", file=sys.stderr)
         return 130

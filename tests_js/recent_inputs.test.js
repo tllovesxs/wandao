@@ -266,7 +266,8 @@ test('official reusable inputs opt in explicitly and credential fields never do'
   for (const expected of [
     'zsxq-group.entry_url', 'zsxq-column.entry_url', 'yuque.book_url',
     'yuque-import.target_book_url', 'feishu-export.wiki_url', 'feishu-import.wiki_url',
-    'aliyun.workspace_url', 'onenote.output', 'wiz.output', 'youdao.output'
+    'aliyun.workspace_url', 'onenote.output', 'wiz.output', 'youdao.output',
+    'xiliu.doc_url', 'xiliu.output', 'xiliu-import.source_dir'
   ]) {
     assert.ok(declared.includes(expected), `${expected} should declare recent-input history`);
   }

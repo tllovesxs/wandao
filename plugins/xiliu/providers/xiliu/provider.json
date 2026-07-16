@@ -46,6 +46,7 @@
       "type": "text",
       "arg": "--doc-url",
       "required": true,
+      "history": "url",
       "placeholder": "https://flowus.cn/<doc_id>",
       "actions": ["scan", "export"]
     },
@@ -56,6 +57,7 @@
       "arg": "--output",
       "required": true,
       "default": "",
+      "history": "path",
       "actions": ["scan", "export"]
     },
     {

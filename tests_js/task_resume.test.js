@@ -4,8 +4,51 @@ const test = require('node:test');
 const {
   buildResumeArgs,
   isInterruptedTask,
+  providerCheckpointArgs,
+  providerCheckpointFile,
   shouldRetryFailureItems
 } = require('../wandao_electron/renderer/task_resume');
+
+test('manifest providers can derive checkpoint paths from a shared base field', () => {
+  const provider = {
+    id: 'xiliu-import',
+    checkpoint: { supported: true, baseField: 'source_dir', fileName: 'xiliu-import.sqlite' }
+  };
+  assert.equal(
+    providerCheckpointFile(provider, { source_dir: 'E:/notes/demo/' }),
+    'E:/notes/demo/.wandao/xiliu-import.sqlite'
+  );
+  assert.equal(providerCheckpointFile(provider, { source_dir: '' }), '');
+});
+
+test('FlowUs import manifest uses a non-TOC target action and shared checkpoint contract', () => {
+  const provider = require('../plugins/xiliu/providers/xiliu-import/provider.json');
+  const targets = provider.actions.find((action) => action.id === 'targets');
+  const sourceDir = provider.fields.find((field) => field.name === 'source_dir');
+  const parentId = provider.fields.find((field) => field.name === 'parent_id');
+  const spaceId = provider.fields.find((field) => field.name === 'space_id');
+
+  assert.equal(provider.capabilities.scanToc, false);
+  assert.equal(targets.kind, 'check');
+  assert.ok(targets.args.includes('--scan-targets'));
+  assert.equal(targets.includeSelection, false);
+  assert.ok(!sourceDir.actions.includes('targets'));
+  assert.equal(parentId.type, 'select');
+  assert.equal(parentId.required, true);
+  assert.equal(spaceId.type, 'select');
+  assert.deepEqual(targets.updates.map((update) => [update.field, update.path]), [
+    ['parent_id', 'targets'],
+    ['space_id', 'spaces']
+  ]);
+  assert.equal(
+    providerCheckpointFile(provider, { source_dir: 'E:/notes/demo/' }),
+    'E:/notes/demo/.wandao/xiliu-import.sqlite'
+  );
+  assert.deepEqual(
+    providerCheckpointArgs(provider, { source_dir: 'E:/notes/demo/' }),
+    ['--checkpoint-file', 'E:/notes/demo/.wandao/xiliu-import.sqlite', '--resume']
+  );
+});
 
 test('Yuque and Feishu import builders assign stable provider checkpoint task IDs', () => {
   const appJs = fs.readFileSync('wandao_electron/renderer/app.js', 'utf8');

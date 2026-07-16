@@ -95,6 +95,14 @@ const fixtures = {
     rootId: 'wiz-kb:demo', docId: 'wiz-doc:doc', parentId: 'wiz-kb:demo', exportId: 'doc-guid',
     args: ['--doc-id', 'doc-guid']
   },
+  xiliu: {
+    payload: { nodes: [
+      { id: 'folder', title: 'Folder', parentId: '', selectable: true },
+      { id: 'doc', title: 'Doc', parentId: 'folder', selectable: true }
+    ] },
+    rootId: 'xiliu:folder', docId: 'xiliu:doc', parentId: 'xiliu:folder', exportId: 'doc',
+    args: ['--doc-id', 'doc']
+  },
   yinxiang: {
     payload: { notebooks: [{
       guid: 'notebook-guid', name: 'Notebook', stack: 'Stack',

@@ -1,0 +1,145 @@
+{
+  "$schema": "../provider.schema.json",
+  "schemaVersion": 1,
+  "id": "xiliu-import",
+  "platform": "xiliu",
+  "name": "息流",
+  "title": "Markdown 导入息流",
+  "navLabel": "息流导入",
+  "description": "将本地 Markdown 文档导入到 FlowUs (息流) 空间。",
+  "type": "hybrid",
+  "group": "import",
+  "trustLevel": "community",
+  "status": "beta",
+  "guide": "README.md",
+  "homepage": "https://flowus.cn/",
+  "tags": ["导入", "目录", "断点续跑"],
+  "capabilities": {
+    "export": false,
+    "import": true,
+    "guide": true,
+    "login": true,
+    "scanToc": false,
+    "images": true,
+    "attachments": false,
+    "tree": true,
+    "batch": true,
+    "retryFailures": true
+  },
+  "checkpoint": {
+    "supported": true,
+    "strategy": "items",
+    "resourceTracking": false,
+    "baseField": "source_dir",
+    "fileName": "xiliu-import.sqlite"
+  },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
+  "fields": [
+    {
+      "name": "source_dir",
+      "label": "本地 Markdown 目录",
+      "type": "directory",
+      "arg": "--source-dir",
+      "required": true,
+      "history": "path",
+      "actions": ["import"]
+    },
+    {
+      "name": "space_id",
+      "label": "目标空间（由目标页面自动确定）",
+      "type": "select",
+      "arg": "--space-id",
+      "options": [],
+      "actions": ["import"]
+    },
+    {
+      "name": "parent_id",
+      "label": "目标页面",
+      "type": "select",
+      "arg": "--parent-id",
+      "required": true,
+      "options": [],
+      "actions": ["import"]
+    },
+    {
+      "name": "request_delay",
+      "label": "请求延迟秒",
+      "type": "number",
+      "arg": "--request-delay",
+      "default": 0.8,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["import"]
+    },
+    {
+      "name": "request_jitter",
+      "label": "随机浮动秒",
+      "type": "number",
+      "arg": "--request-jitter",
+      "default": 0.4,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["import"]
+    },
+    {
+      "name": "task_timeout",
+      "label": "导入任务超时秒",
+      "type": "number",
+      "arg": "--task-timeout",
+      "default": 120,
+      "min": 30,
+      "advanced": true,
+      "actions": ["import"]
+    }
+  ],
+  "actions": [
+    {
+      "id": "login",
+      "kind": "login",
+      "label": "登录并保存凭证",
+      "script": "../../backend/import_flowus.py",
+      "args": ["--login"],
+      "includeSelection": false,
+      "track": false,
+      "secondary": true
+    },
+    {
+      "id": "targets",
+      "kind": "check",
+      "label": "列出可导入目标",
+      "script": "../../backend/import_flowus.py",
+      "args": ["--scan-targets"],
+      "updates": [
+        {
+          "field": "parent_id",
+          "path": "targets",
+          "type": "options",
+          "valueKey": "id",
+          "labelKey": "label",
+          "placeholder": "请选择目标页面"
+        },
+        {
+          "field": "space_id",
+          "path": "spaces",
+          "type": "options",
+          "valueKey": "id",
+          "labelKey": "name",
+          "placeholder": "由目标页面自动确定"
+        }
+      ],
+      "includeSelection": false,
+      "secondary": true
+    },
+    {
+      "id": "import",
+      "kind": "import",
+      "label": "开始导入",
+      "script": "../../backend/import_flowus.py",
+      "args": ["--progress-every", "1"],
+      "progressTitle": "息流导入",
+      "progressDetail": "正在导入文档..."
+    }
+  ]
+}

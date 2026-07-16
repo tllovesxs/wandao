@@ -1,0 +1,145 @@
+{
+  "$schema": "../provider.schema.json",
+  "schemaVersion": 1,
+  "id": "xiliu",
+  "platform": "xiliu",
+  "name": "息流",
+  "title": "息流文档导出",
+  "navLabel": "息流导出",
+  "description": "将 FlowUs (息流) 文档导出为 Markdown。",
+  "type": "hybrid",
+  "group": "export",
+  "trustLevel": "community",
+  "status": "beta",
+  "defaults": { "output": "exports/flowus", "delay": "0.8", "jitter": "0.4" },
+  "guide": "README.md",
+  "homepage": "https://flowus.cn/",
+  "tags": ["导出", "目录", "断点续跑"],
+  "capabilities": {
+    "export": true,
+    "import": false,
+    "guide": true,
+    "login": true,
+    "scanToc": true,
+    "images": true,
+    "attachments": false,
+    "tree": true,
+    "batch": true,
+    "retryFailures": true
+  },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
+  "toc": {
+    "itemsPath": "nodes",
+    "idKey": "id",
+    "exportIdKey": "id",
+    "titleKey": "title",
+    "parentIdKey": "parentId",
+    "selectableKey": "selectable",
+    "selectionArg": "--doc-id",
+    "note": "读取目录后可按文件夹勾选文档，导出会保留原目录结构。"
+  },
+  "fields": [
+    {
+      "name": "doc_url",
+      "label": "FlowUs 文档 URL",
+      "type": "text",
+      "arg": "--doc-url",
+      "required": true,
+      "history": "url",
+      "placeholder": "https://flowus.cn/<doc_id>",
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "output",
+      "label": "输出目录",
+      "type": "directory",
+      "arg": "--output",
+      "required": true,
+      "default": "",
+      "history": "path",
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "incremental",
+      "label": "增量导出（跳过已存在文件）",
+      "type": "checkbox",
+      "arg": "--incremental",
+      "default": true,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "retry_failed",
+      "label": "只重试上次失败项",
+      "type": "checkbox",
+      "arg": "--retry-failed",
+      "default": false,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "request_delay",
+      "label": "请求延迟秒",
+      "type": "number",
+      "arg": "--request-delay",
+      "default": 0.8,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "request_jitter",
+      "label": "随机浮动秒",
+      "type": "number",
+      "arg": "--request-jitter",
+      "default": 0.4,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "task_timeout",
+      "label": "导入任务超时秒",
+      "type": "number",
+      "arg": "--task-timeout",
+      "default": 120,
+      "min": 30,
+      "step": 10,
+      "advanced": true,
+      "actions": ["import"]
+    }
+  ],
+  "actions": [
+    {
+      "id": "login",
+      "kind": "login",
+      "label": "登录并保存凭证",
+      "script": "../../backend/export_xiliu.py",
+      "args": ["--login"],
+      "includeSelection": false,
+      "track": false,
+      "secondary": true
+    },
+    {
+      "id": "scan",
+      "kind": "scan",
+      "label": "读取目录",
+      "script": "../../backend/export_xiliu.py",
+      "args": ["--scan-toc"],
+      "includeSelection": false,
+      "secondary": true
+    },
+    {
+      "id": "export",
+      "kind": "export",
+      "label": "开始导出",
+      "script": "../../backend/export_xiliu.py",
+      "args": ["--progress-every", "1"],
+      "progressTitle": "息流导出",
+      "progressDetail": "正在导出文档..."
+    }
+  ]
+}

@@ -216,6 +216,28 @@ class DingTalkExportTests(unittest.TestCase):
         with self.assertRaises(dingtalk.ExportError):
             dingtalk.read_limited_response(FakeResponse(), max_bytes=5)
 
+    def test_document_requests_have_a_bounded_browser_timeout(self) -> None:
+        self.assertIn("fetchWithTimeout", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("AbortController", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("}, 45000)", dingtalk.DINGTALK_HELPER_JS)
+        original = dingtalk.call_helper
+        calls = []
+
+        def fake_call_helper(_cdp, method, *args, **kwargs):
+            calls.append((method, args, kwargs))
+            return {"documentContent": {"checkpoint": {"content": "{}"}}}
+
+        dingtalk.call_helper = fake_call_helper
+        try:
+            args = dingtalk.parse_args([])
+            entry = dingtalk.DingEntry("doc", "dentry-key", "doc-key", "文档", "alidoc", "", False, False)
+            dingtalk.document_payload(None, entry, args)
+        finally:
+            dingtalk.call_helper = original
+
+        self.assertEqual(calls[0][0], "content")
+        self.assertEqual(calls[0][2]["timeout"], 55)
+
     def test_login_prints_a_task_result_without_an_inline_prompt(self) -> None:
         class FakeCdp:
             def navigate(self, _url):

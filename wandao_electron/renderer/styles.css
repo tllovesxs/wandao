@@ -1810,6 +1810,61 @@ select:focus-visible,
   margin-top: 14px;
 }
 
+/* WPS provider-owned recent result. Keep this outside global/home/task-center layout. */
+.wps-task-result-card {
+  margin: 0 0 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-raise);
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+
+.wps-task-result-card .task-result-disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.wps-task-result-card .task-result-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wps-task-result-card .task-result-header {
+  padding: 18px 20px;
+}
+
+.wps-task-result-card .task-result-header-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.wps-task-result-card .task-result-toggle {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.wps-task-result-card .task-result-toggle-expanded {
+  display: none;
+}
+
+.wps-task-result-card .task-result-disclosure[open] .task-result-toggle-collapsed {
+  display: none;
+}
+
+.wps-task-result-card .task-result-disclosure[open] .task-result-toggle-expanded {
+  display: inline;
+}
+
+.wps-task-result-card .task-result-details {
+  padding: 0 20px 18px;
+  border-top: 1px solid var(--border);
+}
+
 @keyframes progress-slide {
   from { transform: translateX(-115%); }
   to { transform: translateX(290%); }

@@ -12,15 +12,15 @@ test('leaving a completed provider page hides its finished progress card without
 });
 
 
-test('WPS partial export failures are collapsed in the original progress result card', () => {
+test('WPS partial export failures remain collapsible inside the WPS result card', () => {
   const resultCardSource = appJs.slice(
     appJs.indexOf('function renderTaskResultCard'),
     appJs.indexOf('async function handleTaskAction')
   );
-  assert.match(resultCardSource, /task\.providerId === 'wps-export'/);
+  assert.match(resultCardSource, /task\.providerId !== 'wps-export'/);
   assert.match(resultCardSource, /<details class="advanced-section wps-progress-failures"[^>]*>/);
   assert.match(resultCardSource, /<summary>[^<]*\$\{failureCount\}[^<]*<\/summary>/);
   assert.match(resultCardSource, /taskFailurePreview\(task, 100\)/);
   assert.match(resultCardSource, /escapeHtml\(line\)/);
-  assert.match(resultCardSource, /failurePreview\.map/);
+  assert.match(resultCardSource, /failureLines\.map/);
 });

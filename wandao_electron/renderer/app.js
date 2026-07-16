@@ -1261,70 +1261,73 @@ function announceTaskOutcome(task) {
 }
 
 function focusTaskResultCard() {
-  const card = document.getElementById('task-result-card');
+  const card = document.getElementById('wps-task-result-card');
   if (!card || card.hidden) return;
   window.requestAnimationFrame(() => card.focus({ preventScroll: false }));
 }
 
 function renderTaskResultCard(task = latestFinishedTask()) {
-  const card = document.getElementById('task-result-card');
+  const card = document.getElementById('wps-task-result-card');
   if (!card) return;
-  if (!task) {
+  if (currentTool !== 'wps-export' || !task || task.providerId !== 'wps-export') {
     card.hidden = true;
     card.replaceChildren();
     return;
   }
 
   const status = taskDisplayStatus(task);
+  const taskResultExpanded = status !== 'completed';
   const paths = taskArtifactPaths(task);
-  const failurePreview = taskFailurePreview(task);
-  const wpsFailureLines = task.providerId === 'wps-export' ? taskFailurePreview(task, 100) : [];
+  const failureLines = taskFailurePreview(task, 100);
   const failureCount = taskFailureCount(task);
   const documentFailures = taskDocumentFailureCount(task);
   const resourceFailures = taskResourceFailureCount(task);
   const canResume = canResumeTask(task);
   const resumeReason = resumeTaskDisabledReason(task);
   const resourceNotice = resourceFailures > 0
-    ? `<p class="task-result-resource-note">资源警告：${resourceFailures} 个图片或附件未完成。不会把它们误作“失败文档”自动重试，请打开报告处理。</p>`
+    ? `<p class="task-result-resource-note">资源警告：${resourceFailures} 个图片或附件未完成。</p>`
     : '';
   const documentNotice = documentFailures > 0
-    ? `<p class="task-result-document-note">文档失败：${documentFailures} 个。${canResume ? '可仅重试失败文档。' : '请查看报告后重新执行。'}</p>`
+    ? `<p class="task-result-document-note">文档失败：${documentFailures} 个。${canResume ? '可仅重试失败文档。' : '请复制报告后重新执行。'}</p>`
     : '';
 
-  card.className = `task-result-card ${escapeHtml(status)}`;
+  card.className = `task-result-card wps-task-result-card ${escapeHtml(status)}`;
   card.hidden = false;
   card.innerHTML = `
-    <div class="task-result-header">
-      <div>
-        <p class="task-result-kicker">最新任务结果</p>
-        <h3 id="task-result-title">${escapeHtml(task.title || task.providerTitle || '未命名任务')}</h3>
-      </div>
-      <span class="task-status ${escapeHtml(status)}">${escapeHtml(taskHistoryStatusText(task))}</span>
-    </div>
-    <p class="task-result-summary">${escapeHtml(taskSummary(task))}</p>
-    ${documentNotice}
-    ${resourceNotice}
-    ${failurePreview.length ? (task.providerId === 'wps-export' ? `
-      <details class="advanced-section wps-progress-failures" id="task-result-failures-title">
-        <summary>未成功 ${failureCount} 项（点击展开）</summary>
-        <div class="advanced-content task-result-failures" role="group">
-          <ul>${wpsFailureLines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>
+    <details class="task-result-disclosure"${taskResultExpanded ? ' open' : ''}>
+      <summary class="task-result-header">
+        <div>
+          <p class="task-result-kicker">最近一次 WPS 导出结果</p>
+          <h3 id="wps-task-result-title">${escapeHtml(task.title || 'WPS 文档导出')}</h3>
         </div>
-      </details>
-    ` : `
-      <div class="task-result-failures" role="group" aria-labelledby="task-result-failures-title">
-        <strong id="task-result-failures-title">需要处理</strong>
-        <ul>${failurePreview.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>
+        <div class="task-result-header-meta">
+          <span class="task-status ${escapeHtml(status)}">${escapeHtml(taskHistoryStatusText(task))}</span>
+          <span class="task-result-toggle" aria-hidden="true">
+            <span class="task-result-toggle-collapsed">展开详情</span>
+            <span class="task-result-toggle-expanded">收起详情</span>
+          </span>
+        </div>
+      </summary>
+      <div class="task-result-details">
+        <p class="task-result-summary">${escapeHtml(taskSummary(task))}</p>
+        ${documentNotice}
+        ${resourceNotice}
+        ${failureLines.length ? `
+          <details class="advanced-section wps-progress-failures" id="wps-task-result-failures-title"${failureCount > 0 ? ' open' : ''}>
+            <summary>未成功 ${failureCount} 项（点击展开或收起）</summary>
+            <div class="advanced-content task-result-failures" role="group">
+              <ul>${failureLines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>
+            </div>
+          </details>
+        ` : ''}
+        <div class="task-result-actions" aria-label="WPS 最近任务操作">
+          ${canResume ? `<button class="btn-secondary" type="button" data-task-result-action="resume" title="${escapeHtml(resumeReason)}">${escapeHtml(taskResumeActionLabel(task))}</button>` : ''}
+          ${paths.output ? '<button class="btn-text" type="button" data-task-result-action="open-output">打开输出</button>' : ''}
+          ${failureCount ? '<button class="btn-text" type="button" data-task-result-action="copy-failures" aria-describedby="wps-task-result-failures-title">复制失败项</button>' : ''}
+          <button class="btn-text" type="button" data-task-result-action="copy">复制报告</button>
+        </div>
       </div>
-    `) : ''}
-    <div class="task-result-actions" aria-label="最新任务操作">
-      ${canResume ? `<button class="btn-secondary" type="button" data-task-result-action="resume" title="${escapeHtml(resumeReason)}">${escapeHtml(taskResumeActionLabel(task))}</button>` : ''}
-      ${paths.output ? '<button class="btn-text" type="button" data-task-result-action="open-output">打开输出</button>' : ''}
-      ${paths.reportFile ? '<button class="btn-text" type="button" data-task-result-action="open-report">打开报告</button>' : ''}
-      ${failureCount ? '<button class="btn-text" type="button" data-task-result-action="copy-failures" aria-describedby="task-result-failures-title">复制失败项</button>' : ''}
-      <button class="btn-text" type="button" data-task-result-action="copy">复制报告</button>
-      <button class="btn-text" type="button" data-task-result-action="task-center">查看任务中心</button>
-    </div>
+    </details>
   `;
 }
 
@@ -3427,6 +3430,12 @@ function renderManifestProviderForm(provider) {
   const actions = Array.isArray(provider.actions) && provider.actions.length
     ? provider.actions
     : [{ id: 'run', label: provider.isImport ? '开始导入' : '开始导出', script: provider.script }];
+  const loginDoneButton = actions.some((action) => action.kind === 'login')
+    ? `<button class="btn-secondary" id="${provider.id}-login-done" type="button" hidden disabled>我已完成登录，保存凭证</button>`
+    : '';
+  const wpsResultCard = provider.id === 'wps-export'
+    ? '<section class="task-result-card wps-task-result-card" id="wps-task-result-card" aria-labelledby="wps-task-result-title" tabindex="-1" hidden></section>'
+    : '';
   const guideHtml = provider.guideMarkdown ? `
     <details class="advanced-section plugin-guide-section">
       <summary>平台说明 / 操作教程</summary>
@@ -3434,6 +3443,7 @@ function renderManifestProviderForm(provider) {
     </details>
   ` : '';
   contentArea.innerHTML = `
+    ${wpsResultCard}
     <div class="tool-panel manifest-tool-panel">
       <section class="form-section">
         <div class="provider-mini-header">
@@ -3459,14 +3469,16 @@ function renderManifestProviderForm(provider) {
           <button class="${action.danger ? 'btn-danger' : (action.secondary ? 'btn-secondary' : 'btn-primary')}" data-manifest-action="${escapeHtml(action.id || action.label)}" type="button">
             ${escapeHtml(action.label || action.id || '执行')}
           </button>
+          ${provider.id === 'wps-export' && action.kind === 'login' ? loginDoneButton : ''}
         `).join('')}
-        ${actions.some((action) => action.kind === 'login') ? `<button class="btn-secondary" id="${provider.id}-login-done" type="button" hidden disabled>我已完成登录，保存凭证</button>` : ''}
+        ${provider.id !== 'wps-export' ? loginDoneButton : ''}
         <button class="btn-danger" id="${provider.id}-stop" disabled>停止</button>
       </section>
     </div>
   `;
   bindCollapsibleGuideImages(contentArea, provider.id);
   initializeManifestProviderHandlers(provider, actions, fields);
+  renderTaskResultCard();
 }
 
 function manifestFieldValue(provider, field) {
@@ -3663,6 +3675,15 @@ function initializeManifestProviderHandlers(provider, actions, fields) {
       }
     });
   });
+  if (provider.id === 'wps-export') {
+    document.getElementById('wps-task-result-card')?.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-task-result-action]');
+      if (!button) return;
+      const task = latestFinishedTask();
+      handleTaskAction(task, button.dataset.taskResultAction)
+        .catch((error) => log(`执行 WPS 任务操作失败：${formatError(error)}`, 'error'));
+    });
+  }
   const loginDoneButton = document.getElementById(`${provider.id}-login-done`);
   loginDoneButton?.addEventListener('click', async () => {
     loginDoneButton.disabled = true;
@@ -6579,13 +6600,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     handleTaskAction(task, button.dataset.historyAction)
-      .catch((error) => log(`执行任务操作失败：${formatError(error)}`, 'error'));
-  });
-  document.getElementById('task-result-card')?.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-task-result-action]');
-    if (!button) return;
-    const task = latestFinishedTask();
-    handleTaskAction(task, button.dataset.taskResultAction)
       .catch((error) => log(`执行任务操作失败：${formatError(error)}`, 'error'));
   });
   document.getElementById('btn-theme-toggle')?.addEventListener('click', toggleTheme);

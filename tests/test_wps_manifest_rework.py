@@ -24,8 +24,15 @@ class WPSManifestTests(unittest.TestCase):
         self.assertFalse(provider["capabilities"]["guide"])
         self.assertNotIn("guide", provider)
         self.assertIn("智能文档", provider["title"])
+        self.assertIn("Markdown", provider["title"])
         self.assertIn("其他文档", provider["title"])
+        self.assertIn("原始文件", provider["title"])
+        self.assertIn("智能文档转换为 Markdown", provider["description"])
+        self.assertIn("其他文档保留原始文件", provider["description"])
         self.assertIn("不读取设备文档", provider["description"])
+        export_action = next(action for action in provider["actions"] if action["id"] == "export")
+        self.assertIn("Markdown", export_action["progressDetail"])
+        self.assertIn("原始文件", export_action["progressDetail"])
 
 
 if __name__ == "__main__":

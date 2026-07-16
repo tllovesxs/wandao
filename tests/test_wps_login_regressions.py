@@ -63,6 +63,46 @@ class WPSLoginRegressionTests(unittest.TestCase):
         self.assertTrue(browser.terminated)
         self.assertTrue(browser.waited)
 
+    def test_connect_waits_until_wps_page_is_ready_before_returning(self) -> None:
+        class ReadyStateCDP(FakeCDP):
+            def __init__(self) -> None:
+                super().__init__()
+                self.evaluations = []
+                self.states = iter((
+                    {"href": "about:blank", "readyState": "complete"},
+                    {"href": "https://www.kdocs.cn/latest", "readyState": "interactive"},
+                ))
+
+            def connect(self) -> None:
+                pass
+
+            def send(self, method, params=None, timeout=30):
+                return {}
+
+            def evaluate(self, expression, timeout=60):
+                self.evaluations.append(expression)
+                return next(self.states)
+
+        cdp = ReadyStateCDP()
+        browser = FakeBrowserProcess()
+        page = {
+            "type": "page",
+            "url": "https://www.kdocs.cn/latest",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9237/devtools/page/1",
+        }
+        args = SimpleNamespace(port=9237, profile_dir=None, browser_path=None)
+        with (
+            mock.patch.object(export_wps, "chrome_debug_available", return_value=True),
+            mock.patch.object(export_wps, "http_json", return_value=[page]),
+            mock.patch.object(export_wps, "CDPClient", return_value=cdp),
+            mock.patch.object(export_wps.time, "sleep"),
+        ):
+            connected, owned_process = export_wps.connect_wps_browser(args)
+
+        self.assertIs(connected, cdp)
+        self.assertIsNone(owned_process)
+        self.assertGreaterEqual(len(cdp.evaluations), 2)
+
     def test_close_owned_browser_kills_when_graceful_shutdown_times_out(self) -> None:
         class StubbornProcess(FakeBrowserProcess):
             def wait(self, timeout=None) -> None:

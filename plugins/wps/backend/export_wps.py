@@ -167,6 +167,37 @@ def _page_is_wps(page: Mapping[str, Any]) -> bool:
     return parsed.scheme == "https" and _official_host(parsed.hostname or "", ("kdocs.cn", "wps.cn"))
 
 
+def _wait_for_wps_page_ready(cdp: CDPClient, timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    expression = """
+        ({
+          href: String(location.href || ""),
+          readyState: String(document.readyState || "")
+        })
+    """
+    while True:
+        try:
+            state = cdp.evaluate(expression, timeout=5)
+        except Exception:
+            state = None
+        if isinstance(state, Mapping):
+            try:
+                parsed = urllib.parse.urlsplit(str(state.get("href") or ""))
+            except ValueError:
+                parsed = None
+            ready_state = str(state.get("readyState") or "").lower()
+            if (
+                parsed is not None
+                and parsed.scheme == "https"
+                and _official_host(parsed.hostname or "", ("kdocs.cn", "wps.cn"))
+                and ready_state in {"interactive", "complete"}
+            ):
+                return
+        if time.monotonic() >= deadline:
+            raise ExportError("WPS ????????????????????????????")
+        time.sleep(0.1)
+
+
 def connect_wps_browser(args: argparse.Namespace, initial_url: str = WPS_HOME_URL) -> tuple[CDPClient, subprocess.Popen[Any] | None]:
     port = int(getattr(args, "port", WPS_DEBUG_PORT) or WPS_DEBUG_PORT)
     profile = Path(getattr(args, "profile_dir", "") or default_profile_path()).expanduser().resolve()
@@ -187,6 +218,7 @@ def connect_wps_browser(args: argparse.Namespace, initial_url: str = WPS_HOME_UR
     cdp.connect()
     cdp.send("Runtime.enable")
     cdp.send("Page.enable")
+    _wait_for_wps_page_ready(cdp)
     return cdp, process
 
 

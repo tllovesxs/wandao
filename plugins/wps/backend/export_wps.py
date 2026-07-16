@@ -379,12 +379,17 @@ class CDPJSONTransport:
             (async () => {{
               const target = new URL({encoded_url});
               for (const [key, value] of Object.entries({encoded_params})) if (value !== null && value !== undefined && value !== '') target.searchParams.set(key, String(value));
-              const csrf = document.cookie.split(';').map(part => part.trim()).find(part => /^(csrf|csrf-rand|x-csrf-rand)=/i.test(part));
-              const csrfValue = csrf ? decodeURIComponent(csrf.substring(csrf.indexOf('=') + 1)) : '';
+              const method = {json.dumps(method)};
               const headers = {{'Accept': 'application/json'}};
-              if (csrfValue) headers['x-csrf-rand'] = csrfValue;
-              const options = {{method: {json.dumps(method)}, credentials:'include', redirect:'follow', cache:'no-store', headers}};
-              if ({json.dumps(method)} === 'POST') {{
+              const options = {{method, credentials:'include', redirect:'follow', cache:'no-store', headers}};
+              if (method === 'POST') {{
+                const csrf = document.cookie.split(';').map(part => part.trim()).find(part => /^(csrf|csrf-rand|x-csrf-rand)=/i.test(part));
+                let csrfValue = '';
+                if (csrf) {{
+                  const rawValue = csrf.substring(csrf.indexOf('=') + 1);
+                  try {{ csrfValue = decodeURIComponent(rawValue); }} catch (_) {{ csrfValue = rawValue; }}
+                }}
+                if (csrfValue) headers['x-csrf-rand'] = csrfValue;
                 headers['Content-Type'] = 'application/json';
                 options.body = JSON.stringify({encoded_body});
               }}
@@ -429,8 +434,14 @@ class WPSDocumentDataSource:
         raw = self.transport.request_json(method, url, params, body)
         if not isinstance(raw, Mapping):
             raise WPSApiError("WPS API 返回了无效响应")
-        status = int(raw.get("status") or 200)
+        raw_status = raw.get("status")
+        try:
+            status = 200 if raw_status is None else int(raw_status)
+        except (TypeError, ValueError) as exc:
+            raise WPSApiError("WPS API returned an invalid HTTP status") from exc
         headers = raw.get("headers") if isinstance(raw.get("headers"), Mapping) else {}
+        if status == 0:
+            raise WPSApiError("WPS API 网络请求失败", status=0)
         retry = _retry_after(headers.get("Retry-After"))
         if status in (401, 403):
             raise WPSAuthExpiredError("WPS 登录会话已过期", status=status)
@@ -463,8 +474,9 @@ class WPSDocumentDataSource:
             "searchname": "",
         }
         payload = self._request("GET", self._url(WPS_DOCUMENT_SEARCH_PATH), params)
+        raw_items = _items(payload)
         items: list[dict[str, Any]] = []
-        for item in _items(payload):
+        for item in raw_items:
             if _is_exportable_document(item):
                 items.append(_normalize_document_item(item, parent_id))
         next_data = payload.get("next") if isinstance(payload.get("next"), Mapping) else {}
@@ -474,6 +486,14 @@ class WPSDocumentDataSource:
             next_offset = int(raw_next) if raw_next not in (None, "") else None
         except (TypeError, ValueError):
             next_offset = None
+        if next_offset is None and raw_items:
+            try:
+                total = int(payload.get("total"))
+            except (TypeError, ValueError):
+                total = 0
+            candidate = offset + len(raw_items)
+            if total > candidate:
+                next_offset = candidate
         if next_offset is None or next_offset <= offset or has_more is False:
             return items, None
         return items, _encode_cursor({"offset": next_offset})
@@ -580,7 +600,7 @@ def _is_exportable_document(item: Mapping[str, Any]) -> bool:
     values = {
         str(item.get(key) or "").strip().lower()
         for key in (
-            "filetype", "file_type", "sub_type", "subType",
+            "ftype", "filetype", "file_type", "sub_type", "subType",
             "kind", "type", "location", "space_type", "spaceType",
             "status",
         )
@@ -593,13 +613,15 @@ def _is_exportable_document(item: Mapping[str, Any]) -> bool:
         return False
     if any(item.get(key) is True for key in ("is_folder", "is_dir", "folder", "is_device", "is_local", "in_trash")):
         return False
+    if item.get("device_info"):
+        return False
     return True
 
 
 def _normalize_document_item(item: Mapping[str, Any], parent_id: str | None) -> dict[str, Any]:
     identifier = _text(item, "fileid", "file_id", "id")
     title = _title(item, "未命名文档", identifier)
-    raw_size = item.get("size", item.get("file_size"))
+    raw_size = item.get("size", item.get("file_size", item.get("fsize")))
     try:
         size = None if raw_size in (None, "") else int(raw_size)
     except (TypeError, ValueError):

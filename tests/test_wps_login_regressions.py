@@ -208,6 +208,27 @@ class WPSLoginRegressionTests(unittest.TestCase):
         self.assertEqual(cdp.sent[0][1]["url"], "https://365.kdocs.cn")
         self.assertTrue(any("/3rd/drive/api/v6/search/files" in expression for expression in cdp.expressions))
 
+    def test_get_transport_does_not_add_csrf_header(self) -> None:
+        cdp = mock.Mock()
+        cdp.evaluate.return_value = {"status": 200, "headers": {}, "payload": {"files": []}}
+        transport = export_wps.CDPJSONTransport(cdp)
+
+        transport.request_json("GET", "https://365.kdocs.cn/3rd/drive/api/v6/search/files")
+
+        expression = cdp.evaluate.call_args.args[0]
+        post_guard = expression.index("if (method === 'POST'")
+        csrf_header = expression.index("if (csrfValue) headers['x-csrf-rand']")
+        self.assertLess(post_guard, csrf_header)
+
+    def test_transport_status_zero_is_not_treated_as_success(self) -> None:
+        transport = mock.Mock()
+        transport.request_json.return_value = {"status": 0, "headers": {}, "payload": {}}
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        with self.assertRaises(export_wps.WPSApiError):
+            source.list_children(export_wps.WPS_DOCUMENT_ROOT_ID)
+
+
     def test_root_uses_wps_document_label(self) -> None:
         source = export_wps.WPSDocumentDataSource(transport=mock.Mock())
         root = source.get_root()

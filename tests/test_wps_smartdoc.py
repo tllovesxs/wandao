@@ -48,6 +48,43 @@ class WPSDocumentTests(unittest.TestCase):
         self.assertIn("/3rd/drive/api/v6/search/files", transport.calls[0][1])
         self.assertEqual(transport.calls[0][2]["searchname"], "")
 
+    def test_actual_search_shape_excludes_folders_and_device_records(self):
+        transport = FakeTransport([{
+            "status": 200,
+            "payload": {
+                "files": [
+                    {"id": "201", "fname": "Cloud document", "ftype": "file"},
+                    {"id": "202", "fname": "Folder", "ftype": "folder"},
+                    {"id": "203", "fname": "Device record", "ftype": "sharefile", "device_info": {"device_id": "private"}},
+                ],
+                "total": 3,
+            },
+        }])
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        nodes, cursor = source.list_children(export_wps.WPS_DOCUMENT_ROOT_ID)
+
+        self.assertIsNone(cursor)
+        self.assertEqual([node["file_id"] for node in nodes], ["201"])
+
+    def test_search_paginates_using_total_when_next_offset_is_absent(self):
+        transport = FakeTransport([{
+            "status": 200,
+            "payload": {
+                "files": [
+                    {"id": "301", "fname": "Document one", "ftype": "file"},
+                    {"id": "302", "fname": "Document two", "ftype": "file"},
+                ],
+                "total": 5,
+            },
+        }])
+        source = export_wps.WPSDocumentDataSource(transport=transport)
+
+        _nodes, cursor = source.list_children(export_wps.WPS_DOCUMENT_ROOT_ID)
+
+        self.assertEqual(export_wps._decode_cursor(cursor)["offset"], 2)
+
+
     def test_smart_document_download_does_not_use_personal_cloud_special_group_api(self):
         transport = FakeTransport([{
             "status": 200,

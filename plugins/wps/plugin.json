@@ -2,11 +2,11 @@
   "$schema": "../plugin.schema.json",
   "schemaVersion": 1,
   "id": "wps",
-  "name": "WPS 云文档",
-  "description": "导出 WPS “我的云文档”中的可下载原始文件。",
+  "name": "WPS \u6587\u6863",
+  "description": "\u5bfc\u51fa WPS \u667a\u80fd\u6587\u6863\u53ca\u5176\u4ed6\u53ef\u4e0b\u8f7d\u7684\u4e91\u6587\u6863\uff0c\u4e0d\u8bfb\u53d6\u8bbe\u5907\u6587\u6863\u3002",
   "version": "1.0.0",
   "publisher": "community",
-  "homepage": "https://www.kdocs.cn/latest",
+  "homepage": "https://docs.wps.cn/welcome",
   "license": "AGPL-3.0-only",
   "core": {
     "minVersion": "1.2.9"

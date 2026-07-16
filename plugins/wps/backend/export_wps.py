@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""WPS personal-cloud original-file exporter.
+"""WPS document original-file exporter.
 
-The provider deliberately keeps the desktop contract small: login, scan, export,
-and clear-auth. Browser cookies stay in an isolated profile and every command
-writes exactly one JSON result to stdout; human-readable prompts/errors use stderr.
+The provider reads downloadable WPS cloud documents, including Smart Documents, while excluding device/local documents. It deliberately keeps
+the desktop contract small: login, scan, export, and clear-auth. Browser cookies
+stay in an isolated profile and every command writes exactly one JSON result to
+stdout; human-readable prompts/errors use stderr.
 """
 from __future__ import annotations
 
@@ -45,16 +46,19 @@ from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_arg
 from wandao_core.credentials import write_private_json
 from wandao_core.report import finalize_report
 
-WPS_HOME_URL = "https://www.kdocs.cn/latest"
+WPS_DOCUMENT_URL = "https://365.kdocs.cn"
+WPS_HOME_URL = WPS_DOCUMENT_URL
 WPS_DEBUG_PORT = 9237
-API_HOST = "drive.kdocs.cn"
-ROOT_PATH = "/api/v3/groups/special"
-FILES_PATH = "/api/v5/groups/special/files"
+API_HOST = "365.kdocs.cn"
+WPS_DOCUMENT_ROOT_ID = "smart-documents"
+WPS_DOCUMENT_SEARCH_PATH = "/3rd/drive/api/v6/search/files"
+WPS_DOCUMENT_DOWNLOAD_PATH = "/api/v3/office/file/{file_id}/download"
+WPS_DOCUMENT_EXECUTE_PATH = "/api/v3/office/file/{file_id}/core/execute"
 AUTH_COOKIE_NAMES = frozenset({"wps_sid"})
 AUTH_COOKIE_FIELDS = frozenset({
     "name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "expires"
 })
-API_HOSTS = frozenset({"drive.kdocs.cn", "www.kdocs.cn", "account.kdocs.cn", "account.wps.cn"})
+API_HOSTS = frozenset({"365.kdocs.cn", "drive.kdocs.cn", "www.kdocs.cn", "docs.wps.cn", "account.kdocs.cn", "account.wps.cn"})
 DOWNLOAD_SUFFIXES = ("kdocs.cn", "wps.cn", "wpscdn.cn")
 FORBIDDEN_PATH_CHARS = '<>:"/\\|?*'
 WINDOWS_RESERVED_NAMES = {
@@ -76,7 +80,13 @@ class WPSNode:
 
 
 class WPSJSONTransport(Protocol):
-    def request_json(self, method: str, url: str, params: Mapping[str, Any] | None = None) -> Mapping[str, Any]: ...
+    def request_json(
+        self,
+        method: str,
+        url: str,
+        params: Mapping[str, Any] | None = None,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]: ...
 
 
 class WPSApiError(ExportError):
@@ -123,8 +133,8 @@ def validate_api_url(url: str) -> str:
     if parsed.username or parsed.password or parsed.fragment:
         raise ValueError("WPS API URL contains forbidden credentials or fragment")
     path = parsed.path or "/"
-    if not path.startswith("/api/"):
-        raise ValueError("WPS API path is not read-only")
+    if not (path.startswith("/api/") or path.startswith("/3rd/drive/api/")):
+        raise ValueError("WPS API path is outside the read-only API allowlist")
     return urllib.parse.urlunsplit(("https", parsed.hostname.lower(), path, parsed.query, ""))
 
 
@@ -194,7 +204,7 @@ def _wait_for_wps_page_ready(cdp: CDPClient, timeout: float = 30.0) -> None:
             ):
                 return
         if time.monotonic() >= deadline:
-            raise ExportError("WPS ????????????????????????????")
+            raise ExportError("WPS 页面尚未准备好，请稍后重试。")
         time.sleep(0.1)
 
 
@@ -213,7 +223,7 @@ def connect_wps_browser(args: argparse.Namespace, initial_url: str = WPS_HOME_UR
         page = next((p for p in pages if p.get("type") == "page" and p.get("webSocketDebuggerUrl") and _page_is_wps(p)), None)
     if page is None:
         close_owned_browser(None, process)
-        raise ExportError("未找到或无法创建 WPS 云文档页面。")
+        raise ExportError("未找到或无法创建 WPS 文档页面。")
     cdp = CDPClient(str(page["webSocketDebuggerUrl"]))
     cdp.connect()
     cdp.send("Runtime.enable")
@@ -247,7 +257,7 @@ def close_owned_browser(cdp: CDPClient | None, process: Any) -> None:
 def verify_cloud_session(cdp: CDPClient) -> bool:
     result = cdp.evaluate(
         """
-        fetch("https://www.kdocs.cn/latest", {method:"GET", credentials:"include", redirect:"follow", cache:"no-store"})
+        fetch("https://365.kdocs.cn", {method:"GET", credentials:"include", redirect:"follow", cache:"no-store"})
           .then(r => ({ok:r.ok, status:r.status, url:r.url}))
           .catch(() => ({ok:false, status:0, url:""}))
         """,
@@ -259,7 +269,7 @@ def verify_cloud_session(cdp: CDPClient) -> bool:
         parsed = urllib.parse.urlsplit(str(result.get("url") or ""))
     except ValueError:
         return False
-    return parsed.scheme == "https" and (parsed.hostname or "").lower() == "www.kdocs.cn" and parsed.path.startswith("/latest")
+    return parsed.scheme == "https" and _official_host(parsed.hostname or "", ("365.kdocs.cn", "kdocs.cn", "wps.cn"))
 
 
 def save_auth_state(cdp: CDPClient, auth_file: str | Path | None = None) -> dict[str, Any]:
@@ -321,19 +331,36 @@ class CDPJSONTransport:
     def __init__(self, cdp: CDPClient) -> None:
         self.cdp = cdp
 
-    def request_json(self, method: str, url: str, params: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
-        if method.upper() != "GET":
-            raise ValueError("WPS 数据源只允许 GET 请求")
+    def request_json(
+        self,
+        method: str,
+        url: str,
+        params: Mapping[str, Any] | None = None,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        method = method.upper()
+        if method not in {"GET", "POST"}:
+            raise ValueError("WPS 数据源只允许 GET 或只读查询 POST 请求")
         target = validate_api_url(url)
         encoded_url = json.dumps(target, ensure_ascii=False)
         encoded_params = json.dumps(dict(params or {}), ensure_ascii=False)
+        encoded_body = json.dumps(dict(body or {}), ensure_ascii=False)
         result = self.cdp.evaluate(
             f"""
             (async () => {{
               const target = new URL({encoded_url});
               for (const [key, value] of Object.entries({encoded_params})) if (value !== null && value !== undefined && value !== '') target.searchParams.set(key, String(value));
+              const csrf = document.cookie.split(';').map(part => part.trim()).find(part => /^(csrf|csrf-rand|x-csrf-rand)=/i.test(part));
+              const csrfValue = csrf ? decodeURIComponent(csrf.substring(csrf.indexOf('=') + 1)) : '';
+              const headers = {{'Accept': 'application/json'}};
+              if (csrfValue) headers['x-csrf-rand'] = csrfValue;
+              const options = {{method: {json.dumps(method)}, credentials:'include', redirect:'follow', cache:'no-store', headers}};
+              if ({json.dumps(method)} === 'POST') {{
+                headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify({encoded_body});
+              }}
               try {{
-                const response = await fetch(target.toString(), {{method:'GET', credentials:'include', redirect:'follow', cache:'no-store'}});
+                const response = await fetch(target.toString(), options);
                 let payload = {{}}; try {{ payload = await response.json(); }} catch (_) {{}}
                 return {{status: response.status, headers: {{'Retry-After': response.headers.get('Retry-After') || ''}}, payload}};
               }} catch (_) {{ return {{status: 0, headers: {{}}, payload: {{}}}}; }}
@@ -346,7 +373,11 @@ class CDPJSONTransport:
         return result
 
 
-class WPSApiDataSource:
+class WPSDocumentDataSource:
+    """Read-only data source for downloadable WPS cloud documents."""
+
+    source_label = "WPS 文档"
+
     def __init__(self, *, transport: WPSJSONTransport, request_delay: float = 0.0, sleep: Callable[[float], None] | None = None) -> None:
         self.transport = transport
         self.request_delay = max(0.0, float(request_delay))
@@ -357,10 +388,16 @@ class WPSApiDataSource:
             raise ValueError("WPS API path must be explicit and query-free")
         return validate_api_url(f"https://{API_HOST}{path}")
 
-    def _get(self, url: str, params: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    def _request(
+        self,
+        method: str,
+        url: str,
+        params: Mapping[str, Any] | None = None,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
         if self.request_delay and self.sleep:
             self.sleep(self.request_delay)
-        raw = self.transport.request_json("GET", url, params)
+        raw = self.transport.request_json(method, url, params, body)
         if not isinstance(raw, Mapping):
             raise WPSApiError("WPS API 返回了无效响应")
         status = int(raw.get("status") or 200)
@@ -376,34 +413,70 @@ class WPSApiDataSource:
         return payload if isinstance(payload, Mapping) else {"data": payload}
 
     def get_root(self) -> dict[str, Any]:
-        raw = _unwrap(self._get(self._url(ROOT_PATH)))
-        root_id = _text(raw, "id", "group_id")
-        return {"id": root_id, "file_id": "", "title": _title(raw, "", "") or "我的云文档", "parent_id": None, "type": "folder"}
+        return {
+            "id": WPS_DOCUMENT_ROOT_ID,
+            "file_id": "",
+            "title": "WPS 文档",
+            "parent_id": None,
+            "type": "folder",
+        }
 
     def list_children(self, parent_id: str, cursor: str | None = None) -> tuple[list[dict[str, Any]], str | None]:
+        if parent_id != WPS_DOCUMENT_ROOT_ID:
+            return [], None
         state = _decode_cursor(cursor)
-        params: dict[str, Any] = {"filter": state.get("filter", "file"), "offset": state.get("offset", 0)}
-        if parent_id != "special":
-            params["folder_id"] = parent_id
-        payload = self._get(self._url(FILES_PATH), params)
-        items = [_normalize_api_item(item, parent_id) for item in _items(payload)]
-        with_parent = [item for item in items if item.get("parent_id")]
-        if with_parent:
-            items = [item for item in items if str(item.get("parent_id")) == str(parent_id)]
+        offset = int(state.get("offset", 0) or 0)
+        params: dict[str, Any] = {
+            "offset": offset,
+            "count": 100,
+            "sort_by": "modify_time",
+            "order": "desc",
+            "searchname": "",
+        }
+        payload = self._request("GET", self._url(WPS_DOCUMENT_SEARCH_PATH), params)
+        items: list[dict[str, Any]] = []
+        for item in _items(payload):
+            if _is_exportable_document(item):
+                items.append(_normalize_document_item(item, parent_id))
         next_data = payload.get("next") if isinstance(payload.get("next"), Mapping) else {}
-        next_filter = payload.get("next_filter", next_data.get("filter"))
-        next_offset = payload.get("next_offset", next_data.get("offset"))
-        if next_filter in (None, "") or next_offset in (None, "", 0, "0"):
+        raw_next = payload.get("next_offset", next_data.get("offset"))
+        has_more = payload.get("has_more", next_data.get("has_more"))
+        try:
+            next_offset = int(raw_next) if raw_next not in (None, "") else None
+        except (TypeError, ValueError):
+            next_offset = None
+        if next_offset is None or next_offset <= offset or has_more is False:
             return items, None
-        return items, _encode_cursor({"filter": str(next_filter), "offset": int(next_offset)})
+        return items, _encode_cursor({"offset": next_offset})
 
     def open_download(self, file_id: str) -> str:
-        safe_id = urllib.parse.quote(_text({"id": file_id}, "id"), safe="")
-        payload = _unwrap(self._get(self._url(f"/api/v3/office/file/{safe_id}/download"), {"isblocks": "false"}))
-        url = payload.get("url") or payload.get("download_url")
+        safe_id = urllib.parse.quote(str(file_id), safe="")
+        payload = _unwrap(self._request(
+            "GET",
+            self._url(WPS_DOCUMENT_DOWNLOAD_PATH.format(file_id=safe_id)),
+            {"isblocks": "false"},
+        ))
+        url = payload.get("url") or payload.get("download_url") or payload.get("downloadUrl")
         if not isinstance(url, str) or not url.strip():
-            raise WPSApiError("WPS 未返回直接的原始文件下载地址")
+            raise WPSApiError("WPS 文档未返回可下载的原始文件地址")
         return validate_download_url(url)
+
+    def query_content(self, file_id: str) -> Mapping[str, Any]:
+        safe_id = urllib.parse.quote(str(file_id), safe="")
+        return self._request(
+            "POST",
+            self._url(WPS_DOCUMENT_EXECUTE_PATH.format(file_id=safe_id)),
+            body={
+                "command": "http.otl.query",
+                "param": {"name": "block.query", "params": {"blockIds": ["doc"]}},
+            },
+        )
+
+
+# Kept as a private compatibility alias for callers importing the old class name;
+# all production paths now use the Smart Document source above.
+WPSApiDataSource = WPSDocumentDataSource
+WPSSmartDocumentDataSource = WPSDocumentDataSource
 
 
 def _retry_after(value: Any) -> float | None:
@@ -455,13 +528,62 @@ def _text(item: Mapping[str, Any], *keys: str) -> str:
 
 
 def _title(item: Mapping[str, Any], fallback: str, identifier: str) -> str:
-    for key in ("title", "name", "filename", "file_name", "display_name", "displayName"):
+    for key in ("title", "name", "filename", "file_name", "fname", "display_name", "displayName"):
         value = item.get(key)
         if isinstance(value, Mapping):
             value = value.get("text") or value.get("value")
         if value is not None and str(value).strip():
             return str(value).strip()
     return f"{fallback}-{identifier}" if identifier else fallback
+
+
+def _is_exportable_document(item: Mapping[str, Any]) -> bool:
+    """Return whether a search result is a downloadable cloud document.
+
+    The search endpoint can mix files, folders, device-space entries, and
+    recycled items. Only records with a file identifier and no explicit local
+    or non-exportable marker are allowed into the export tree.
+    """
+    identifier = item.get("fileid") or item.get("file_id") or item.get("id")
+    if identifier is None or not str(identifier).strip():
+        return False
+
+    values = {
+        str(item.get(key) or "").strip().lower()
+        for key in (
+            "filetype", "file_type", "sub_type", "subType",
+            "kind", "type", "location", "space_type", "spaceType",
+            "status",
+        )
+    }
+    if values.intersection({
+        "folder", "directory", "dir",
+        "device", "my_device", "my-device", "local",
+        "trash", "recycle", "recycle_bin", "recycle-bin",
+    }):
+        return False
+    if any(item.get(key) is True for key in ("is_folder", "is_dir", "folder", "is_device", "is_local", "in_trash")):
+        return False
+    return True
+
+
+def _normalize_document_item(item: Mapping[str, Any], parent_id: str | None) -> dict[str, Any]:
+    identifier = _text(item, "fileid", "file_id", "id")
+    title = _title(item, "未命名文档", identifier)
+    raw_size = item.get("size", item.get("file_size"))
+    try:
+        size = None if raw_size in (None, "") else int(raw_size)
+    except (TypeError, ValueError):
+        size = None
+    return {
+        "id": str(identifier),
+        "file_id": str(identifier),
+        "title": title,
+        "parent_id": str(parent_id) if parent_id not in (None, "") else None,
+        "type": "file",
+        "size": size,
+        "mtime": item.get("mtime", item.get("modify_time", item.get("modified_time"))),
+    }
 
 
 def _normalize_api_item(item: Mapping[str, Any], parent_id: str | None) -> dict[str, Any]:
@@ -490,7 +612,7 @@ def normalize_remote_item(item: Mapping[str, Any], parent_id: str | None) -> WPS
     return WPSNode(**normalized)
 
 
-def scan_tree(source: WPSApiDataSource, root: Mapping[str, Any], max_depth: int = 64) -> list[WPSNode]:
+def scan_tree(source: WPSDocumentDataSource, root: Mapping[str, Any], max_depth: int = 64) -> list[WPSNode]:
     result: list[WPSNode] = []
     seen: set[str] = set()
 
@@ -562,7 +684,7 @@ def download_original_file(url: str, target: Path) -> Path:
 
 
 class WPSExportTask:
-    def __init__(self, source: WPSApiDataSource, output: Path, *, checkpoint=None, report_file: Path | None = None) -> None:
+    def __init__(self, source: WPSDocumentDataSource, output: Path, *, checkpoint=None, report_file: Path | None = None) -> None:
         self.source = source
         self.output = Path(output).resolve()
         self.checkpoint = checkpoint
@@ -579,7 +701,7 @@ class WPSExportTask:
         if wanted:
             files = [node for node in files if node.file_id in wanted]
         if self.checkpoint:
-            self.checkpoint.start_task({"source": "WPS 云文档", "outputDir": str(self.output)})
+            self.checkpoint.start_task({"source": "WPS 文档", "outputDir": str(self.output)})
             for node in files:
                 self.checkpoint.upsert_item(node.file_id, title=node.title, source_id=node.file_id, parent_key=node.parent_id or "")
         used: set[str] = set()
@@ -640,7 +762,7 @@ def login_wps(args: argparse.Namespace) -> dict[str, Any]:
     cdp, process = connect_wps_browser(args)
     try:
         print("WPS 登录页面已打开。", file=sys.stderr, flush=True)
-        print("请在浏览器中完成登录，确认回到“我的云文档”后按 Enter。", file=sys.stderr, flush=True)
+        print("请在浏览器中完成登录，确认回到“WPS 文档”后按 Enter。", file=sys.stderr, flush=True)
         sys.stdin.readline()
         saved = save_auth_state(cdp, getattr(args, "auth_file", None))
         return {"provider": "wps-export", "status": "authenticated", "cookieCount": int(saved["cookieCount"])}
@@ -652,7 +774,7 @@ def scan_wps(args: argparse.Namespace) -> dict[str, Any]:
     cdp, process = connect_wps_browser(args)
     try:
         load_auth_state(cdp, getattr(args, "auth_file", None))
-        source = WPSApiDataSource(transport=CDPJSONTransport(cdp), request_delay=args.request_delay, sleep=time.sleep)
+        source = WPSDocumentDataSource(transport=CDPJSONTransport(cdp), request_delay=args.request_delay, sleep=time.sleep)
         return {"nodes": [asdict(node) for node in scan_tree(source, source.get_root())]}
     finally:
         close_owned_browser(cdp, process)
@@ -665,7 +787,7 @@ def export_wps(args: argparse.Namespace) -> dict[str, Any]:
     try:
         cdp, process = connect_wps_browser(args)
         load_auth_state(cdp, getattr(args, "auth_file", None))
-        source = WPSApiDataSource(transport=CDPJSONTransport(cdp), request_delay=args.request_delay, sleep=time.sleep)
+        source = WPSDocumentDataSource(transport=CDPJSONTransport(cdp), request_delay=args.request_delay, sleep=time.sleep)
         task = WPSExportTask(source, output, checkpoint=checkpoint)
         result = task.export(task.scan(), args.selected_file_ids, args.retry_failed)
         _write_report(result, task.report_file)
@@ -677,7 +799,7 @@ def export_wps(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Export original files from WPS personal cloud documents.")
+    parser = argparse.ArgumentParser(description="Export original files from WPS Smart Documents.")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--login", action="store_true")
     modes.add_argument("--scan-toc", action="store_true")

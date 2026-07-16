@@ -121,12 +121,10 @@ class WPSLoginRegressionTests(unittest.TestCase):
         self.assertEqual(normalized["title"], "未命名文件-file-123")
         self.assertEqual(normalized["parent_id"], "special")
 
-    def test_root_without_title_uses_personal_cloud_label(self) -> None:
-        source = export_wps.WPSApiDataSource(
-            transport=mock.Mock(request_json=mock.Mock(return_value={"data": {"id": "special"}}))
-        )
+    def test_root_uses_wps_document_label(self) -> None:
+        source = export_wps.WPSDocumentDataSource(transport=mock.Mock())
         root = source.get_root()
-        self.assertEqual(root["title"], "我的云文档")
+        self.assertEqual(root["title"], "WPS 文档")
 
 
 if __name__ == "__main__":

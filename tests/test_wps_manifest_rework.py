@@ -21,6 +21,11 @@ class WPSManifestTests(unittest.TestCase):
         self.assertEqual({action["id"] for action in provider["actions"]}, {"login", "scan", "export", "clearAuth"})
         self.assertEqual(provider["toc"]["selectionArg"], "--file-id")
         self.assertEqual(provider["toc"]["selectableTypes"], ["file"])
+        self.assertFalse(provider["capabilities"]["guide"])
+        self.assertNotIn("guide", provider)
+        self.assertIn("智能文档", provider["title"])
+        self.assertIn("其他文档", provider["title"])
+        self.assertIn("不读取设备文档", provider["description"])
 
 
 if __name__ == "__main__":

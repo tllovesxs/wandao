@@ -1102,7 +1102,36 @@ class WPSExportTask:
         )
         try:
             for index, node in enumerate(files, start=1):
-                check_stopped(self.args)
+                check_stopped(None)
+                doc_fields = {"id": node.file_id, "title": node.title, "index": index}
+                self._emit(
+                    f"开始导出 WPS 文档：{node.title}",
+                    event="document.export.started",
+                    doc=doc_fields,
+                )
+                if self.checkpoint:
+                    status = self.checkpoint.item_status(node.file_id)
+                    if status == "completed" or (retry_failed and status != "failed"):
+                        skipped += 1
+                        self._emit(
+                            f"WPS 文档导出跳过：{node.title}",
+                            event="document.export.completed",
+                            doc=doc_fields,
+                            result={"status": "skipped"},
+                        )
+                        if index % progress_every == 0 or index == total:
+                            self._emit(
+                                f"progress {index}/{total} exported={success} skipped={skipped} failures={len(failures)}",
+                                event="task.progress",
+                                progress={"current": index, "total": total},
+                                stats={
+                                    "exportedDocs": success,
+                                    "skippedDocs": skipped,
+                                    "failureCount": len(failures),
+                                },
+                            )
+                        continue
+                    self.checkpoint.start_item(node.file_id, "download")
                 parents: list[str] = []
                 current = node.parent_id
                 chain: list[str] = []
@@ -1113,57 +1142,50 @@ class WPSExportTask:
                     current = parent.parent_id
                 parents.extend(reversed(chain))
                 target = safe_target(self.output, [*parents, node.title], used)
-                doc_fields = {"id": node.file_id, "title": node.title, "index": index, "path": str(target)}
-                self._emit(
-                    f"开始导出 WPS 文档：{node.title}",
-                    event="document.export.started",
-                    doc=doc_fields,
-                )
+                doc_fields = {**doc_fields, "path": str(target)}
                 try:
-                    outcome = ""
-                    if self.checkpoint:
-                        status = self.checkpoint.item_status(node.file_id)
-                        if status == "completed" or (retry_failed and status != "failed"):
+                    try:
+                        url = self.source.open_download(node.file_id, node.group_id)
+                    except WPSApiError as exc:
+                        if not _can_fallback_to_smart_content(exc):
+                            raise
+                        markdown_name = f"{Path(node.title).stem or node.title}.md"
+                        target = safe_target(self.output, [*parents, markdown_name], used)
+                        doc_fields = {**doc_fields, "path": str(target)}
+                        if target.exists():
                             skipped += 1
-                            outcome = "skipped"
-                        else:
-                            self.checkpoint.start_item(node.file_id, "download")
-                    if not outcome:
-                        try:
-                            url = self.source.open_download(node.file_id, node.group_id)
-                        except WPSApiError as exc:
-                            if not _can_fallback_to_smart_content(exc):
-                                raise
-                            markdown_name = f"{Path(node.title).stem or node.title}.md"
-                            target = safe_target(self.output, [*parents, markdown_name], used)
-                            doc_fields = {**doc_fields, "path": str(target)}
-                            if target.exists():
-                                skipped += 1
-                                outcome = "skipped"
-                            else:
-                                write_smart_document(self.source.query_content(node.file_id), target)
-                                success += 1
-                                outcome = "exported"
-                        else:
-                            if target.exists():
-                                skipped += 1
-                                outcome = "skipped"
-                            else:
-                                download_original_file(url, target)
-                                success += 1
-                                outcome = "exported"
-                        if self.checkpoint:
-                            self.checkpoint.complete_item(node.file_id, str(target))
+                            if self.checkpoint:
+                                self.checkpoint.complete_item(node.file_id, str(target))
+                            self._emit(
+                                f"WPS 文档导出跳过：{node.title}",
+                                event="document.export.completed",
+                                doc=doc_fields,
+                                result={"status": "skipped"},
+                            )
+                            continue
+                        write_smart_document(self.source.query_content(node.file_id), target)
+                    else:
+                        if target.exists():
+                            skipped += 1
+                            if self.checkpoint:
+                                self.checkpoint.complete_item(node.file_id, str(target))
+                            self._emit(
+                                f"WPS 文档导出跳过：{node.title}",
+                                event="document.export.completed",
+                                doc=doc_fields,
+                                result={"status": "skipped"},
+                            )
+                            continue
+                        download_original_file(url, target)
+                    success += 1
+                    if self.checkpoint:
+                        self.checkpoint.complete_item(node.file_id, str(target))
                     self._emit(
-                        f"WPS 文档导出{'跳过' if outcome == 'skipped' else '完成'}：{node.title}",
+                        f"WPS 文档导出完成：{node.title}",
                         event="document.export.completed",
                         doc=doc_fields,
-                        result={"status": outcome},
+                        result={"status": "exported"},
                     )
-                except ExportStopped:
-                    if self.checkpoint:
-                        self.checkpoint.fail_item(node.file_id, "stopped")
-                    raise
                 except Exception as exc:
                     message = safe_error_text(exc)
                     failures.append({"file": node.title, "error": message})
@@ -1197,6 +1219,7 @@ class WPSExportTask:
             if self.checkpoint:
                 self.checkpoint.fail_task("任务因停止请求而停止", status="stopped")
             return finalize_report(report, provider="wps-export", mode="export", report_file=self.report_file, output=self.output)
+
 
 def _write_report(report: Mapping[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

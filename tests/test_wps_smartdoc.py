@@ -350,6 +350,59 @@ class WPSDocumentTests(unittest.TestCase):
         self.assertEqual(report["skippedCount"], 1)
         source.open_download.assert_not_called()
 
+    def test_checkpoint_skip_keeps_original_early_continue_before_target_allocation(self):
+        args = argparse.Namespace(progress_every=1)
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        checkpoint = mock.Mock()
+        checkpoint.item_status.return_value = "completed"
+        node = export_wps.WPSNode(id="1", file_id="1", title="Done.docx", parent_id=None, type="file")
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.object(export_wps, "emit", create=True),
+                mock.patch.object(export_wps, "safe_target") as safe_target_mock,
+            ):
+                report = export_wps.WPSExportTask(
+                    source,
+                    Path(directory),
+                    checkpoint=checkpoint,
+                    args=args,
+                ).export([node])
+
+        safe_target_mock.assert_not_called()
+        source.open_download.assert_not_called()
+        self.assertEqual(report["skippedCount"], 1)
+
+    def test_progress_instrumentation_keeps_original_stop_probe_argument(self):
+        args = argparse.Namespace(progress_every=1)
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        source.open_download.return_value = "https://download.invalid/file"
+        node = export_wps.WPSNode(id="1", file_id="1", title="Doc.docx", parent_id=None, type="file")
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.object(export_wps, "emit", create=True),
+                mock.patch.object(export_wps, "check_stopped") as check_stopped_mock,
+                mock.patch.object(export_wps, "download_original_file"),
+            ):
+                export_wps.WPSExportTask(source, Path(directory), args=args).export([node])
+
+        check_stopped_mock.assert_called_once_with(None)
+
+    def test_download_stage_export_stopped_keeps_original_item_failure_semantics(self):
+        args = argparse.Namespace(progress_every=1)
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        source.open_download.side_effect = export_wps.ExportStopped("stop during download")
+        node = export_wps.WPSNode(id="1", file_id="1", title="Doc.docx", parent_id=None, type="file")
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(export_wps, "emit", create=True):
+                report = export_wps.WPSExportTask(source, Path(directory), args=args).export([node])
+
+        self.assertFalse(report.get("stopped", False))
+        self.assertEqual(report["failureCount"], 1)
+        self.assertEqual(report["failures"][0]["file"], "Doc.docx")
+
     def test_scan_keeps_browser_open_after_reading_documents(self):
         cdp = mock.Mock()
         process = mock.Mock()

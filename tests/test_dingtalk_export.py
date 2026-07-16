@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "plugins" / "dingtalk" / "backend" / "export_dingtalk.py"
@@ -174,6 +178,32 @@ class DingTalkExportTests(unittest.TestCase):
 
         with self.assertRaises(dingtalk.ExportError):
             dingtalk.read_limited_response(FakeResponse(), max_bytes=5)
+
+    def test_login_prints_a_task_result_without_an_inline_prompt(self) -> None:
+        class FakeCdp:
+            def navigate(self, _url):
+                return None
+
+            def close(self):
+                return None
+
+        original_connect = dingtalk.connect_dingtalk_browser
+        original_save = dingtalk.save_auth_summary
+        dingtalk.connect_dingtalk_browser = lambda _args: (FakeCdp(), None)
+        dingtalk.save_auth_summary = lambda _args, _cdp: {"authFile": "auth.json", "displayName": "tester"}
+        output = io.StringIO()
+        try:
+            with patch("builtins.input", return_value=""), contextlib.redirect_stdout(output):
+                self.assertEqual(dingtalk.main(["--login"]), 0)
+        finally:
+            dingtalk.connect_dingtalk_browser = original_connect
+            dingtalk.save_auth_summary = original_save
+
+        stdout = output.getvalue()
+        self.assertNotIn("完成钉钉登录并能看到网页后，回到万能导点击“我已完成登录，保存凭证”...{", stdout)
+        payload = json.loads(stdout[stdout.index("{") :])
+        self.assertEqual(payload["kind"], "wandao.result")
+        self.assertTrue(payload["loggedIn"])
 
 
 if __name__ == "__main__":

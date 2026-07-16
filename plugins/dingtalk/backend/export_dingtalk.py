@@ -678,9 +678,18 @@ def run_login(args: argparse.Namespace) -> dict[str, Any]:
                     last_error = str(exc)
                     time.sleep(1)
             raise ExportError(last_error or "未检测到钉钉登录状态。")
-        input("完成钉钉登录并能看到网页后，回到万能导点击“我已完成登录，保存凭证”...")
+        # Do not pass a prompt to input(). In the desktop app stdout also
+        # carries structured logs and the final JSON result; Python prints an
+        # input prompt without a trailing newline, which would join the prompt
+        # to that result and make the host reject a successful login.
+        input()
         check_stopped(args)
-        return save_auth_summary(args, cdp)
+        summary = save_auth_summary(args, cdp)
+        return finalize_report(
+            {"platform": "dingtalk", "loggedIn": True, **summary},
+            provider="dingtalk-export",
+            mode="login",
+        )
     finally:
         cdp.close()
         if process and args.close_started_chrome:

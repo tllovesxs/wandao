@@ -55,6 +55,14 @@ const fixtures = {
     rootId: 'aliyun:folder', docId: 'aliyun:doc', parentId: 'aliyun:folder', exportId: 'doc',
     args: ['--doc-id', 'doc']
   },
+  'dingtalk-export': {
+    payload: { nodes: [
+      { nodeId: 'dingtalk:folder', exportId: '', title: 'Folder', parentNodeId: '', selectable: false },
+      { nodeId: 'dingtalk:doc', exportId: 'doc-uuid', title: 'Doc', parentNodeId: 'dingtalk:folder', selectable: true }
+    ] },
+    rootId: 'dingtalk:folder', docId: 'dingtalk:doc', parentId: 'dingtalk:folder', exportId: 'doc-uuid',
+    args: ['--doc-id', 'doc-uuid']
+  },
   'feishu-export': {
     payload: { ordered: [
       { wiki_token: 'folder', title: 'Folder', parent_wiki_token: '', selectable: false },

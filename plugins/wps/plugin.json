@@ -1,0 +1,31 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "wps",
+  "name": "WPS 云文档",
+  "description": "导出 WPS “我的云文档”中的可下载原始文件。",
+  "version": "1.0.0",
+  "publisher": "community",
+  "homepage": "https://www.kdocs.cn/latest",
+  "license": "AGPL-3.0-only",
+  "core": {
+    "minVersion": "1.2.9"
+  },
+  "platforms": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "entrypoints": {
+    "providers": [
+      "providers/wps-export/provider.json"
+    ]
+  },
+  "permissions": [
+    "browser-automation",
+    "credentials",
+    "filesystem:write",
+    "network",
+    "process"
+  ]
+}

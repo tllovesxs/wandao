@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import base64
 import io
 import json
@@ -263,6 +264,91 @@ class WPSDocumentTests(unittest.TestCase):
         self.assertEqual(report["successCount"], 0)
         self.assertEqual(report["failureCount"], 1)
         source.query_content.assert_not_called()
+
+    def test_export_emits_per_file_events_and_progress_without_secrets(self):
+        args = argparse.Namespace(progress_every=2)
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        source.open_download.side_effect = [
+            "https://download.wpscdn.cn/existing?signature=hidden",
+            export_wps.ExportError("download https://secret.example/file failed; Cookie: wps_sid=super-secret"),
+            "https://download.wpscdn.cn/success?signature=hidden",
+        ]
+        nodes = [
+            export_wps.WPSNode(id="1", file_id="1", title="Existing.docx", parent_id=None, type="file"),
+            export_wps.WPSNode(id="2", file_id="2", title="Failure.docx", parent_id=None, type="file"),
+            export_wps.WPSNode(id="3", file_id="3", title="Success.docx", parent_id=None, type="file"),
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "Existing.docx").write_bytes(b"existing")
+
+            def fake_download(_url, target):
+                Path(target).write_bytes(b"exported")
+
+            with (
+                mock.patch.object(export_wps, "emit", create=True) as emit_mock,
+                mock.patch.object(export_wps, "download_original_file", side_effect=fake_download),
+            ):
+                report = export_wps.WPSExportTask(source, output, args=args).export(nodes)
+
+        events = [call.kwargs.get("event") for call in emit_mock.call_args_list]
+        self.assertEqual(events.count("task.started"), 1)
+        self.assertEqual(events.count("document.export.started"), 3)
+        self.assertEqual(events.count("document.export.completed"), 2)
+        self.assertEqual(events.count("document.export.failed"), 1)
+        progress_calls = [call for call in emit_mock.call_args_list if call.kwargs.get("event") == "task.progress"]
+        self.assertEqual([call.kwargs["progress"]["current"] for call in progress_calls], [2, 3])
+        self.assertEqual(progress_calls[-1].kwargs["stats"], {
+            "exportedDocs": 2,
+            "skippedDocs": 0,
+            "failureCount": 1,
+        })
+        completed_statuses = [
+            call.kwargs["result"]["status"]
+            for call in emit_mock.call_args_list
+            if call.kwargs.get("event") == "document.export.completed"
+        ]
+        self.assertEqual(completed_statuses, ["exported", "exported"])
+        self.assertEqual(report["successCount"], 2)
+        self.assertEqual(report["skippedCount"], 0)
+        self.assertEqual(report["failureCount"], 1)
+        emitted_payload = json.dumps([
+            {"message": call.args[1], **call.kwargs}
+            for call in emit_mock.call_args_list
+        ], ensure_ascii=False)
+        self.assertNotIn("super-secret", emitted_payload)
+        self.assertNotIn("secret.example", emitted_payload)
+        self.assertNotIn("download.wpscdn.cn", emitted_payload)
+
+    def test_checkpoint_skip_still_emits_completion_and_final_progress(self):
+        args = argparse.Namespace(progress_every=99)
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        checkpoint = mock.Mock()
+        checkpoint.item_status.return_value = "completed"
+        node = export_wps.WPSNode(id="1", file_id="1", title="Done.docx", parent_id=None, type="file")
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(export_wps, "emit", create=True) as emit_mock:
+                report = export_wps.WPSExportTask(
+                    source,
+                    Path(directory),
+                    checkpoint=checkpoint,
+                    args=args,
+                ).export([node])
+
+        events = [call.kwargs.get("event") for call in emit_mock.call_args_list]
+        self.assertEqual(events, [
+            "task.started",
+            "document.export.started",
+            "document.export.completed",
+            "task.progress",
+        ])
+        completed = emit_mock.call_args_list[2]
+        self.assertEqual(completed.kwargs["result"]["status"], "skipped")
+        self.assertEqual(emit_mock.call_args_list[-1].kwargs["progress"], {"current": 1, "total": 1})
+        self.assertEqual(report["skippedCount"], 1)
+        source.open_download.assert_not_called()
 
     def test_scan_keeps_browser_open_after_reading_documents(self):
         cdp = mock.Mock()

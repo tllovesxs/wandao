@@ -39,6 +39,7 @@ from wandao_core.browser import (
     check_stopped,
     chrome_debug_available,
     default_data_dir,
+    emit,
     http_json,
     open_tab,
     start_chrome,
@@ -1054,14 +1055,28 @@ def download_original_file(url: str, target: Path) -> Path:
 
 
 class WPSExportTask:
-    def __init__(self, source: WPSDocumentDataSource, output: Path, *, checkpoint=None, report_file: Path | None = None) -> None:
+    def __init__(
+        self,
+        source: WPSDocumentDataSource,
+        output: Path,
+        *,
+        checkpoint=None,
+        report_file: Path | None = None,
+        args: argparse.Namespace | None = None,
+    ) -> None:
         self.source = source
         self.output = Path(output).resolve()
         self.checkpoint = checkpoint
         self.report_file = report_file or self.output / "00-导出报告.json"
+        self.args = args
 
     def scan(self) -> list[WPSNode]:
         return scan_tree(self.source, self.source.get_root())
+
+    def _emit(self, message: str, *, event: str, level: str = "info", **fields: Any) -> None:
+        if self.args is None:
+            return
+        emit(self.args, message, event=event, level=level, **fields)
 
     def export(self, nodes: Sequence[WPSNode], selected: Sequence[str] | None = None, retry_failed: bool = False) -> dict[str, Any]:
         self.output.mkdir(parents=True, exist_ok=True)
@@ -1077,15 +1092,17 @@ class WPSExportTask:
         used: set[str] = set()
         success = skipped = 0
         failures: list[dict[str, str]] = []
+        total = len(files)
+        progress_every = max(1, int(getattr(self.args, "progress_every", 1) or 1))
+        self._emit(
+            f"开始导出 WPS 文档：共 {total} 篇。",
+            event="task.started",
+            totals={"documents": total},
+            output=str(self.output),
+        )
         try:
-            for node in files:
-                check_stopped(None)
-                if self.checkpoint:
-                    status = self.checkpoint.item_status(node.file_id)
-                    if status == "completed" or (retry_failed and status != "failed"):
-                        skipped += 1
-                        continue
-                    self.checkpoint.start_item(node.file_id, "download")
+            for index, node in enumerate(files, start=1):
+                check_stopped(self.args)
                 parents: list[str] = []
                 current = node.parent_id
                 chain: list[str] = []
@@ -1096,45 +1113,90 @@ class WPSExportTask:
                     current = parent.parent_id
                 parents.extend(reversed(chain))
                 target = safe_target(self.output, [*parents, node.title], used)
+                doc_fields = {"id": node.file_id, "title": node.title, "index": index, "path": str(target)}
+                self._emit(
+                    f"开始导出 WPS 文档：{node.title}",
+                    event="document.export.started",
+                    doc=doc_fields,
+                )
                 try:
-                    try:
-                        url = self.source.open_download(node.file_id, node.group_id)
-                    except WPSApiError as exc:
-                        if not _can_fallback_to_smart_content(exc):
-                            raise
-                        markdown_name = f"{Path(node.title).stem or node.title}.md"
-                        target = safe_target(self.output, [*parents, markdown_name], used)
-                        if target.exists():
-                            skipped += 1
-                            if self.checkpoint:
-                                self.checkpoint.complete_item(node.file_id, str(target))
-                            continue
-                        write_smart_document(self.source.query_content(node.file_id), target)
-                    else:
-                        if target.exists():
-                            skipped += 1
-                            if self.checkpoint:
-                                self.checkpoint.complete_item(node.file_id, str(target))
-                            continue
-                        download_original_file(url, target)
-                    success += 1
+                    outcome = ""
                     if self.checkpoint:
-                        self.checkpoint.complete_item(node.file_id, str(target))
+                        status = self.checkpoint.item_status(node.file_id)
+                        if status == "completed" or (retry_failed and status != "failed"):
+                            skipped += 1
+                            outcome = "skipped"
+                        else:
+                            self.checkpoint.start_item(node.file_id, "download")
+                    if not outcome:
+                        try:
+                            url = self.source.open_download(node.file_id, node.group_id)
+                        except WPSApiError as exc:
+                            if not _can_fallback_to_smart_content(exc):
+                                raise
+                            markdown_name = f"{Path(node.title).stem or node.title}.md"
+                            target = safe_target(self.output, [*parents, markdown_name], used)
+                            doc_fields = {**doc_fields, "path": str(target)}
+                            if target.exists():
+                                skipped += 1
+                                outcome = "skipped"
+                            else:
+                                write_smart_document(self.source.query_content(node.file_id), target)
+                                success += 1
+                                outcome = "exported"
+                        else:
+                            if target.exists():
+                                skipped += 1
+                                outcome = "skipped"
+                            else:
+                                download_original_file(url, target)
+                                success += 1
+                                outcome = "exported"
+                        if self.checkpoint:
+                            self.checkpoint.complete_item(node.file_id, str(target))
+                    self._emit(
+                        f"WPS 文档导出{'跳过' if outcome == 'skipped' else '完成'}：{node.title}",
+                        event="document.export.completed",
+                        doc=doc_fields,
+                        result={"status": outcome},
+                    )
+                except ExportStopped:
+                    if self.checkpoint:
+                        self.checkpoint.fail_item(node.file_id, "stopped")
+                    raise
                 except Exception as exc:
                     message = safe_error_text(exc)
                     failures.append({"file": node.title, "error": message})
                     if self.checkpoint:
                         self.checkpoint.fail_item(node.file_id, message)
-            report = {"totalDocs": len(files), "successCount": success, "skippedCount": skipped, "failureCount": len(failures), "failures": failures, "output": str(self.output)}
+                    self._emit(
+                        f"WPS 文档导出失败：{node.title}：{message}",
+                        event="document.export.failed",
+                        level="error",
+                        doc=doc_fields,
+                        error={"type": type(exc).__name__, "message": message},
+                    )
+                finally:
+                    if index % progress_every == 0 or index == total:
+                        self._emit(
+                            f"progress {index}/{total} exported={success} skipped={skipped} failures={len(failures)}",
+                            event="task.progress",
+                            progress={"current": index, "total": total},
+                            stats={
+                                "exportedDocs": success,
+                                "skippedDocs": skipped,
+                                "failureCount": len(failures),
+                            },
+                        )
+            report = {"totalDocs": total, "successCount": success, "skippedCount": skipped, "failureCount": len(failures), "failures": failures, "output": str(self.output)}
             if self.checkpoint:
                 self.checkpoint.complete_task(report)
             return finalize_report(report, provider="wps-export", mode="export", report_file=self.report_file, output=self.output)
         except ExportStopped:
-            report = {"totalDocs": len(files), "successCount": success, "skippedCount": skipped, "failureCount": len(failures), "failures": failures, "stopped": True, "output": str(self.output)}
+            report = {"totalDocs": total, "successCount": success, "skippedCount": skipped, "failureCount": len(failures), "failures": failures, "stopped": True, "output": str(self.output)}
             if self.checkpoint:
                 self.checkpoint.fail_task("任务因停止请求而停止", status="stopped")
             return finalize_report(report, provider="wps-export", mode="export", report_file=self.report_file, output=self.output)
-
 
 def _write_report(report: Mapping[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1176,7 +1238,7 @@ def export_wps(args: argparse.Namespace) -> dict[str, Any]:
         cdp, process = connect_wps_browser(args)
         load_auth_state(cdp, getattr(args, "auth_file", None))
         source = WPSDocumentDataSource(transport=CDPJSONTransport(cdp), request_delay=args.request_delay, sleep=time.sleep)
-        task = WPSExportTask(source, output, checkpoint=checkpoint)
+        task = WPSExportTask(source, output, checkpoint=checkpoint, args=args)
         result = task.export(task.scan(), args.selected_file_ids, args.retry_failed)
         _write_report(result, task.report_file)
         return result

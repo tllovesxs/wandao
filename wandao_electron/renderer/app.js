@@ -1278,6 +1278,7 @@ function renderTaskResultCard(task = latestFinishedTask()) {
   const status = taskDisplayStatus(task);
   const paths = taskArtifactPaths(task);
   const failurePreview = taskFailurePreview(task);
+  const wpsFailureLines = task.providerId === 'wps-export' ? taskFailurePreview(task, 100) : [];
   const failureCount = taskFailureCount(task);
   const documentFailures = taskDocumentFailureCount(task);
   const resourceFailures = taskResourceFailureCount(task);
@@ -1303,12 +1304,19 @@ function renderTaskResultCard(task = latestFinishedTask()) {
     <p class="task-result-summary">${escapeHtml(taskSummary(task))}</p>
     ${documentNotice}
     ${resourceNotice}
-    ${failurePreview.length ? `
+    ${failurePreview.length ? (task.providerId === 'wps-export' ? `
+      <details class="advanced-section wps-progress-failures" id="task-result-failures-title">
+        <summary>未成功 ${failureCount} 项（点击展开）</summary>
+        <div class="advanced-content task-result-failures" role="group">
+          <ul>${wpsFailureLines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>
+        </div>
+      </details>
+    ` : `
       <div class="task-result-failures" role="group" aria-labelledby="task-result-failures-title">
         <strong id="task-result-failures-title">需要处理</strong>
         <ul>${failurePreview.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>
       </div>
-    ` : ''}
+    `) : ''}
     <div class="task-result-actions" aria-label="最新任务操作">
       ${canResume ? `<button class="btn-secondary" type="button" data-task-result-action="resume" title="${escapeHtml(resumeReason)}">${escapeHtml(taskResumeActionLabel(task))}</button>` : ''}
       ${paths.output ? '<button class="btn-text" type="button" data-task-result-action="open-output">打开输出</button>' : ''}

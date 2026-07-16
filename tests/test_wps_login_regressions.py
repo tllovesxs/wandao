@@ -39,7 +39,7 @@ class FakeCDP:
 
 
 class WPSLoginRegressionTests(unittest.TestCase):
-    def test_login_keeps_stdout_as_one_json_result_and_closes_owned_browser(self) -> None:
+    def test_login_keeps_stdout_as_one_json_result_and_leaves_owned_browser_open(self) -> None:
         cdp = FakeCDP()
         browser = FakeBrowserProcess()
         stdout = io.StringIO()
@@ -61,8 +61,8 @@ class WPSLoginRegressionTests(unittest.TestCase):
         })
         self.assertIn("Enter", stderr.getvalue())
         self.assertTrue(cdp.closed)
-        self.assertTrue(browser.terminated)
-        self.assertTrue(browser.waited)
+        self.assertFalse(browser.terminated)
+        self.assertFalse(browser.waited)
 
     def test_connect_waits_until_wps_page_is_ready_before_returning(self) -> None:
         class ReadyStateCDP(FakeCDP):

@@ -258,6 +258,16 @@ def connect_wps_browser(args: argparse.Namespace, initial_url: str = WPS_HOME_UR
     return cdp, process
 
 
+def disconnect_browser(cdp: CDPClient | None) -> None:
+    """Detach from CDP without terminating the WPS browser window."""
+    if cdp is None:
+        return
+    try:
+        cdp.close()
+    except Exception:
+        pass
+
+
 def close_owned_browser(cdp: CDPClient | None, process: Any) -> None:
     """Close CDP and only terminate a browser process started by this command."""
     if cdp is not None:
@@ -1140,7 +1150,7 @@ def login_wps(args: argparse.Namespace) -> dict[str, Any]:
         saved = save_auth_state(cdp, getattr(args, "auth_file", None))
         return {"provider": "wps-export", "status": "authenticated", "cookieCount": int(saved["cookieCount"])}
     finally:
-        close_owned_browser(cdp, process)
+        disconnect_browser(cdp)
 
 
 def scan_wps(args: argparse.Namespace) -> dict[str, Any]:
@@ -1155,7 +1165,7 @@ def scan_wps(args: argparse.Namespace) -> dict[str, Any]:
             nodes.append(public_node)
         return {"nodes": nodes}
     finally:
-        close_owned_browser(cdp, process)
+        disconnect_browser(cdp)
 
 
 def export_wps(args: argparse.Namespace) -> dict[str, Any]:

@@ -264,6 +264,48 @@ class WPSDocumentTests(unittest.TestCase):
         self.assertEqual(report["failureCount"], 1)
         source.query_content.assert_not_called()
 
+    def test_scan_keeps_browser_open_after_reading_documents(self):
+        cdp = mock.Mock()
+        process = mock.Mock()
+        args = mock.Mock(auth_file=None, request_delay=0.1)
+        root = {"id": export_wps.WPS_DOCUMENT_ROOT_ID}
+        source = mock.Mock()
+        source.get_root.return_value = root
+        with (
+            mock.patch.object(export_wps, "connect_wps_browser", return_value=(cdp, process)),
+            mock.patch.object(export_wps, "load_auth_state"),
+            mock.patch.object(export_wps, "WPSDocumentDataSource", return_value=source),
+            mock.patch.object(export_wps, "scan_tree", return_value=[]),
+            mock.patch.object(export_wps, "close_owned_browser") as close_browser,
+        ):
+            result = export_wps.scan_wps(args)
+
+        self.assertEqual(result, {"nodes": []})
+        close_browser.assert_not_called()
+
+    def test_export_still_closes_owned_browser(self):
+        cdp = mock.Mock()
+        process = mock.Mock()
+        checkpoint = mock.Mock()
+        task = mock.Mock()
+        task.scan.return_value = []
+        task.export.return_value = {"totalDocs": 0, "successCount": 0, "failureCount": 0}
+        task.report_file = Path("report.json")
+        args = mock.Mock(output="out", auth_file=None, selected_file_ids=[], retry_failed=False)
+        with (
+            mock.patch.object(export_wps, "open_checkpoint_from_args", return_value=checkpoint),
+            mock.patch.object(export_wps, "connect_wps_browser", return_value=(cdp, process)),
+            mock.patch.object(export_wps, "load_auth_state"),
+            mock.patch.object(export_wps, "WPSDocumentDataSource"),
+            mock.patch.object(export_wps, "WPSExportTask", return_value=task),
+            mock.patch.object(export_wps, "_write_report"),
+            mock.patch.object(export_wps, "close_owned_browser") as close_browser,
+        ):
+            export_wps.export_wps(args)
+
+        close_browser.assert_called_once_with(cdp, process)
+        checkpoint.close.assert_called_once_with()
+
     def test_login_prompt_targets_wps_documents(self):
         cdp = mock.Mock()
         process = mock.Mock()

@@ -472,7 +472,8 @@ class DingMarkdownRenderer:
         if tag == "br":
             return "<br>"
         if tag in {"inlineCode", "cangjie-textinline"}:
-            return f"`{content.replace('`', '\\`')}`"
+            escaped = content.replace("`", "\\`")
+            return f"`{escaped}`"
         if tag == "code":
             language = str(attrs.get("syntax") or "")
             return f"```{language}\n{content.strip()}\n```\n\n"

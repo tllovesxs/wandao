@@ -58,6 +58,23 @@ class DingTalkExportTests(unittest.TestCase):
         self.assertEqual(root, "space-root-123")
         self.assertEqual(cdp.navigated_to, "https://alidocs.dingtalk.com/i/spaces/demo-space/overview")
 
+    def test_open_dingtalk_target_navigates_an_existing_browser_tab(self) -> None:
+        class FakeCdp:
+            def __init__(self) -> None:
+                self.navigated_to = ""
+
+            def navigate(self, url):
+                self.navigated_to = url
+
+            @staticmethod
+            def evaluate(_expression, timeout=0):
+                return {"host": "alidocs.dingtalk.com", "readyState": "complete"}
+
+        cdp = FakeCdp()
+        target = "https://alidocs.dingtalk.com/i/nodes/target-node"
+        dingtalk.open_dingtalk_target(cdp, target)
+        self.assertEqual(cdp.navigated_to, target)
+
     def test_renderer_preserves_common_markdown_and_reports_unknown_nodes(self) -> None:
         document = {
             "parts": {
@@ -155,6 +172,26 @@ class DingTalkExportTests(unittest.TestCase):
             dingtalk.call_helper = original
 
         self.assertEqual([(entry.uuid, entry.parent_uuid) for entry in entries], [("library", ""), ("section", "library"), ("selected", "section")])
+
+    def test_children_stop_when_the_server_repeats_a_pagination_cursor(self) -> None:
+        calls = 0
+        original = dingtalk.call_helper
+
+        def fake_call_helper(_cdp, method, *_args, **_kwargs):
+            nonlocal calls
+            self.assertEqual(method, "children")
+            calls += 1
+            return {"children": [], "loadMoreId": "same-page"}
+
+        dingtalk.call_helper = fake_call_helper
+        try:
+            args = dingtalk.parse_args([])
+            entry = dingtalk.DingEntry("folder", "", "", "目录", "folder", "", True, True)
+            self.assertEqual(dingtalk.children_of(None, entry, args), [])
+        finally:
+            dingtalk.call_helper = original
+
+        self.assertEqual(calls, 2)
 
     def test_safe_path_segment_never_uses_path_traversal(self) -> None:
         self.assertEqual(dingtalk.safe_path_segment("../../报告?.md"), "--报告-.md")

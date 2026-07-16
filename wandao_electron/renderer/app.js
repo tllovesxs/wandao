@@ -3093,35 +3093,18 @@ function markdownInline(value) {
   return text;
 }
 
-function safeGuideImagePath(value) {
-  const imagePath = String(value || '').trim();
-  if (!imagePath || imagePath.startsWith('/') || imagePath.startsWith('\\')) return '';
-  if (/^[a-z][a-z0-9+.-]*:/i.test(imagePath) || /[<>"'&\x00-\x1f]/.test(imagePath)) return '';
-  const segments = imagePath.replace(/\\/g, '/').split('/');
-  if (segments.includes('..')) return '';
-  return imagePath;
-}
-
 function markdownToHtml(markdown) {
   const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
   const html = [];
   let inCode = false;
   let codeLines = [];
-  let listType = '';
+  let inList = false;
 
   const closeList = () => {
-    if (listType) {
-      html.push(`</${listType}>`);
-      listType = '';
+    if (inList) {
+      html.push('</ul>');
+      inList = false;
     }
-  };
-
-  const openList = (type, start = 1) => {
-    if (listType === type) return;
-    closeList();
-    const startAttribute = type === 'ol' && start > 1 ? ` start="${start}"` : '';
-    html.push(`<${type}${startAttribute}>`);
-    listType = type;
   };
 
   lines.forEach((line) => {
@@ -3152,24 +3135,12 @@ function markdownToHtml(markdown) {
       html.push(`<h${level}>${markdownInline(heading[2])}</h${level}>`);
       return;
     }
-    const image = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-    if (image) {
-      const imagePath = safeGuideImagePath(image[2]);
-      if (imagePath) {
-        closeList();
-        html.push(`<img class="guide-image" alt="${escapeHtml(image[1])}" data-guide-image="${escapeHtml(imagePath)}" loading="lazy">`);
-        return;
-      }
-    }
-    const ordered = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
-    if (ordered) {
-      openList('ol', Number(ordered[1]));
-      html.push(`<li>${markdownInline(ordered[2])}</li>`);
-      return;
-    }
     const bullet = trimmed.match(/^[-*]\s+(.+)$/);
     if (bullet) {
-      openList('ul');
+      if (!inList) {
+        html.push('<ul>');
+        inList = true;
+      }
       html.push(`<li>${markdownInline(bullet[1])}</li>`);
       return;
     }
@@ -3226,42 +3197,6 @@ function renderTrustBadge(provider) {
   return `<span class="trust-badge ${trustClass}">${escapeHtml(label)}</span>`;
 }
 
-async function hydrateGuideImages(container, providerId) {
-  const images = Array.from(container?.querySelectorAll?.('img[data-guide-image]') || []);
-  await Promise.all(images.map(async (image) => {
-    const imagePath = image.dataset.guideImage || '';
-    try {
-      const result = await window.electronAPI.readProviderGuideImage(providerId, imagePath);
-      if (!result?.success || !result.dataUrl) throw new Error(result?.error || '????????');
-      image.src = result.dataUrl;
-      image.removeAttribute('data-guide-image');
-    } catch (error) {
-      image.dataset.guideImageError = error?.message || String(error);
-    }
-  }));
-}
-
-function bindCollapsibleGuideImages(container, providerId) {
-  const details = container?.querySelector?.('.plugin-guide-section');
-  if (!details) return;
-  const loadImages = () => {
-    if (details.open) hydrateGuideImages(details, providerId);
-  };
-  details.addEventListener('toggle', loadImages);
-  loadImages();
-}
-
-function appendProviderGuideSection(container, provider) {
-  if (!container || !provider?.guideMarkdown) return;
-  const guideHost = container.querySelector('.form-section') || container;
-  guideHost.insertAdjacentHTML('beforeend', `
-    <details class="advanced-section plugin-guide-section">
-      <summary>\u5e73\u53f0\u8bf4\u660e / \u64cd\u4f5c\u6559\u7a0b</summary>
-      <div class="guide-content compact">${markdownToHtml(provider.guideMarkdown)}</div>
-    </details>
-  `);
-  bindCollapsibleGuideImages(container, provider.id);
-}
 function renderGuideProvider(provider) {
   const contentArea = document.getElementById('content-area');
   const capabilityItems = [
@@ -3295,7 +3230,6 @@ function renderGuideProvider(provider) {
       </section>
     </div>
   `;
-  hydrateGuideImages(contentArea, provider.id);
   contentArea.querySelectorAll('[data-open-url]').forEach((button) => {
     button.addEventListener('click', () => {
       window.electronAPI.openExternal(button.dataset.openUrl);
@@ -3450,7 +3384,6 @@ function renderManifestProviderForm(provider) {
       </section>
     </div>
   `;
-  bindCollapsibleGuideImages(contentArea, provider.id);
   initializeManifestProviderHandlers(provider, actions, fields);
 }
 
@@ -4030,7 +3963,6 @@ function switchTool(toolId) {
     // The dedicated page preserves the saved API configuration and the
     // browser-login completion handoff for both bundled and installed plugins.
     loadFeishuImportTool();
-    appendProviderGuideSection(contentArea, config);
   } else if (config.type === 'guide' || (!config.script && !template && !(config.actions || []).length)) {
     renderGuideProvider(config);
   } else if (template) {

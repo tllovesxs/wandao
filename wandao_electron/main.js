@@ -11,7 +11,6 @@ const { extractSensitiveArguments } = require('./command_security');
 const { resolveProviderScript } = require('./provider_script_routing');
 const { resolveLegacyTemplateConfig } = require('./provider_legacy_compat');
 const { migrateLegacyPluginState } = require('./plugin_state_migration');
-const { readGuideImageDataUrl } = require('./guide_assets');
 
 let mainWindow;
 let pythonProcess = null;
@@ -20,7 +19,6 @@ let pythonStopFile = '';
 let pythonProcessMetadata = null;
 let shutdownConfirmed = false;
 const pluginRegistryCache = new Map();
-const providerGuideRoots = new Map();
 const MAX_PROCESS_OUTPUT_CHARS = 32 * 1024 * 1024;
 
 function currentPythonProcessState(extra = {}) {
@@ -932,7 +930,6 @@ function normalizeProviderManifest(raw, providerRoot, sourceKind, pluginInfo = n
 function discoverProviderManifests() {
   const providers = [];
   const errors = [];
-  const discoveredGuideRoots = new Map();
   const seen = new Set();
   const installedPluginDiscovery = pluginManager().providerEntriesWithErrors();
   errors.push(...installedPluginDiscovery.errors.map((message) => `插件校验失败：${message}`));
@@ -962,7 +959,6 @@ function discoverProviderManifests() {
         }
         seen.add(manifest.id);
         providers.push(manifest);
-        discoveredGuideRoots.set(manifest.id, providerRoot);
       } catch (error) {
         console.warn(`Failed to load ${sourceKind} provider ${entry.manifestPath}:`, error);
         errors.push(`${entry.manifestPath}：${error.message || String(error)}`);
@@ -986,15 +982,12 @@ function discoverProviderManifests() {
         }
         seen.add(manifest.id);
         providers.push(manifest);
-        discoveredGuideRoots.set(manifest.id, providerRoot);
       } catch (error) {
         console.warn(`Failed to load provider manifest ${manifestPath}:`, error);
         errors.push(`${manifestPath}：${error.message || String(error)}`);
       }
     }
   }
-  providerGuideRoots.clear();
-  discoveredGuideRoots.forEach((providerRoot, providerId) => providerGuideRoots.set(providerId, providerRoot));
   return { providers, errors };
 }
 
@@ -1913,19 +1906,6 @@ ipcMain.handle('get-provider-manifests', async () => {
     return { success: true, ...discoverProviderManifests() };
   } catch (error) {
     return { success: false, error: error.message || String(error), providers: [] };
-  }
-});
-
-ipcMain.handle('read-provider-guide-image', async (event, providerId, relativePath) => {
-  try {
-    const id = String(providerId || '').trim();
-    if (!id) throw new Error('Provider ID ????');
-    if (!providerGuideRoots.has(id)) discoverProviderManifests();
-    const providerRoot = providerGuideRoots.get(id);
-    if (!providerRoot) throw new Error('?????? Provider ????');
-    return { success: true, dataUrl: readGuideImageDataUrl(providerRoot, relativePath) };
-  } catch (error) {
-    return { success: false, error: error.message || String(error) };
   }
 });
 

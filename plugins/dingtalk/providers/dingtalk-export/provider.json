@@ -46,7 +46,21 @@
       "arg": "--source-url",
       "required": true,
       "history": "url",
-      "placeholder": "https://docs.dingtalk.com/i/nodes/... 或 https://alidocs.dingtalk.com/i/nodes/...",
+      "placeholder": "https://.../i/nodes/... 或 https://.../i/spaces/.../overview",
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "document_scope",
+      "label": "文档链接的导出范围",
+      "type": "select",
+      "arg": "--document-scope",
+      "default": "selected",
+      "options": [
+        { "value": "selected", "label": "仅当前文档（默认）" },
+        { "value": "parent-folder", "label": "所在文件夹及子目录" },
+        { "value": "library-root", "label": "完整知识库根目录（可能较多）" }
+      ],
+      "description": "知识库通常复制到的是单篇文档链接；可选择所在文件夹，或显式向上定位到最上级文件夹读取完整目录树。",
       "actions": ["scan", "export"]
     },
     {

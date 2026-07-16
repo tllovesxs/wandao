@@ -18,7 +18,9 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -51,6 +53,7 @@ DEFAULT_PROFILE = ".dingtalk-chrome-profile"
 DEFAULT_AUTH_FILE = ".dingtalk_auth.json"
 FORBIDDEN_FILENAME_CHARS = r'<>:"/\\|?*'
 SUPPORTED_DOCUMENT_TYPES = {"alidoc"}
+MAX_RESOURCE_BYTES = 25 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -119,22 +122,72 @@ def is_trusted_asset_url(value: str) -> bool:
     )
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+def read_limited_response(response: Any, max_bytes: int = MAX_RESOURCE_BYTES) -> bytes:
+    try:
+        declared_size = int(str(response.headers.get("Content-Length") or "0") or "0")
+    except ValueError:
+        declared_size = 0
+    if declared_size > max_bytes:
+        raise ExportError(f"资源超过大小限制（{max_bytes // 1024 // 1024} MB）")
+    raw = response.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ExportError(f"资源超过大小限制（{max_bytes // 1024 // 1024} MB）")
+    return raw
+
+
+def download_direct_asset(source: str) -> tuple[bytes, str]:
+    """Fetch a signed DingTalk/OSS asset when browser fetch is blocked by CORS."""
+    current = source
+    opener = urllib.request.build_opener(NoRedirect())
+    for _ in range(4):
+        if not is_trusted_asset_url(current):
+            raise ExportError("资源跳转到了不受信任的域名")
+        request = urllib.request.Request(current, headers={"User-Agent": "Wandao-DingTalk-Export/1.0"})
+        try:
+            with opener.open(request, timeout=45) as response:
+                return read_limited_response(response), str(response.headers.get("Content-Type") or "")
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {301, 302, 303, 307, 308}:
+                raise ExportError(f"HTTP {exc.code}") from exc
+            location = str(exc.headers.get("Location") or "")
+            if not location:
+                raise ExportError(f"HTTP {exc.code} 未提供跳转地址") from exc
+            current = urllib.parse.urljoin(current, location)
+    raise ExportError("资源重定向次数过多")
+
+
 def js_string(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def parse_source_url(value: str) -> str:
+def parse_dingtalk_url(value: str) -> urllib.parse.ParseResult:
     parsed = urllib.parse.urlparse(str(value or "").strip())
     host = (parsed.hostname or "").lower()
     if parsed.scheme != "https" or host not in SUPPORTED_HOSTS:
         raise ExportError("请输入 docs.dingtalk.com 或 alidocs.dingtalk.com 的钉钉文档/文件夹链接。")
+    return parsed
+
+
+def parse_source_url(value: str) -> str:
+    parsed = parse_dingtalk_url(value)
     match = re.search(r"/i/nodes/([^/?#]+)", parsed.path)
     if not match:
-        raise ExportError("链接中未找到钉钉目录标识。请从钉钉文档页面复制包含 /i/nodes/ 的链接。")
+        raise ExportError("链接中未找到钉钉文档标识。请复制包含 /i/nodes/ 的文档/文件夹链接，或 /i/spaces/.../overview 的知识库根链接。")
     node_id = urllib.parse.unquote(match.group(1)).strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{4,200}", node_id):
         raise ExportError("钉钉目录标识格式无效。")
     return node_id
+
+
+def parse_space_url(value: str) -> str | None:
+    parsed = parse_dingtalk_url(value)
+    match = re.fullmatch(r"/i/spaces/([A-Za-z0-9_-]{4,200})/overview/?", parsed.path)
+    return match.group(1) if match else None
 
 
 def page_for_dingtalk(port: int) -> dict[str, Any] | None:
@@ -244,6 +297,33 @@ def call_helper(cdp: CDPClient, method: str, *args: Any, timeout: int = 60) -> A
     return result
 
 
+def resolve_space_root_uuid(cdp: CDPClient, source_url: str) -> str:
+    """Read the root dentry UUID exposed by a DingTalk space overview page."""
+    cdp.evaluate("performance.clearResourceTimings()")
+    cdp.navigate(source_url)
+    expression = r"""
+(() => {
+  const resources = performance.getEntriesByType('resource');
+  for (const entry of resources) {
+    try {
+      const url = new URL(entry.name);
+      if (url.pathname !== '/box/api/v2/dentry/list') continue;
+      if (!url.searchParams.has('withParentAncestors')) continue;
+      const root = url.searchParams.get('dentryUuid') || '';
+      if (/^[A-Za-z0-9_-]{4,200}$/.test(root)) return root;
+    } catch (_) { /* Ignore unrelated resource entries. */ }
+  }
+  return '';
+})()
+"""
+    for _ in range(20):
+        root = str(cdp.evaluate(expression, timeout=10) or "")
+        if root:
+            return root
+        time.sleep(0.5)
+    raise ExportError("未能从钉钉知识库根页面读取目录。请确认已登录并能在浏览器中看到左侧目录后重试。")
+
+
 def entry_from_raw(raw: dict[str, Any], parent_uuid: str = "") -> DingEntry:
     uuid = str(raw.get("dentryUuid") or raw.get("dentryId") or "")
     if not uuid:
@@ -262,10 +342,31 @@ def entry_from_raw(raw: dict[str, Any], parent_uuid: str = "") -> DingEntry:
     )
 
 
-def root_entry(cdp: CDPClient, source_url: str) -> DingEntry:
-    # A copied single-document URL contains the parent folder UUID too. The
-    # selected URL is the export root, so do not leave it orphaned in the TOC.
-    return replace(entry_from_raw(call_helper(cdp, "info", parse_source_url(source_url))), parent_uuid="")
+def root_entry(cdp: CDPClient, source_url: str, args: argparse.Namespace) -> DingEntry:
+    """Resolve the export root without silently widening a document export.
+
+    A document URL normally means "only this document".  Some DingTalk
+    knowledge-base views, however, only expose document URLs even when the
+    user wants a folder or the whole knowledge base.  The non-default scopes
+    are explicit opt-ins so that scanning/exporting never widens by surprise.
+    """
+    selected_id = resolve_space_root_uuid(cdp, source_url) if parse_space_url(source_url) else parse_source_url(source_url)
+    selected = entry_from_raw(call_helper(cdp, "info", selected_id))
+    scope = str(getattr(args, "document_scope", "selected") or "selected")
+    if scope in {"parent-folder", "library-root"} and not selected.is_folder and selected.parent_uuid:
+        root = entry_from_raw(call_helper(cdp, "info", selected.parent_uuid))
+        if root.is_folder:
+            if scope == "library-root":
+                visited = {selected.uuid, root.uuid}
+                while root.parent_uuid and root.parent_uuid not in visited:
+                    parent = entry_from_raw(call_helper(cdp, "info", root.parent_uuid))
+                    if not parent.is_folder:
+                        break
+                    visited.add(parent.uuid)
+                    root = parent
+            return replace(root, parent_uuid="")
+    # The selected URL is the export root, so do not leave it orphaned in the TOC.
+    return replace(selected, parent_uuid="")
 
 
 def children_of(cdp: CDPClient, entry: DingEntry, args: argparse.Namespace) -> list[DingEntry]:
@@ -285,7 +386,7 @@ def children_of(cdp: CDPClient, entry: DingEntry, args: argparse.Namespace) -> l
 
 
 def collect_tree(cdp: CDPClient, source_url: str, args: argparse.Namespace) -> list[DingEntry]:
-    root = root_entry(cdp, source_url)
+    root = root_entry(cdp, source_url, args)
     result: list[DingEntry] = [root]
     visited = {root.uuid}
     pending = [root]
@@ -359,7 +460,12 @@ class DingMarkdownRenderer:
         if tag in {"root", "span", "tc", "container"}:
             return self.apply_inline_style(content, attrs)
         if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-            return f"{'#' * int(tag[1:])} {self.apply_inline_style(content.strip(), attrs)}\n\n"
+            # DingTalk can attach list metadata to a heading (for example the
+            # visually prominent bullet items in a knowledge-base guide).  A
+            # previous renderer checked headings before list metadata and
+            # silently discarded those bullets.
+            prefix = self.list_prefix(attrs)
+            return f"{prefix}{'#' * int(tag[1:])} {self.apply_inline_style(content.strip(), attrs)}\n\n"
         if tag == "p":
             prefix = self.list_prefix(attrs)
             return f"{prefix}{self.apply_inline_style(content.strip(), attrs)}\n\n" if content.strip() else ""
@@ -477,14 +583,21 @@ def download_image(cdp: CDPClient, image: ImageRef, assets_dir: Path, index: int
         raw = base64.b64decode(str(payload.get("base64") or ""), validate=True)
         if not raw:
             raise ExportError("图片响应为空")
-        extension = asset_extension(str(payload.get("contentType") or ""), source)
-        filename = f"image-{index:03d}{extension}"
-        assets_dir.mkdir(parents=True, exist_ok=True)
-        target = assets_dir / filename
-        target.write_bytes(raw)
-        return f"assets/{markdown_path(filename)}", None
-    except Exception as exc:  # noqa: BLE001 - resource failures should not discard a document.
-        return source, {"url": safe_resource_url(source), "error": str(exc)}
+        content_type = str(payload.get("contentType") or "")
+    except Exception as browser_exc:  # Browser fetch can be blocked by OSS CORS.
+        try:
+            raw, content_type = download_direct_asset(source)
+        except Exception as direct_exc:  # noqa: BLE001 - resource failures should not discard a document.
+            return source, {
+                "url": safe_resource_url(source),
+                "error": f"浏览器读取失败：{browser_exc}；受限直连下载失败：{direct_exc}",
+            }
+    extension = asset_extension(content_type, source)
+    filename = f"image-{index:03d}{extension}"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    target = assets_dir / filename
+    target.write_bytes(raw)
+    return f"assets/{markdown_path(filename)}", None
 
 
 def rewrite_images(cdp: CDPClient, rendered: RenderResult, markdown: str, md_path: Path, args: argparse.Namespace) -> tuple[str, list[dict[str, str]], int]:
@@ -574,7 +687,7 @@ def run_login(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def scan_dingtalk(args: argparse.Namespace) -> dict[str, Any]:
-    cdp, process = connect_dingtalk_browser(args)
+    cdp, process = connect_dingtalk_browser(args, args.source_url or ENTRY_URL)
     try:
         return toc_json(collect_tree(cdp, args.source_url, args))
     finally:
@@ -588,7 +701,7 @@ def export_dingtalk(args: argparse.Namespace) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     started = time.time()
     checkpoint = open_checkpoint_from_args(args, "dingtalk-export", "export")
-    cdp, process = connect_dingtalk_browser(args)
+    cdp, process = connect_dingtalk_browser(args, args.source_url or ENTRY_URL)
     try:
         entries = collect_tree(cdp, args.source_url, args)
         by_uuid = {entry.uuid: entry for entry in entries}
@@ -708,6 +821,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--login-wait-seconds", type=int, default=0, help="非交互登录时等待保存会话的秒数")
     parser.add_argument("--scan-toc", action="store_true", help="读取目录树并输出 JSON")
     parser.add_argument("--source-url", default="", help="钉钉文档或文件夹链接")
+    parser.add_argument(
+        "--document-scope",
+        choices=("selected", "parent-folder", "library-root"),
+        default="selected",
+        help="文档链接的目录范围：selected 只导出当前文档，parent-folder 导出所在文件夹，library-root 导出最上级文件夹",
+    )
     parser.add_argument("--output", default=str(default_data_dir() / "exports" / "dingtalk"), help="输出目录")
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", default=[], help="只导出指定 dentryUuid，可重复")
     parser.add_argument("--doc-id-file", default="", help="从 JSON 数组或逐行文件读取文档 ID")

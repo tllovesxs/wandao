@@ -29,6 +29,31 @@ class DingTalkExportTests(unittest.TestCase):
         with self.assertRaises(dingtalk.ExportError):
             dingtalk.parse_source_url("https://example.com/i/nodes/not-dingtalk")
 
+    def test_parse_space_url_accepts_a_knowledge_base_overview(self) -> None:
+        self.assertEqual(
+            dingtalk.parse_space_url("https://alidocs.dingtalk.com/i/spaces/dBgX4Ako2lM3Om8e/overview"),
+            "dBgX4Ako2lM3Om8e",
+        )
+        self.assertIsNone(dingtalk.parse_space_url("https://alidocs.dingtalk.com/i/nodes/legacy-node"))
+
+    def test_resolve_space_root_uuid_uses_the_overview_directory_request(self) -> None:
+        class FakeCdp:
+            def __init__(self) -> None:
+                self.navigated_to = ""
+                self.evaluations = 0
+
+            def evaluate(self, _expression, timeout=0):
+                self.evaluations += 1
+                return None if self.evaluations == 1 else "space-root-123"
+
+            def navigate(self, url):
+                self.navigated_to = url
+
+        cdp = FakeCdp()
+        root = dingtalk.resolve_space_root_uuid(cdp, "https://alidocs.dingtalk.com/i/spaces/demo-space/overview")
+        self.assertEqual(root, "space-root-123")
+        self.assertEqual(cdp.navigated_to, "https://alidocs.dingtalk.com/i/spaces/demo-space/overview")
+
     def test_renderer_preserves_common_markdown_and_reports_unknown_nodes(self) -> None:
         document = {
             "parts": {
@@ -41,6 +66,7 @@ class DingTalkExportTests(unittest.TestCase):
                             ["h1", {}, ["span", {"bold": True}, "标题"]],
                             ["p", {}, ["span", {}, "正文"], ["br", {}], ["inlineCode", {}, "x = 1"]],
                             ["p", {"list": {"listId": "one", "level": 0, "isOrdered": False}}, "项目"],
+                            ["h2", {"list": {"listId": "one", "level": 0, "isOrdered": False}}, "标题型列表"],
                             ["mystery", {}, "未知内容"],
                         ]
                     },
@@ -53,8 +79,78 @@ class DingTalkExportTests(unittest.TestCase):
         self.assertIn("# **标题**", markdown)
         self.assertIn("正文<br>`x = 1`", markdown)
         self.assertIn("- 项目", markdown)
+        self.assertIn("- ## 标题型列表", markdown)
         self.assertIn("未知内容", markdown)
         self.assertEqual(renderer.warnings, ["发现暂不支持的钉钉结构：mystery"])
+
+    def test_collect_tree_can_explicitly_use_a_document_parent_folder(self) -> None:
+        responses = {
+            "selected": {"dentryUuid": "selected", "name": "当前文档", "contentType": "alidoc", "dentryType": "file", "parentDentryUuid": "folder"},
+            "folder": {"dentryUuid": "folder", "name": "知识库", "contentType": "folder", "dentryType": "folder", "parentDentryUuid": "outer", "hasChildren": True},
+            "children:folder": {"children": [{"dentryUuid": "child", "name": "子文档", "contentType": "alidoc", "dentryType": "file", "parentDentryUuid": "folder"}]},
+        }
+
+        original = dingtalk.call_helper
+
+        def fake_call_helper(_cdp, method, *args, **_kwargs):
+            if method == "info":
+                return responses[str(args[0])]
+            if method == "children":
+                return responses[f"children:{args[0]}"]
+            raise AssertionError(method)
+
+        dingtalk.call_helper = fake_call_helper
+        try:
+            args = dingtalk.parse_args(["--source-url", "https://alidocs.dingtalk.com/i/nodes/selected", "--document-scope", "parent-folder"])
+            entries = dingtalk.collect_tree(None, args.source_url, args)
+        finally:
+            dingtalk.call_helper = original
+
+        self.assertEqual([(entry.uuid, entry.parent_uuid) for entry in entries], [("folder", ""), ("child", "folder")])
+
+    def test_collect_tree_keeps_selected_document_by_default(self) -> None:
+        original = dingtalk.call_helper
+
+        def fake_call_helper(_cdp, method, *args, **_kwargs):
+            if method == "info":
+                return {"dentryUuid": "selected", "name": "当前文档", "contentType": "alidoc", "dentryType": "file", "parentDentryUuid": "folder"}
+            raise AssertionError(method)
+
+        dingtalk.call_helper = fake_call_helper
+        try:
+            args = dingtalk.parse_args(["--source-url", "https://alidocs.dingtalk.com/i/nodes/selected"])
+            entries = dingtalk.collect_tree(None, args.source_url, args)
+        finally:
+            dingtalk.call_helper = original
+
+        self.assertEqual([(entry.uuid, entry.parent_uuid) for entry in entries], [("selected", "")])
+
+    def test_collect_tree_can_explicitly_use_the_topmost_folder(self) -> None:
+        responses = {
+            "selected": {"dentryUuid": "selected", "name": "当前文档", "contentType": "alidoc", "dentryType": "file", "parentDentryUuid": "section"},
+            "section": {"dentryUuid": "section", "name": "分组", "contentType": "folder", "dentryType": "folder", "parentDentryUuid": "library", "hasChildren": True},
+            "library": {"dentryUuid": "library", "name": "知识库", "contentType": "folder", "dentryType": "folder", "hasChildren": True},
+            "children:library": [{"dentryUuid": "section", "name": "分组", "contentType": "folder", "dentryType": "folder", "parentDentryUuid": "library", "hasChildren": True}],
+            "children:section": [{"dentryUuid": "selected", "name": "当前文档", "contentType": "alidoc", "dentryType": "file", "parentDentryUuid": "section"}],
+        }
+
+        original = dingtalk.call_helper
+
+        def fake_call_helper(_cdp, method, *args, **_kwargs):
+            if method == "info":
+                return responses[str(args[0])]
+            if method == "children":
+                return {"children": responses[f"children:{args[0]}"]}
+            raise AssertionError(method)
+
+        dingtalk.call_helper = fake_call_helper
+        try:
+            args = dingtalk.parse_args(["--source-url", "https://alidocs.dingtalk.com/i/nodes/selected", "--document-scope", "library-root"])
+            entries = dingtalk.collect_tree(None, args.source_url, args)
+        finally:
+            dingtalk.call_helper = original
+
+        self.assertEqual([(entry.uuid, entry.parent_uuid) for entry in entries], [("library", ""), ("section", "library"), ("selected", "section")])
 
     def test_safe_path_segment_never_uses_path_traversal(self) -> None:
         self.assertEqual(dingtalk.safe_path_segment("../../报告?.md"), "--报告-.md")
@@ -67,6 +163,17 @@ class DingTalkExportTests(unittest.TestCase):
             dingtalk.safe_resource_url("https://img.alicdn.com/example.png?signature=secret#part"),
             "https://img.alicdn.com/example.png",
         )
+
+    def test_read_limited_response_rejects_oversized_content(self) -> None:
+        class FakeResponse:
+            headers = {"Content-Length": "6"}
+
+            @staticmethod
+            def read(_size):
+                return b"123456"
+
+        with self.assertRaises(dingtalk.ExportError):
+            dingtalk.read_limited_response(FakeResponse(), max_bytes=5)
 
 
 if __name__ == "__main__":

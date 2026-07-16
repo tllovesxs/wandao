@@ -255,22 +255,34 @@ DINGTALK_HELPER_JS = r"""
 (() => {
   if (window.__wandaoDingTalk && window.__wandaoDingTalk.version === 1) return true;
   const base = location.origin;
-  const requestJson = async (path, options = {}) => {
-    const tokenResponse = await fetch('/portal/api/v1/token/getAccessToken', { method: 'POST', credentials: 'include' });
+  const fetchWithTimeout = async (url, options = {}, timeoutMs = 45000) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+    } catch (error) {
+      if (error && error.name === 'AbortError') throw new Error(`请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const requestJson = async (path, options = {}, timeoutMs = 45000) => {
+    const tokenResponse = await fetchWithTimeout('/portal/api/v1/token/getAccessToken', { method: 'POST', credentials: 'include' }, 30000);
     const tokenPayload = await tokenResponse.json().catch(() => ({}));
     const token = tokenPayload && tokenPayload.data && tokenPayload.data.accessToken;
     if (!token) throw new Error('钉钉登录已失效，请重新登录并保存会话。');
     const headers = Object.assign({}, options.headers || {}, { 'A-Token': token });
     let corpId = (document.cookie.match(/(?:^|;\s*)portal_corp_id=([^;]+)/) || [])[1] || '';
     if (!corpId) {
-      const userResponse = await fetch('/api/users/getUserInfo', { method: 'POST', credentials: 'include', headers });
+      const userResponse = await fetchWithTimeout('/api/users/getUserInfo', { method: 'POST', credentials: 'include', headers }, 30000);
       const userPayload = await userResponse.json().catch(() => ({}));
       const orgs = (userPayload.data && (userPayload.data.orgs || userPayload.data.orgDTOList)) || [];
       const main = orgs.find((item) => item && item.isMainOrg) || orgs[0] || {};
       corpId = main.corpId || main.id || '';
     }
     if (corpId) headers['corp-id'] = decodeURIComponent(corpId);
-    const response = await fetch(base + path, Object.assign({ credentials: 'include' }, options, { headers }));
+    const response = await fetchWithTimeout(base + path, Object.assign({ credentials: 'include' }, options, { headers }), timeoutMs);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload.isSuccess) {
       const message = (payload && (payload.message || payload.errorMessage || payload.errorCode)) || `HTTP ${response.status}`;
@@ -295,7 +307,7 @@ DINGTALK_HELPER_JS = r"""
       method: 'POST',
       headers: { 'a-dentry-key': dentryKey || '', 'a-doc-key': docKey || '', 'Content-Type': 'application/json;charset=UTF-8' },
       body: JSON.stringify({ dentryKey, pageMode: 2, fetchBody: true })
-    }),
+    }, 45000),
     asset: async (url) => {
       const response = await fetch(url, { credentials: 'include' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -601,7 +613,7 @@ def document_payload(cdp: CDPClient, entry: DingEntry, args: argparse.Namespace)
     if not entry.key:
         raise ExportError("钉钉文档缺少 dentryKey，无法读取正文。")
     throttle_request(args)
-    return call_helper(cdp, "content", entry.key, entry.doc_key, timeout=90)
+    return call_helper(cdp, "content", entry.key, entry.doc_key, timeout=55)
 
 
 def asset_extension(content_type: str, source: str) -> str:
@@ -796,6 +808,7 @@ def export_dingtalk(args: argparse.Namespace) -> dict[str, Any]:
                 if checkpoint:
                     checkpoint.start_item(item_key, "content")
                 emit(args, f"开始导出钉钉文档：{entry.title}", event="document.export.started", doc={"id": entry.uuid, "title": entry.title, "index": index, "path": str(md_path)})
+                emit(args, f"正在读取钉钉正文：{entry.title}", event="document.content.started", doc={"id": entry.uuid, "title": entry.title, "index": index})
                 payload = document_payload(cdp, entry, args)
                 raw_content = ((payload.get("documentContent") or {}).get("checkpoint") or {}).get("content")
                 if not raw_content:

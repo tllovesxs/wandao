@@ -43,23 +43,24 @@ class WPSDocumentTests(unittest.TestCase):
         nodes, cursor = source.list_children(export_wps.WPS_DOCUMENT_ROOT_ID)
 
         self.assertIsNone(cursor)
-        self.assertEqual([node["file_id"] for node in nodes], ["101", "102"])
+        self.assertEqual([node["file_id"] for node in nodes], ["101", "102", ""])
         self.assertEqual(nodes[0]["title"], "智能文档 A")
         self.assertEqual(nodes[0]["group_id"], "7")
         self.assertEqual(nodes[1]["title"], "普通文档")
-        self.assertEqual([node["type"] for node in nodes], ["file", "file"])
+        self.assertEqual(nodes[2]["title"], "\u6587\u4ef6\u5939")
+        self.assertEqual([node["type"] for node in nodes], ["file", "file", "folder"])
         self.assertEqual(source.get_root()["title"], "WPS 文档")
         self.assertEqual(transport.calls[0][0], "GET")
         self.assertIn("/3rd/drive/api/v6/search/files", transport.calls[0][1])
         self.assertEqual(transport.calls[0][2]["searchname"], "")
 
-    def test_actual_search_shape_excludes_folders_and_device_records(self):
+    def test_actual_search_shape_preserves_folders_and_parent_relationships_but_excludes_device_records(self):
         transport = FakeTransport([{
             "status": 200,
             "payload": {
                 "files": [
-                    {"id": "201", "fname": "Cloud document", "ftype": "file"},
-                    {"id": "202", "fname": "Folder", "ftype": "folder"},
+                    {"id": "201", "fname": "Cloud document", "ftype": "file", "parentid": "202"},
+                    {"id": "202", "fname": "Folder", "ftype": "folder", "parentid": 0},
                     {"id": "203", "fname": "Device record", "ftype": "sharefile", "device_info": {"device_id": "private"}},
                 ],
                 "total": 3,
@@ -70,7 +71,12 @@ class WPSDocumentTests(unittest.TestCase):
         nodes, cursor = source.list_children(export_wps.WPS_DOCUMENT_ROOT_ID)
 
         self.assertIsNone(cursor)
-        self.assertEqual([node["file_id"] for node in nodes], ["201"])
+        self.assertEqual([node["id"] for node in nodes], ["201", "202"])
+        self.assertEqual(nodes[0]["parent_id"], "202")
+        self.assertEqual(nodes[0]["type"], "file")
+        self.assertEqual(nodes[1]["parent_id"], export_wps.WPS_DOCUMENT_ROOT_ID)
+        self.assertEqual(nodes[1]["type"], "folder")
+        self.assertEqual(nodes[1]["file_id"], "")
 
     def test_search_forbidden_is_reported_as_an_expired_session(self):
         transport = FakeTransport([{"status": 403, "payload": {"result": "loginRequired"}}])
@@ -249,6 +255,150 @@ class WPSDocumentTests(unittest.TestCase):
             )
             source.open_download.assert_called_once_with("101", "7")
             source.query_content.assert_called_once_with("101")
+
+    def test_smart_document_downloads_images_and_attachments_with_relative_links(self):
+        encoded = base64.b64encode(json.dumps({
+            "blocks": [{
+                "id": "doc",
+                "type": "doc",
+                "content": [
+                    {"id": "image-block", "type": "picture", "attrs": {
+                        "caption": "Diagram",
+                        "url": "https://img.wpscdn.cn/resources/diagram.png?signature=secret",
+                    }},
+                    {"id": "attachment-block", "type": "thirdResource", "attrs": {
+                        "title": "Guide.pdf",
+                        "downloadUrl": "https://download.wpscdn.cn/resources/guide.pdf?signature=secret",
+                    }},
+                ],
+            }],
+        }).encode("utf-8")).decode("ascii")
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        source.open_download.side_effect = export_wps.WPSDownloadUnavailableError(
+            "Original download unavailable", status=404, allow_content_query=True
+        )
+        source.query_content.return_value = {"detail": {"result": encoded}}
+        root = export_wps.WPSNode(
+            id=export_wps.WPS_DOCUMENT_ROOT_ID, file_id="", title="WPS Documents", parent_id=None, type="folder"
+        )
+        node = export_wps.WPSNode(
+            id="101", file_id="101", title="Smart document", parent_id=export_wps.WPS_DOCUMENT_ROOT_ID, type="file"
+        )
+
+        def fake_download(_url, target):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_bytes(b"resource")
+            return Path(target)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(export_wps, "download_original_file", side_effect=fake_download) as download_mock:
+                report = export_wps.WPSExportTask(source, Path(directory)).export([root, node], ["101"])
+
+            markdown = Path(directory) / "WPS Documents" / "Smart document.md"
+            assets = Path(directory) / "WPS Documents" / "Smart document.assets"
+            text = markdown.read_text(encoding="utf-8")
+            self.assertIn("![Diagram](Smart%20document.assets/image-001.png)", text)
+            self.assertIn("[Guide.pdf](Smart%20document.assets/attachment-001.pdf)", text)
+            self.assertEqual((assets / "image-001.png").read_bytes(), b"resource")
+            self.assertEqual((assets / "attachment-001.pdf").read_bytes(), b"resource")
+            self.assertEqual(download_mock.call_count, 2)
+            self.assertEqual(report["resourceFailures"], [])
+            self.assertEqual(report["outcome"], "completed")
+
+    def test_smart_document_resource_failure_keeps_markdown_and_redacts_remote_url(self):
+        encoded = base64.b64encode(json.dumps({
+            "blocks": [{
+                "id": "doc",
+                "type": "doc",
+                "content": [{"id": "image-block", "type": "picture", "attrs": {
+                    "caption": "Blocked image",
+                    "url": "https://evil.example/private.png?token=super-secret",
+                }}],
+            }],
+        }).encode("utf-8")).decode("ascii")
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        source.open_download.side_effect = export_wps.WPSDownloadUnavailableError(
+            "Original download unavailable", status=404, allow_content_query=True
+        )
+        source.query_content.return_value = {"detail": {"result": encoded}}
+        node = export_wps.WPSNode(id="101", file_id="101", title="Smart document", parent_id=None, type="file")
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = export_wps.WPSExportTask(source, Path(directory)).export([node], ["101"])
+            markdown = Path(directory) / "Smart document.md"
+            text = markdown.read_text(encoding="utf-8")
+
+        self.assertEqual(report["successCount"], 1)
+        self.assertEqual(report["failureCount"], 0)
+        self.assertEqual(len(report["imageFailures"]), 1)
+        self.assertEqual(report["attachmentFailures"], [])
+        self.assertEqual(report["outcome"], "partial")
+        self.assertIn("图片下载失败：Blocked image", text)
+        serialized = json.dumps(report, ensure_ascii=False)
+        self.assertNotIn("evil.example", serialized)
+        self.assertNotIn("super-secret", serialized)
+
+    def test_image_resource_prefers_a_safe_image_suffix_over_caption_suffix(self):
+        self.assertEqual(
+            export_wps._resource_suffix(
+                "https://download.wpscdn.cn/resources/preview.png?signature=secret",
+                "diagram.exe",
+                "image",
+            ),
+            ".png",
+        )
+
+    def test_resource_markdown_escapes_label_punctuation_and_newlines(self):
+        def fake_download(_url, target):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_bytes(b"image")
+            return Path(target)
+
+        with tempfile.TemporaryDirectory() as directory:
+            writer = export_wps.SmartDocumentResourceWriter(
+                Path(directory) / "Document.md",
+                [],
+                fake_download,
+            )
+            markdown = writer.render({
+                "type": "picture",
+                "attrs": {
+                    "caption": "Plan [draft]\nnext",
+                    "url": "https://download.wpscdn.cn/resources/preview.png?signature=secret",
+                },
+            })
+
+        self.assertEqual(markdown, "![Plan \\[draft\\] next](Document.assets/image-001.png)")
+
+    def test_parent_folder_chain_stops_on_cyclic_metadata(self):
+        root = export_wps.WPSNode(
+            id=export_wps.WPS_DOCUMENT_ROOT_ID, file_id="", title="WPS Documents", parent_id=None, type="folder"
+        )
+        folder = export_wps.WPSNode(id="folder-1", file_id="", title="Project", parent_id="folder-1", type="folder")
+        node = export_wps.WPSNode(id="doc-1", file_id="doc-1", title="Plan.docx", parent_id=folder.id, type="file")
+
+        self.assertEqual(export_wps.parent_folder_parts(node, {root.id: root, folder.id: folder, node.id: node}), ["Project"])
+
+    def test_export_preserves_parent_folder_chain(self):
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        source.open_download.return_value = "https://download.wpscdn.cn/document.docx?signature=secret"
+        root = export_wps.WPSNode(
+            id=export_wps.WPS_DOCUMENT_ROOT_ID, file_id="", title="WPS Documents", parent_id=None, type="folder"
+        )
+        folder = export_wps.WPSNode(id="folder-1", file_id="", title="Project", parent_id=root.id, type="folder")
+        node = export_wps.WPSNode(id="doc-1", file_id="doc-1", title="Plan.docx", parent_id=folder.id, type="file")
+
+        def fake_download(_url, target):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_bytes(b"document")
+            return Path(target)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(export_wps, "download_original_file", side_effect=fake_download):
+                report = export_wps.WPSExportTask(source, Path(directory)).export([root, folder, node], ["doc-1"])
+            exported = Path(directory) / "WPS Documents" / "Project" / "Plan.docx"
+            self.assertEqual(exported.read_bytes(), b"document")
+            self.assertEqual(report["successCount"], 1)
 
     def test_auth_failure_does_not_fall_back_to_content_query(self):
         source = mock.Mock(spec=export_wps.WPSDocumentDataSource)

@@ -21,16 +21,16 @@
     "guide": false,
     "login": true,
     "scanToc": true,
-    "images": false,
-    "attachments": false,
-    "tree": false,
+    "images": true,
+    "attachments": true,
+    "tree": true,
     "batch": true,
     "retryFailures": true
   },
   "checkpoint": {
     "supported": true,
     "strategy": "items",
-    "resourceTracking": false
+    "resourceTracking": true
   },
   "retryFailures": {
     "arg": "--retry-failed",

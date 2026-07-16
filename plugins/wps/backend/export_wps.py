@@ -730,14 +730,17 @@ _CODE_LANGUAGES = {
 }
 
 
-def _block_markdown(block: Mapping[str, Any]) -> list[str]:
+def _block_markdown(
+    block: Mapping[str, Any],
+    resource_renderer: Callable[[Mapping[str, Any]], str | None] | None = None,
+) -> list[str]:
     block_type = str(block.get("type") or "")
     attrs = block.get("attrs") if isinstance(block.get("attrs"), Mapping) else {}
     content = block.get("content")
     inline = _inline_markdown(content)
 
     if block_type == "doc":
-        return _blocks_markdown(content)
+        return _blocks_markdown(content, resource_renderer)
     if block_type == "title":
         return [f"# {inline}" if inline else ""]
     if block_type == "heading":
@@ -772,41 +775,170 @@ def _block_markdown(block: Mapping[str, Any]) -> list[str]:
         return [f"```{language}\n{inline}\n```"]
     if block_type == "hr":
         return ["---"]
-    if block_type == "picture":
-        return [f"[图片：{attrs.get('caption') or '未命名图片'}]"]
-    if block_type in {"video", "audio", "spreadsheet", "dbsheet", "processon", "thirdResource"}:
+    if block_type in {"picture", "image", "attachment", "file", "thirdResource"}:
+        rendered_resource = resource_renderer(block) if resource_renderer else None
+        if rendered_resource:
+            return [rendered_resource]
+        if block_type in {"picture", "image"}:
+            return [f"[图片：{attrs.get('caption') or attrs.get('title') or '未命名图片'}]"]
+        return [f"[{attrs.get('title') or attrs.get('name') or '嵌入内容'}]"]
+    if block_type in {"video", "audio", "spreadsheet", "dbsheet", "processon"}:
         return [f"[{attrs.get('title') or '嵌入内容'}]"]
     if isinstance(content, list):
-        nested = _blocks_markdown(content)
+        nested = _blocks_markdown(content, resource_renderer)
         if nested:
             return nested
     return [inline] if inline else []
 
 
-def _blocks_markdown(blocks: Any) -> list[str]:
+def _blocks_markdown(
+    blocks: Any,
+    resource_renderer: Callable[[Mapping[str, Any]], str | None] | None = None,
+) -> list[str]:
     if not isinstance(blocks, list):
         return []
     rendered: list[str] = []
     for block in blocks:
         if isinstance(block, Mapping):
-            rendered.extend(part for part in _block_markdown(block) if part != "")
+            rendered.extend(part for part in _block_markdown(block, resource_renderer) if part != "")
     return rendered
 
 
-def smart_document_to_markdown(payload: Mapping[str, Any]) -> str:
+_RESOURCE_URL_KEYS = (
+    "downloadUrl", "download_url", "originalUrl", "original_url", "originUrl",
+    "imageUrl", "image_url", "fileUrl", "file_url", "src", "url",
+)
+_RESOURCE_CONTAINER_KEYS = ("image", "file", "attachment", "resource", "source", "data", "meta")
+_RESOURCE_TITLE_KEYS = ("caption", "title", "fileName", "filename", "name", "displayName")
+
+
+def _resource_value(mapping: Mapping[str, Any], keys: Sequence[str]) -> str:
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _find_resource_url(value: Any, depth: int = 0) -> str | None:
+    if depth > 3 or not isinstance(value, Mapping):
+        return None
+    for key in _RESOURCE_URL_KEYS:
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip().startswith("https://"):
+            return candidate.strip()
+    for key in _RESOURCE_CONTAINER_KEYS:
+        nested = value.get(key)
+        if isinstance(nested, Mapping):
+            candidate = _find_resource_url(nested, depth + 1)
+            if candidate:
+                return candidate
+        elif isinstance(nested, list):
+            for item in nested:
+                candidate = _find_resource_url(item, depth + 1)
+                if candidate:
+                    return candidate
+    return None
+
+
+_IMAGE_RESOURCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"}
+
+
+def _resource_suffix(url: str, title: str, kind: str) -> str:
+    url_name = ""
+    try:
+        url_name = urllib.parse.unquote(urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1])
+    except ValueError:
+        pass
+    candidates = [url_name, title] if kind == "image" else [title, url_name]
+    for candidate in candidates:
+        suffix = Path(candidate).suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
+            continue
+        if kind != "image" or suffix in _IMAGE_RESOURCE_SUFFIXES:
+            return suffix
+    return ".png" if kind == "image" else ".bin"
+
+
+def _markdown_resource_label(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(value)).strip()
+    return normalized.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+
+
+class SmartDocumentResourceWriter:
+    def __init__(
+        self,
+        markdown_target: Path,
+        failures: list[dict[str, str]],
+        downloader: Callable[[str, Path], Path],
+    ) -> None:
+        self.markdown_target = Path(markdown_target).resolve()
+        self.failures = failures
+        self.downloader = downloader
+        self.counts = {"image": 0, "attachment": 0}
+
+    def render(self, block: Mapping[str, Any]) -> str | None:
+        block_type = str(block.get("type") or "")
+        attrs = block.get("attrs") if isinstance(block.get("attrs"), Mapping) else {}
+        kind = "image" if block_type in {"picture", "image"} else "attachment"
+        title = _resource_value(attrs, _RESOURCE_TITLE_KEYS) or ("未命名图片" if kind == "image" else "未命名附件")
+        url = _find_resource_url(attrs) or _find_resource_url(block)
+        if not url:
+            return None
+
+        self.counts[kind] += 1
+        index = self.counts[kind]
+        suffix = _resource_suffix(url, title, kind)
+        assets_name = f"{self.markdown_target.stem}.assets"
+        filename = f"{kind}-{index:03d}{suffix}"
+        target = self.markdown_target.parent / assets_name / filename
+        try:
+            self.downloader(url, target)
+        except Exception as exc:
+            error = safe_error_text(exc)
+            self.failures.append({
+                "kind": kind,
+                "file": self.markdown_target.name,
+                "resource": title,
+                "error": error,
+            })
+            label = "图片" if kind == "image" else "附件"
+            return f"[{label}下载失败：{title}]"
+
+        relative = urllib.parse.quote(f"{assets_name}/{filename}", safe="/")
+        markdown_title = _markdown_resource_label(title)
+        return f"![{markdown_title}]({relative})" if kind == "image" else f"[{markdown_title}]({relative})"
+
+
+def smart_document_to_markdown(
+    payload: Mapping[str, Any],
+    resource_renderer: Callable[[Mapping[str, Any]], str | None] | None = None,
+) -> str:
     result = _decode_smart_document_result(payload)
-    parts = _blocks_markdown(result.get("blocks"))
+    parts = _blocks_markdown(result.get("blocks"), resource_renderer)
     if not parts:
         raise WPSApiError("WPS 智慧文档内容为空或暂不支持")
     return "\n\n".join(parts).rstrip() + "\n"
 
 
-def write_smart_document(payload: Mapping[str, Any], target: Path) -> Path:
+def write_smart_document(
+    payload: Mapping[str, Any],
+    target: Path,
+    *,
+    resource_failures: list[dict[str, str]] | None = None,
+    downloader: Callable[[str, Path], Path] | None = None,
+) -> Path:
     target = Path(target).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
+    failures = resource_failures if resource_failures is not None else []
+    writer = SmartDocumentResourceWriter(target, failures, downloader or download_original_file)
     temporary = target.with_name(target.name + ".part")
     try:
-        temporary.write_text(smart_document_to_markdown(payload), encoding="utf-8", newline="\n")
+        temporary.write_text(
+            smart_document_to_markdown(payload, writer.render),
+            encoding="utf-8",
+            newline="\n",
+        )
         os.replace(temporary, target)
     finally:
         if temporary.exists():
@@ -905,11 +1037,10 @@ def _title(item: Mapping[str, Any], fallback: str, identifier: str) -> str:
 
 
 def _is_exportable_document(item: Mapping[str, Any]) -> bool:
-    """Return whether a search result is a downloadable cloud document.
+    """Return whether a search result belongs to the personal cloud tree.
 
-    The search endpoint can mix files, folders, device-space entries, and
-    recycled items. Only records with a file identifier and no explicit local
-    or non-exportable marker are allowed into the export tree.
+    Folder records are retained so exported files can preserve the parent chain.
+    Device/local, team, temporary-upload, and recycled entries remain excluded.
     """
     identifier = item.get("fileid") or item.get("file_id") or item.get("id")
     if identifier is None or not str(identifier).strip():
@@ -924,12 +1055,13 @@ def _is_exportable_document(item: Mapping[str, Any]) -> bool:
         )
     }
     if values.intersection({
-        "folder", "directory", "dir",
         "device", "my_device", "my-device", "local",
+        "team", "team_space", "team-space", "shared_team",
+        "tmp", "temporary", "auto_upload", "auto-upload",
         "trash", "recycle", "recycle_bin", "recycle-bin",
     }):
         return False
-    if any(item.get(key) is True for key in ("is_folder", "is_dir", "folder", "is_device", "is_local", "in_trash")):
+    if any(item.get(key) is True for key in ("is_device", "is_local", "is_team", "is_tmp", "in_trash")):
         return False
     if item.get("device_info"):
         return False
@@ -939,6 +1071,20 @@ def _is_exportable_document(item: Mapping[str, Any]) -> bool:
 def _normalize_document_item(item: Mapping[str, Any], parent_id: str | None) -> dict[str, Any]:
     identifier = _text(item, "fileid", "file_id", "id")
     title = _title(item, "未命名文档", identifier)
+    raw_types = {
+        str(item.get(key) or "").strip().lower()
+        for key in ("ftype", "filetype", "file_type", "type", "kind")
+    }
+    folder = bool(item.get("is_folder", item.get("is_dir", item.get("folder")))) or bool(
+        raw_types.intersection({"folder", "directory", "dir"})
+    )
+    raw_parent = item.get(
+        "parent_id",
+        item.get("parentid", item.get("parentId", item.get("parent"))),
+    )
+    if isinstance(raw_parent, Mapping):
+        raw_parent = raw_parent.get("id") or raw_parent.get("fileid")
+    normalized_parent = parent_id if raw_parent in (None, "", 0, "0") else str(raw_parent)
     raw_size = item.get("size", item.get("file_size", item.get("fsize")))
     try:
         size = None if raw_size in (None, "") else int(raw_size)
@@ -946,10 +1092,10 @@ def _normalize_document_item(item: Mapping[str, Any], parent_id: str | None) -> 
         size = None
     return {
         "id": str(identifier),
-        "file_id": str(identifier),
+        "file_id": "" if folder else str(identifier),
         "title": title,
-        "parent_id": str(parent_id) if parent_id not in (None, "") else None,
-        "type": "file",
+        "parent_id": str(normalized_parent) if normalized_parent not in (None, "") else None,
+        "type": "folder" if folder else "file",
         "group_id": str(item.get("groupid") or item.get("group_id") or "") or None,
         "size": size,
         "mtime": item.get("mtime", item.get("modify_time", item.get("modified_time"))),
@@ -1036,6 +1182,23 @@ def safe_target(root: Path, parts: Sequence[str], used: set[str]) -> Path:
     return candidate
 
 
+def parent_folder_parts(
+    node: WPSNode,
+    by_id: Mapping[str, WPSNode],
+    max_depth: int = 64,
+) -> list[str]:
+    chain: list[str] = []
+    seen: set[str] = set()
+    current = node.parent_id
+    while current and current in by_id and current not in seen and len(seen) < max_depth:
+        seen.add(current)
+        parent = by_id[current]
+        if parent.type == "folder":
+            chain.append(parent.title)
+        current = parent.parent_id
+    return list(reversed(chain))
+
+
 def download_original_file(url: str, target: Path) -> Path:
     checked = validate_download_url(url)
     target = Path(target).resolve()
@@ -1092,6 +1255,8 @@ class WPSExportTask:
         used: set[str] = set()
         success = skipped = 0
         failures: list[dict[str, str]] = []
+        image_failures: list[dict[str, str]] = []
+        attachment_failures: list[dict[str, str]] = []
         total = len(files)
         progress_every = max(1, int(getattr(self.args, "progress_every", 1) or 1))
         self._emit(
@@ -1132,15 +1297,7 @@ class WPSExportTask:
                             )
                         continue
                     self.checkpoint.start_item(node.file_id, "download")
-                parents: list[str] = []
-                current = node.parent_id
-                chain: list[str] = []
-                while current and current in by_id:
-                    parent = by_id[current]
-                    if parent.type == "folder":
-                        chain.append(parent.title)
-                    current = parent.parent_id
-                parents.extend(reversed(chain))
+                parents = parent_folder_parts(node, by_id)
                 target = safe_target(self.output, [*parents, node.title], used)
                 doc_fields = {**doc_fields, "path": str(target)}
                 try:
@@ -1163,7 +1320,17 @@ class WPSExportTask:
                                 result={"status": "skipped"},
                             )
                             continue
-                        write_smart_document(self.source.query_content(node.file_id), target)
+                        resource_failures: list[dict[str, str]] = []
+                        write_smart_document(
+                            self.source.query_content(node.file_id),
+                            target,
+                            resource_failures=resource_failures,
+                        )
+                        for resource_failure in resource_failures:
+                            if resource_failure.get("kind") == "image":
+                                image_failures.append(resource_failure)
+                            else:
+                                attachment_failures.append(resource_failure)
                     else:
                         if target.exists():
                             skipped += 1
@@ -1210,12 +1377,31 @@ class WPSExportTask:
                                 "failureCount": len(failures),
                             },
                         )
-            report = {"totalDocs": total, "successCount": success, "skippedCount": skipped, "failureCount": len(failures), "failures": failures, "output": str(self.output)}
+            report = {
+                "totalDocs": total,
+                "successCount": success,
+                "skippedCount": skipped,
+                "failureCount": len(failures),
+                "failures": failures,
+                "imageFailures": image_failures,
+                "attachmentFailures": attachment_failures,
+                "output": str(self.output),
+            }
             if self.checkpoint:
                 self.checkpoint.complete_task(report)
             return finalize_report(report, provider="wps-export", mode="export", report_file=self.report_file, output=self.output)
         except ExportStopped:
-            report = {"totalDocs": total, "successCount": success, "skippedCount": skipped, "failureCount": len(failures), "failures": failures, "stopped": True, "output": str(self.output)}
+            report = {
+                "totalDocs": total,
+                "successCount": success,
+                "skippedCount": skipped,
+                "failureCount": len(failures),
+                "failures": failures,
+                "imageFailures": image_failures,
+                "attachmentFailures": attachment_failures,
+                "stopped": True,
+                "output": str(self.output),
+            }
             if self.checkpoint:
                 self.checkpoint.fail_task("任务因停止请求而停止", status="stopped")
             return finalize_report(report, provider="wps-export", mode="export", report_file=self.report_file, output=self.output)

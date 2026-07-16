@@ -4,6 +4,7 @@ import io
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -120,6 +121,92 @@ class WPSLoginRegressionTests(unittest.TestCase):
         )
         self.assertEqual(normalized["title"], "未命名文件-file-123")
         self.assertEqual(normalized["parent_id"], "special")
+
+
+    def test_plugin_data_paths_do_not_repeat_wps_directory(self) -> None:
+        plugin_data = Path("C:/Users/test/AppData/Roaming/wandao/plugin-data/wps")
+        with mock.patch.object(export_wps, "default_data_dir", return_value=plugin_data):
+            self.assertEqual(export_wps.default_auth_path(), plugin_data / "auth.json")
+            self.assertEqual(export_wps.default_profile_path(), plugin_data / "browser-profile")
+
+    def test_save_auth_reads_minimal_official_cookies_then_verifies_session(self) -> None:
+        events = []
+
+        class AuthCDP:
+            def send(self, method, params=None, timeout=30):
+                events.append(method)
+                if method == "Network.getAllCookies":
+                    return {"result": {"cookies": [
+                        {"name": "wps_sid", "value": "session", "domain": ".kdocs.cn", "path": "/"},
+                        {"name": "kso_sid", "value": "secondary", "domain": ".kdocs.cn", "path": "/"},
+                        {"name": "csrf", "value": "csrf-value", "domain": ".kdocs.cn", "path": "/"},
+                        {"name": "uid", "value": "private-user-id", "domain": ".kdocs.cn", "path": "/"},
+                        {"name": "wps_sid", "value": "foreign", "domain": ".example.com", "path": "/"},
+                    ]}}
+                return {}
+
+        captured = {}
+        with (
+            mock.patch.object(export_wps, "verify_cloud_session", side_effect=lambda _cdp: events.append("verify") or True),
+            mock.patch.object(export_wps, "write_private_json", side_effect=lambda path, payload: captured.update(path=path, payload=payload)),
+        ):
+            result = export_wps.save_auth_state(AuthCDP(), Path("auth.json"))
+
+        self.assertEqual(events, ["Network.enable", "Network.getAllCookies", "verify"])
+        self.assertEqual(result["cookieCount"], 3)
+        self.assertEqual({cookie["name"] for cookie in captured["payload"]["cookies"]}, {"wps_sid", "kso_sid", "csrf"})
+        self.assertNotIn("uid", {cookie["name"] for cookie in captured["payload"]["cookies"]})
+
+    def test_save_auth_rejects_missing_session_cookie_with_readable_message(self) -> None:
+        cdp = mock.Mock()
+        cdp.send.side_effect = [
+            {},
+            {"result": {"cookies": [
+                {"name": "csrf", "value": "csrf-value", "domain": ".kdocs.cn", "path": "/"},
+            ]}},
+        ]
+
+        with self.assertRaisesRegex(export_wps.ExportError, "未找到 WPS 登录凭证"):
+            export_wps.save_auth_state(cdp, Path("auth.json"))
+
+
+    def test_load_auth_restores_cookies_and_rejects_unverified_session(self) -> None:
+        cdp = mock.Mock()
+        payload = {"version": 1, "cookies": [
+            {"name": "wps_sid", "value": "session", "domain": ".kdocs.cn", "path": "/"},
+            {"name": "csrf", "value": "csrf-value", "domain": ".kdocs.cn", "path": "/"},
+        ]}
+        with (
+            mock.patch.object(Path, "read_text", return_value=json.dumps(payload)),
+            mock.patch.object(export_wps, "verify_cloud_session", return_value=False),
+        ):
+            with self.assertRaisesRegex(export_wps.ExportError, "WPS 登录状态已失效，请重新登录"):
+                export_wps.load_auth_state(cdp, Path("auth.json"))
+
+        methods = [call.args[0] for call in cdp.send.call_args_list]
+        self.assertEqual(methods, ["Network.enable", "Network.setCookies"])
+
+    def test_verify_session_navigates_to_document_origin_and_uses_search_api(self) -> None:
+        class VerifyCDP:
+            def __init__(self) -> None:
+                self.sent = []
+                self.expressions = []
+
+            def send(self, method, params=None, timeout=30):
+                self.sent.append((method, params))
+                return {}
+
+            def evaluate(self, expression, timeout=60):
+                self.expressions.append(expression)
+                if "readyState" in expression:
+                    return {"href": "https://365.kdocs.cn/", "readyState": "complete"}
+                return {"status": 200, "contentType": "application/json", "payload": {"files": []}}
+
+        cdp = VerifyCDP()
+        self.assertTrue(export_wps.verify_cloud_session(cdp))
+        self.assertEqual(cdp.sent[0][0], "Page.navigate")
+        self.assertEqual(cdp.sent[0][1]["url"], "https://365.kdocs.cn")
+        self.assertTrue(any("/3rd/drive/api/v6/search/files" in expression for expression in cdp.expressions))
 
     def test_root_uses_wps_document_label(self) -> None:
         source = export_wps.WPSDocumentDataSource(transport=mock.Mock())

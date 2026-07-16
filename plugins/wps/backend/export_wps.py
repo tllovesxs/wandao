@@ -54,7 +54,9 @@ WPS_DOCUMENT_ROOT_ID = "smart-documents"
 WPS_DOCUMENT_SEARCH_PATH = "/3rd/drive/api/v6/search/files"
 WPS_DOCUMENT_DOWNLOAD_PATH = "/api/v3/office/file/{file_id}/download"
 WPS_DOCUMENT_EXECUTE_PATH = "/api/v3/office/file/{file_id}/core/execute"
-AUTH_COOKIE_NAMES = frozenset({"wps_sid"})
+AUTH_SESSION_COOKIE_NAMES = frozenset({"wps_sid", "kso_sid"})
+AUTH_REQUEST_COOKIE_NAMES = frozenset({"csrf"})
+AUTH_COOKIE_NAMES = AUTH_SESSION_COOKIE_NAMES | AUTH_REQUEST_COOKIE_NAMES
 AUTH_COOKIE_FIELDS = frozenset({
     "name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "expires"
 })
@@ -147,12 +149,17 @@ def validate_download_url(url: str) -> str:
     return str(url)
 
 
+def wps_data_root() -> Path:
+    root = default_data_dir()
+    return root if root.name.casefold() == "wps" else root / "wps"
+
+
 def default_auth_path() -> Path:
-    return default_data_dir() / "wps" / "auth.json"
+    return wps_data_root() / "auth.json"
 
 
 def default_profile_path() -> Path:
-    return default_data_dir() / "wps" / "browser-profile"
+    return wps_data_root() / "browser-profile"
 
 
 def filter_auth_cookies(cookies: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -255,31 +262,51 @@ def close_owned_browser(cdp: CDPClient | None, process: Any) -> None:
 
 
 def verify_cloud_session(cdp: CDPClient) -> bool:
-    result = cdp.evaluate(
-        """
-        fetch("https://365.kdocs.cn", {method:"GET", credentials:"include", redirect:"follow", cache:"no-store"})
-          .then(r => ({ok:r.ok, status:r.status, url:r.url}))
-          .catch(() => ({ok:false, status:0, url:""}))
-        """,
-        timeout=30,
-    )
-    if not isinstance(result, Mapping) or not result.get("ok"):
-        return False
+    """Navigate to WPS Documents and verify the authenticated read-only API."""
     try:
-        parsed = urllib.parse.urlsplit(str(result.get("url") or ""))
-    except ValueError:
+        cdp.send("Page.navigate", {"url": WPS_HOME_URL}, timeout=30)
+        _wait_for_wps_page_ready(cdp)
+        result = cdp.evaluate(
+            f"""
+            (async () => {{
+              const target = new URL({json.dumps(f"https://{API_HOST}{WPS_DOCUMENT_SEARCH_PATH}")});
+              target.searchParams.set('offset', '0');
+              target.searchParams.set('count', '1');
+              target.searchParams.set('searchname', '');
+              try {{
+                const response = await fetch(target.toString(), {{method:'GET', credentials:'include', redirect:'follow', cache:'no-store', headers:{{'Accept':'application/json'}}}});
+                const contentType = response.headers.get('content-type') || '';
+                let payload = null;
+                if (/application\/json/i.test(contentType)) {{
+                  try {{ payload = await response.json(); }} catch (_) {{}}
+                }}
+                return {{status: response.status, contentType, payload}};
+              }} catch (_) {{
+                return {{status: 0, contentType: '', payload: null}};
+              }}
+            }})()
+            """,
+            timeout=30,
+        )
+    except Exception:
         return False
-    return parsed.scheme == "https" and _official_host(parsed.hostname or "", ("365.kdocs.cn", "kdocs.cn", "wps.cn"))
+    if not isinstance(result, Mapping):
+        return False
+    status = int(result.get("status") or 0)
+    content_type = str(result.get("contentType") or "")
+    payload = result.get("payload")
+    return 200 <= status < 300 and "application/json" in content_type.lower() and isinstance(payload, Mapping)
 
 
 def save_auth_state(cdp: CDPClient, auth_file: str | Path | None = None) -> dict[str, Any]:
-    if not verify_cloud_session(cdp):
-        raise ExportError("WPS 登录会话未验证，请完成登录后重试。")
     cdp.send("Network.enable")
     response = cdp.send("Network.getAllCookies", timeout=20)
     cookies = filter_auth_cookies(response.get("result", {}).get("cookies", []))
-    if not cookies:
-        raise ExportError("WPS 登录会话没有受支持的认证 Cookie。")
+    cookie_names = {str(cookie.get("name") or "") for cookie in cookies}
+    if not cookie_names.intersection(AUTH_SESSION_COOKIE_NAMES):
+        raise ExportError("未找到 WPS 登录凭证，请确认已在登录浏览器中进入“WPS 文档”后重试。")
+    if not verify_cloud_session(cdp):
+        raise ExportError("WPS 登录会话未通过文档接口验证，请确认登录完成后重试。")
     target = Path(auth_file).expanduser().resolve() if auth_file else default_auth_path()
     write_private_json(target, {"version": 1, "cookies": cookies})
     return {"cookieCount": len(cookies), "authFile": str(target)}
@@ -296,11 +323,13 @@ def load_auth_state(cdp: CDPClient, auth_file: str | Path | None = None) -> int:
         raise ExportError("WPS 登录状态中没有受支持的认证 Cookie。")
     cdp.send("Network.enable")
     cdp.send("Network.setCookies", {"cookies": cookies}, timeout=30)
+    if not verify_cloud_session(cdp):
+        raise ExportError("WPS 登录状态已失效，请重新登录。")
     return len(cookies)
 
 
 def _inside_wps_data(path: Path) -> Path:
-    root = (default_data_dir() / "wps").resolve()
+    root = wps_data_root().resolve()
     target = path.expanduser().resolve()
     try:
         target.relative_to(root)

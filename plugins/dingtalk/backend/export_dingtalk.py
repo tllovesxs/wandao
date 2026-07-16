@@ -190,13 +190,37 @@ def parse_space_url(value: str) -> str | None:
     return match.group(1) if match else None
 
 
-def page_for_dingtalk(port: int) -> dict[str, Any] | None:
+def page_for_dingtalk(port: int, preferred_url: str = "") -> dict[str, Any] | None:
     pages = http_json(f"http://127.0.0.1:{port}/json/list", timeout=5)
+    preferred = urllib.parse.urlparse(preferred_url)
+    preferred_host = (preferred.hostname or "").lower()
+    preferred_path = preferred.path.rstrip("/")
+    if preferred_host in SUPPORTED_HOSTS:
+        for page in pages:
+            url = urllib.parse.urlparse(str(page.get("url") or ""))
+            if page.get("type") != "page" or (url.hostname or "").lower() != preferred_host:
+                continue
+            if preferred_path and url.path.rstrip("/") == preferred_path:
+                return page
     for page in pages:
         url = str(page.get("url") or "")
         if page.get("type") == "page" and any(host in url for host in SUPPORTED_HOSTS):
             return page
     return None
+
+
+def open_dingtalk_target(cdp: CDPClient, target_url: str) -> None:
+    """Navigate an existing plugin browser to the requested DingTalk page."""
+    expected_host = (parse_dingtalk_url(target_url).hostname or "").lower()
+    cdp.navigate(target_url)
+    state_expression = "({ host: location.hostname, readyState: document.readyState })"
+    for _ in range(30):
+        state = cdp.evaluate(state_expression, timeout=5)
+        if isinstance(state, dict) and str(state.get("host") or "").lower() == expected_host:
+            if str(state.get("readyState") or "") in {"interactive", "complete"}:
+                return
+        time.sleep(0.5)
+    raise ExportError("钉钉目标页面打开超时，请确认浏览器中能正常打开该链接后重试。")
 
 
 def connect_dingtalk_browser(args: argparse.Namespace, initial_url: str = ENTRY_URL) -> tuple[CDPClient, subprocess.Popen[Any] | None]:
@@ -205,11 +229,11 @@ def connect_dingtalk_browser(args: argparse.Namespace, initial_url: str = ENTRY_
         profile = Path(args.profile_dir).expanduser().resolve() if args.profile_dir else default_profile_path()
         process = start_chrome(args.port, profile, initial_url, getattr(args, "browser_path", "") or None)
         wait_for_debug_port(args.port, timeout=30)
-    page = page_for_dingtalk(args.port)
+    page = page_for_dingtalk(args.port, initial_url)
     if not page:
         open_tab(args.port, initial_url)
         time.sleep(1)
-        page = page_for_dingtalk(args.port)
+        page = page_for_dingtalk(args.port, initial_url)
     if not page:
         pages = http_json(f"http://127.0.0.1:{args.port}/json/list", timeout=5)
         page = next((item for item in pages if item.get("type") == "page"), None)
@@ -219,6 +243,10 @@ def connect_dingtalk_browser(args: argparse.Namespace, initial_url: str = ENTRY_
     client.connect()
     client.send("Runtime.enable")
     client.send("Page.enable")
+    # A previous login can leave several DingTalk tabs open.  Always move the
+    # selected CDP page to the URL the user entered instead of querying an old
+    # login/home tab and waiting for its requests to time out.
+    open_dingtalk_target(client, initial_url)
     return client, process
 
 
@@ -371,29 +399,41 @@ def root_entry(cdp: CDPClient, source_url: str, args: argparse.Namespace) -> Din
 
 def children_of(cdp: CDPClient, entry: DingEntry, args: argparse.Namespace) -> list[DingEntry]:
     cursor = ""
+    seen_cursors: set[str] = set()
+    page_number = 0
     children: list[DingEntry] = []
     while True:
         check_stopped(args)
+        page_number += 1
+        emit(args, f"正在读取钉钉目录第 {page_number} 页…", event="toc.page")
         throttle_request(args)
         payload = call_helper(cdp, "children", entry.uuid, cursor)
         raw_children = payload.get("children") or []
         if not isinstance(raw_children, list):
             raise ExportError("钉钉目录接口返回的 children 不是列表。")
         children.extend(entry_from_raw(item, entry.uuid) for item in raw_children if isinstance(item, dict))
-        cursor = str(payload.get("loadMoreId") or payload.get("nextLoadMoreId") or "")
-        if not cursor:
+        next_cursor = str(payload.get("loadMoreId") or payload.get("nextLoadMoreId") or "")
+        if not next_cursor:
             return children
+        if next_cursor in seen_cursors:
+            emit(args, "钉钉目录分页返回了重复游标，已停止重复读取。", event="toc.pagination.repeated", level="warn")
+            return children
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
 
 
 def collect_tree(cdp: CDPClient, source_url: str, args: argparse.Namespace) -> list[DingEntry]:
+    emit(args, "正在读取钉钉目录根节点…", event="toc.root")
     root = root_entry(cdp, source_url, args)
     result: list[DingEntry] = [root]
     visited = {root.uuid}
     pending = [root]
+    processed_folders = 0
     while pending:
         parent = pending.pop(0)
         if not parent.has_children:
             continue
+        processed_folders += 1
         for child in children_of(cdp, parent, args):
             if child.uuid in visited:
                 continue
@@ -401,6 +441,8 @@ def collect_tree(cdp: CDPClient, source_url: str, args: argparse.Namespace) -> l
             result.append(child)
             if child.has_children:
                 pending.append(child)
+        if processed_folders == 1 or processed_folders % 10 == 0:
+            emit(args, f"钉钉目录读取中：已检查 {processed_folders} 个目录节点，已发现 {len(result)} 个节点。", event="toc.progress")
     return result
 
 
@@ -697,9 +739,12 @@ def run_login(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def scan_dingtalk(args: argparse.Namespace) -> dict[str, Any]:
+    emit(args, "正在打开钉钉目标页面并读取目录…", event="toc.started")
     cdp, process = connect_dingtalk_browser(args, args.source_url or ENTRY_URL)
     try:
-        return toc_json(collect_tree(cdp, args.source_url, args))
+        result = toc_json(collect_tree(cdp, args.source_url, args))
+        emit(args, f"钉钉目录读取完成：共 {len(result['nodes'])} 个节点。", event="toc.completed")
+        return result
     finally:
         cdp.close()
         if process and args.close_started_chrome:

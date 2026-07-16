@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "wps-export",
   "platform": "wps",
-  "name": "WPS \u6587\u6863",
-  "title": "WPS \u667a\u80fd\u6587\u6863\u53ca\u5176\u4ed6\u6587\u6863\u539f\u59cb\u6587\u4ef6\u5bfc\u51fa",
-  "navLabel": "WPS \u6587\u6863\u5bfc\u51fa",
-  "description": "\u901a\u8fc7\u72ec\u7acb\u6d4f\u89c8\u5668\u767b\u5f55\uff0c\u626b\u63cf\u5e76\u5bfc\u51fa WPS \u667a\u80fd\u6587\u6863\u53ca\u5176\u4ed6\u53ef\u4e0b\u8f7d\u7684\u4e91\u6587\u6863\uff0c\u4e0d\u8bfb\u53d6\u8bbe\u5907\u6587\u6863\u3002",
+  "name": "WPS 文档",
+  "title": "WPS 智能文档及其他文档导出",
+  "navLabel": "WPS 文档导出",
+  "description": "通过独立浏览器登录，扫描并导出 WPS 智能文档及其他可下载的云文档；优先保存原始文件，部分智能文档降级为 Markdown，不读取设备文档。",
   "type": "automation",
   "group": "export",
   "trustLevel": "experimental",
@@ -22,8 +22,8 @@
     "login": true,
     "scanToc": true,
     "images": false,
-    "attachments": true,
-    "tree": true,
+    "attachments": false,
+    "tree": false,
     "batch": true,
     "retryFailures": true
   },
@@ -34,7 +34,7 @@
   },
   "retryFailures": {
     "arg": "--retry-failed",
-    "label": "\u53ea\u91cd\u8bd5\u5931\u8d25\u9879"
+    "label": "只重试失败项"
   },
   "toc": {
     "itemsPath": "nodes",
@@ -52,7 +52,7 @@
   "fields": [
     {
       "name": "output",
-      "label": "\u8f93\u51fa\u76ee\u5f55",
+      "label": "输出目录",
       "type": "directory",
       "arg": "--output",
       "required": true,
@@ -63,7 +63,7 @@
     },
     {
       "name": "request_delay",
-      "label": "\u8bf7\u6c42\u5ef6\u8fdf\uff08\u79d2\uff09",
+      "label": "请求延迟（秒）",
       "type": "number",
       "arg": "--request-delay",
       "default": 0.1,
@@ -77,7 +77,7 @@
     },
     {
       "name": "retry_failed",
-      "label": "\u53ea\u91cd\u8bd5\u5931\u8d25\u9879",
+      "label": "只重试失败项",
       "type": "checkbox",
       "arg": "--retry-failed",
       "default": false,
@@ -91,7 +91,7 @@
     {
       "id": "login",
       "kind": "login",
-      "label": "\u767b\u5f55 WPS \u5e76\u4fdd\u5b58\u8ba4\u8bc1",
+      "label": "登录 WPS 并保存认证",
       "script": "../../backend/export_wps.py",
       "args": [
         "--login"
@@ -102,7 +102,7 @@
     {
       "id": "scan",
       "kind": "scan",
-      "label": "\u626b\u63cf WPS \u6587\u6863",
+      "label": "扫描 WPS 文档",
       "script": "../../backend/export_wps.py",
       "args": [
         "--scan-toc"
@@ -113,19 +113,19 @@
     {
       "id": "export",
       "kind": "export",
-      "label": "\u5f00\u59cb\u5bfc\u51fa",
+      "label": "开始导出",
       "script": "../../backend/export_wps.py",
       "args": [
         "--progress-every",
         "1"
       ],
-      "progressTitle": "WPS \u6587\u6863\u5bfc\u51fa",
-      "progressDetail": "\u6b63\u5728\u4e0b\u8f7d WPS \u6587\u6863\u539f\u59cb\u6587\u4ef6..."
+      "progressTitle": "WPS 文档导出",
+      "progressDetail": "正在下载 WPS 文档原始文件..."
     },
     {
       "id": "clearAuth",
       "kind": "custom",
-      "label": "\u6e05\u9664 WPS \u767b\u5f55\u72b6\u6001",
+      "label": "清除 WPS 登录状态",
       "script": "../../backend/export_wps.py",
       "args": [
         "--clear-auth"
@@ -133,7 +133,7 @@
       "track": false,
       "secondary": true,
       "danger": true,
-      "confirm": "\u8fd9\u4f1a\u5220\u9664\u672c\u673a\u4fdd\u5b58\u7684 WPS \u767b\u5f55\u72b6\u6001\uff0c\u4e0d\u4f1a\u5220\u9664\u5df2\u5bfc\u51fa\u6587\u4ef6\u3002\u786e\u5b9a\u7ee7\u7eed\u5417\uff1f"
+      "confirm": "这会删除本机保存的 WPS 登录状态，不会删除已导出文件。确定继续吗？"
     }
   ]
 }

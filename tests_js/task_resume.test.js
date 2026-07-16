@@ -166,25 +166,21 @@ test('resource warnings are not converted into retry-failed document commands', 
   assert.match(resumeTaskHandler, /失败文档，共 \$\{documentFailures\} 个/);
 });
 
-test('latest WPS task result is provider-scoped, actionable, and visible before the WPS form', () => {
+test('latest task result card is persistent, actionable, and visible during long forms', () => {
   const appJs = fs.readFileSync('wandao_electron/renderer/app.js', 'utf8');
   const indexHtml = fs.readFileSync('wandao_electron/renderer/index.html', 'utf8');
   const styles = fs.readFileSync('wandao_electron/renderer/styles.css', 'utf8');
   const finishHistory = appJs.slice(appJs.indexOf('async function finishHistoryTask'), appJs.indexOf('async function runTrackedPythonCommand'));
-  const manifestForm = appJs.slice(appJs.indexOf('function renderManifestProviderForm'), appJs.indexOf('function manifestFieldValue'));
-  const resultRenderer = appJs.slice(appJs.indexOf('function renderTaskResultCard'), appJs.indexOf('async function handleTaskAction'));
 
   assert.ok(indexHtml.indexOf('id="progress-section"') < indexHtml.indexOf('id="content-area"'));
-  assert.doesNotMatch(indexHtml, /id="task-result-card"/);
-  assert.match(manifestForm, /provider\.id === 'wps-export'[\s\S]*id="wps-task-result-card"[\s\S]*\$\{wpsResultCard\}[\s\S]*manifest-tool-panel/);
-  assert.match(resultRenderer, /currentTool !== 'wps-export' \|\| !task \|\| task\.providerId !== 'wps-export'/);
-  assert.match(resultRenderer, /data-task-result-action="open-output"/);
-  assert.doesNotMatch(resultRenderer, /data-task-result-action="open-report"/);
-  assert.match(resultRenderer, /data-task-result-action="copy-failures"/);
-  assert.match(resultRenderer, /data-task-result-action="resume"/);
-  assert.doesNotMatch(resultRenderer, /data-task-result-action="task-center"/);
+  assert.match(indexHtml, /id="task-result-card"/);
+  assert.match(appJs, /function renderTaskResultCard\(task = latestFinishedTask\(\)\)/);
+  assert.match(appJs, /data-task-result-action="open-output"/);
+  assert.match(appJs, /data-task-result-action="open-report"/);
+  assert.match(appJs, /data-task-result-action="copy-failures"/);
+  assert.match(appJs, /data-task-result-action="resume"/);
   assert.match(finishHistory, /latestFinishedTaskId = task\.id[\s\S]*renderTaskResultCard\(task\)/);
-  assert.match(styles, /\.wps-task-result-card \{[\s\S]*overflow: hidden/);
+  assert.match(styles, /\.progress-section \{[\s\S]*position: sticky/);
 });
 
 test('manual stop remains stopping until command completion records its terminal state', () => {

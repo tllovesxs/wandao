@@ -1,87 +1,67 @@
-# WPS“我的云文档”原始文件导出
+# WPS 智能文档及其他文档导出
 
-这个 Provider 只读取 WPS 网页中的 **“我的云文档”**，并把可下载的原始文件保存到本地。它不读取设备文档、我的设备、自动上传、团队空间或回收站。
+这个插件用于从 WPS 网页端扫描并导出个人账号中的云文档。插件优先保存 WPS 提供的原始文件；部分无法直接取得原始文件的智能文档会降级保存为 Markdown。
 
-## 使用方式
+插件不读取设备文档、我的设备、自动上传、团队空间或回收站，也不会执行上传、修改、分享或删除操作。
 
-### 1. 登录
+## 使用步骤
 
-```powershell
-python plugins/wps/backend/export_wps.py --login
-```
+1. 在万能导的平台中心打开 **“WPS 文档导出”**。
+2. 点击 **“登录 WPS 并保存认证”**。
+3. 在打开的浏览器中自行完成扫码或网页登录，确认已经进入 WPS 文档页面。
+4. 回到万能导，点击 **“我已完成登录，保存凭证”**。
+5. 点击 **“扫描 WPS 文档”**，等待文档列表读取完成。
+6. 在列表中勾选需要导出的文档。
+7. 选择本地输出目录，然后点击 **“开始导出”**。
+8. 导出结束后查看任务结果；如果存在失败项，可根据失败原因处理后重新扫描或重试。
 
-命令会打开一个只供 WPS 使用的独立浏览器配置目录。请在浏览器中自行完成扫码或网页登录，确认页面回到“我的云文档”后按 Enter。插件只保存经过白名单过滤的最小认证状态。
+## 导出结果
 
-不要把 Cookie、`wps_sid`、Token、CSRF 或 Authorization Header 粘贴到命令行、Issue、日志或报告中。插件不接受手工粘贴这些凭证。
+- 普通文档、表格、演示文稿及其他可下载文件：优先保存 WPS 返回的原始文件。
+- WPS 智能文档：无法取得原始文件时，转换并保存为 Markdown。
+- 已经存在的目标文件默认跳过，不覆盖原文件。
+- 下载先写入临时文件，完整写入后再替换为最终文件。
+- 每次导出会在输出目录生成 `00-导出报告.json`，记录成功、跳过和失败情况。
+- 任务支持停止、断点恢复和只重试失败项。
 
-### 2. 扫描目录
+## 当前限制
 
-```powershell
-python plugins/wps/backend/export_wps.py --scan-toc
-```
+- 当前扫描结果为扁平列表，**暂不保留 WPS 中的真实目录层级**。
+- 在线智能表格可能不提供可下载的原始文件，遇到这种情况会记录为失败项。
+- 尚未上传完成的文件暂时无法导出，需要等待 WPS 完成上传后重试。
+- 智能文档降级为 Markdown 时，图片、音视频和嵌入资源目前只保留文字占位提示，不会作为独立附件下载。
+- 不读取设备文档、我的设备、自动上传、团队空间或回收站。
+- 登录状态失效后，需要重新点击 **“登录 WPS 并保存认证”**。
+- 请求过于频繁时，WPS 可能暂时限制访问；请稍后再试，不要连续快速重试。
 
-扫描结果供 Wandao 的 Provider/TOC 选择器使用。扫描只通过只读 GET 请求读取个人云文档树，不执行修改、分享、删除或上传操作。
+## 登录与隐私
 
-### 3. 导出原始文件
+- 登录操作只在 WPS 专用的独立浏览器配置中进行。
+- 插件不要求用户手工粘贴 Cookie、`wps_sid`、Token、CSRF 或 Authorization Header。
+- 保存认证时只保留经过白名单过滤的必要 Cookie，并使用私有文件权限写入应用数据目录。
+- 签名下载地址只在当前导出过程中使用，不写入导出报告。
+- 错误报告会对认证信息、签名参数和账号标识进行脱敏；提交反馈前仍建议人工检查一次。
+- 点击 **“清除 WPS 登录状态”**只会删除本机保存的 WPS 认证和专用浏览器配置，不会删除已经导出的文件。
 
-```powershell
-python plugins/wps/backend/export_wps.py --output exports/wps
-```
+## 已验证情况（脱敏）
 
-也可以重复 `--file-id` 只导出指定文件；在 Wandao 中通常由目录选择器自动传入：
+当前实现已在 Windows 桌面端完成以下脱敏测试：
 
-```powershell
-python plugins/wps/backend/export_wps.py --output exports/wps --file-id <file-id>
-```
+- 登录后保存最小认证状态。
+- 扫描个人 WPS 文档列表并在万能导中选择文件。
+- 批量导出普通文档原始文件。
+- 智能文档无法直接下载时降级导出 Markdown。
+- 文件级进度、停止、checkpoint 恢复和失败项重试。
+- 登录失效、在线智能表格不支持下载、文件尚未上传完成等失败情况。
+- 文件名安全化、重复名称处理和临时文件清理。
 
-导出的文件会保留“我的云文档”下的父目录层级。目标文件已经存在时会跳过，不覆盖原文件。下载使用临时 `.part` 文件，完整写入后再原子替换。
+测试和文档中不包含真实 Cookie、Token、账号标识、用户文件名或真实文件 ID。
 
-### 4. 断点恢复和失败重试
+## 第三方项目参考说明
 
-启用 SQLite checkpoint：
+开发调研阶段参考了以下公开项目对 WPS 产品行为、文档类型和导出流程的分析：
 
-```powershell
-python plugins/wps/backend/export_wps.py `
-  --output exports/wps `
-  --checkpoint-file .wandao/wps-export.sqlite `
-  --checkpoint-task-id wps-export
-```
+- [xmgzxmgz/wps-cloud-export](https://github.com/xmgzxmgz/wps-cloud-export)：仓库声明为 MIT License。
+- [Clanel/wps-ai-note-export-markdown](https://github.com/Clanel/wps-ai-note-export-markdown)：截至 2026 年 7 月 16 日核对时，仓库未提供明确的开源许可证文件。
 
-恢复同一个任务时继续使用相同的 checkpoint 文件和任务 ID；只重试失败项：
-
-```powershell
-python plugins/wps/backend/export_wps.py `
-  --output exports/wps `
-  --checkpoint-file .wandao/wps-export.sqlite `
-  --checkpoint-task-id wps-export `
-  --retry-failed
-```
-
-停止任务会保留已经完成的状态并清理当前临时文件。重新运行即可恢复；Wandao 任务中心停止任务时使用项目约定的退出码 130。
-
-### 5. 导出报告
-
-每次导出都会在输出目录生成 `00-导出报告.json`，格式为 TaskResult v1，包含成功、跳过、失败和停止状态。报告只记录本地输出路径和安全化后的错误文本，不记录 Cookie、Token、认证头、签名下载 URL、账号标识或远程请求查询参数值。
-
-### 6. 清除登录状态
-
-```powershell
-python plugins/wps/backend/export_wps.py --clear-auth
-```
-
-这只删除 Wandao 为 WPS 保存的认证文件和独立浏览器 profile，不删除已经导出的文件。
-
-## 常见错误
-
-- **需要重新登录 / HTTP 401 或 403**：重新运行 `--login`，不要手工复制 Cookie。
-- **请求过于频繁 / HTTP 429**：稍后重试；插件会读取安全的 `Retry-After` 数值并避免把响应内容写入报告。
-- **文件已存在**：这是预期的跳过行为，不会覆盖本地文件。
-- **路径名称不适合作为 Windows 文件名**：插件会安全化非法字符、保留名和路径穿越片段，并对冲突名称使用稳定短哈希消歧。
-- **找不到浏览器**：请安装 Chrome、Edge 或 Chromium，或由 Wandao 配置自动化浏览器路径。
-
-## 隐私边界
-
-- 只支持 WPS“我的云文档”个人空间。
-- 只允许显式的 WPS 官方 HTTPS API 主机和只读接口路径。
-- 下载原始文件时不发送 WPS Cookie 或 Authorization Header；签名下载地址仅在内存中使用。
-- 测试使用 fake 数据源和脱敏占位符，不连接真实账户，也不包含真实文件名、文件 ID 或认证数据。
+本插件基于 Wandao Plugin v1 和 `wandao_core` **独立实现**，未复制或移植上述项目源码。对于未声明许可证的参考项目，仅参考可公开观察到的产品行为和兼容性思路；后续如果需要引用或移植其代码，必须先取得明确授权。

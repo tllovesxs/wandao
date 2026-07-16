@@ -9,6 +9,8 @@ stdout; human-readable prompts/errors use stderr.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -103,6 +105,10 @@ class WPSAuthExpiredError(WPSApiError):
 
 
 class WPSRateLimitError(WPSApiError):
+    pass
+
+
+class WPSDownloadUnavailableError(WPSApiError):
     pass
 
 
@@ -500,14 +506,21 @@ class WPSDocumentDataSource:
 
     def open_download(self, file_id: str) -> str:
         safe_id = urllib.parse.quote(str(file_id), safe="")
-        payload = _unwrap(self._request(
-            "GET",
-            self._url(WPS_DOCUMENT_DOWNLOAD_PATH.format(file_id=safe_id)),
-            {"isblocks": "false"},
-        ))
+        try:
+            payload = _unwrap(self._request(
+                "GET",
+                self._url(WPS_DOCUMENT_DOWNLOAD_PATH.format(file_id=safe_id)),
+                {"isblocks": "false"},
+            ))
+        except WPSApiError as exc:
+            if type(exc) is WPSApiError and exc.status in {400, 404, 405, 422}:
+                raise WPSDownloadUnavailableError(
+                    "WPS 文档没有可下载的原始文件", status=exc.status
+                ) from exc
+            raise
         url = payload.get("url") or payload.get("download_url") or payload.get("downloadUrl")
         if not isinstance(url, str) or not url.strip():
-            raise WPSApiError("WPS 文档未返回可下载的原始文件地址")
+            raise WPSDownloadUnavailableError("WPS 文档没有可下载的原始文件")
         return validate_download_url(url)
 
     def query_content(self, file_id: str) -> Mapping[str, Any]:
@@ -526,6 +539,171 @@ class WPSDocumentDataSource:
 # all production paths now use the Smart Document source above.
 WPSApiDataSource = WPSDocumentDataSource
 WPSSmartDocumentDataSource = WPSDocumentDataSource
+
+
+def _decode_smart_document_result(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the decoded AirPage block result without exposing raw response data."""
+    current: Any = _unwrap(payload)
+    detail = current.get("detail") if isinstance(current, Mapping) else None
+    if isinstance(detail, Mapping) and detail.get("result") not in (None, ""):
+        current = detail.get("result")
+    elif isinstance(current, Mapping) and current.get("result") not in (None, "", "ok"):
+        current = current.get("result")
+
+    if isinstance(current, str):
+        encoded = current.strip()
+        try:
+            encoded += "=" * (-len(encoded) % 4)
+            decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+            current = json.loads(decoded)
+        except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WPSApiError("WPS 智慧文档内容解码失败") from exc
+
+    for _ in range(4):
+        if not isinstance(current, Mapping):
+            break
+        if isinstance(current.get("blocks"), list):
+            return current
+        nested = current.get("data") or current.get("result")
+        if not isinstance(nested, Mapping):
+            break
+        current = nested
+    raise WPSApiError("WPS 智慧文档未返回可识别的内容块")
+
+
+def _inline_markdown(nodes: Any) -> str:
+    if not isinstance(nodes, list):
+        return ""
+    output: list[str] = []
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        node_type = str(node.get("type") or "")
+        attrs = node.get("attrs") if isinstance(node.get("attrs"), Mapping) else {}
+        if node_type == "text":
+            value = str(node.get("content") or "")
+            if attrs.get("code") or attrs.get("inlineCode"):
+                value = "`" + value.replace("`", "\\`") + "`"
+            if attrs.get("bold"):
+                value = f"**{value}**"
+            if attrs.get("italic"):
+                value = f"*{value}*"
+            if attrs.get("strike") or attrs.get("strikethrough"):
+                value = f"~~{value}~~"
+            link = attrs.get("link") or attrs.get("href") or attrs.get("url")
+            if isinstance(link, str) and link.startswith(("https://", "http://")):
+                value = f"[{value}]({link.replace(')', '%29')})"
+            output.append(value)
+        elif node_type == "emoji":
+            output.append(str(attrs.get("emoji") or node.get("content") or ""))
+        elif node_type == "br":
+            output.append("  \n")
+        elif node_type == "latex":
+            output.append(f"${attrs.get('latexStr') or ''}$")
+        elif node_type in {"linkView", "WPSDocument"}:
+            label = str(attrs.get("title") or attrs.get("wpsDocumentName") or "链接")
+            url = attrs.get("url") or attrs.get("wpsDocumentLink")
+            output.append(f"[{label}]({str(url).replace(')', '%29')})" if isinstance(url, str) and url.startswith(("https://", "http://")) else label)
+        elif node_type == "WPSUser":
+            output.append("@" + str(attrs.get("name") or "用户"))
+        elif isinstance(node.get("content"), str):
+            output.append(str(node.get("content")))
+    return "".join(output)
+
+
+_CODE_LANGUAGES = {
+    1: "text", 2: "css", 3: "go", 4: "python", 5: "shell", 7: "markdown",
+    12: "typescript", 13: "sql", 15: "http", 16: "java", 17: "json",
+    19: "javascript", 26: "csharp", 27: "dockerfile", 32: "rust", 43: "yaml",
+}
+
+
+def _block_markdown(block: Mapping[str, Any]) -> list[str]:
+    block_type = str(block.get("type") or "")
+    attrs = block.get("attrs") if isinstance(block.get("attrs"), Mapping) else {}
+    content = block.get("content")
+    inline = _inline_markdown(content)
+
+    if block_type == "doc":
+        return _blocks_markdown(content)
+    if block_type == "title":
+        return [f"# {inline}" if inline else ""]
+    if block_type == "heading":
+        try:
+            level = min(6, max(1, int(attrs.get("level", 1))))
+        except (TypeError, ValueError):
+            level = 1
+        return [f"{'#' * level} {inline}" if inline else ""]
+    if block_type == "paragraph":
+        list_attrs = attrs.get("listAttrs") if isinstance(attrs.get("listAttrs"), Mapping) else {}
+        try:
+            level = max(0, int(list_attrs.get("level", 0)))
+        except (TypeError, ValueError):
+            level = 0
+        prefix = ""
+        if list_attrs:
+            list_type = list_attrs.get("type")
+            if list_type == 2:
+                prefix = "1. "
+            elif list_type == 3:
+                prefix = "- [x] " if list_attrs.get("styleType") == 8 else "- [ ] "
+            else:
+                prefix = "- "
+        return [f"{'  ' * level}{prefix}{inline}" if inline or prefix else ""]
+    if block_type == "blockQuote":
+        return ["\n".join(f"> {line}" for line in inline.splitlines()) if inline else ">"]
+    if block_type == "codeBlock":
+        try:
+            language = _CODE_LANGUAGES.get(int(attrs.get("lang", 1)), "text")
+        except (TypeError, ValueError):
+            language = "text"
+        return [f"```{language}\n{inline}\n```"]
+    if block_type == "hr":
+        return ["---"]
+    if block_type == "picture":
+        return [f"[图片：{attrs.get('caption') or '未命名图片'}]"]
+    if block_type in {"video", "audio", "spreadsheet", "dbsheet", "processon", "thirdResource"}:
+        return [f"[{attrs.get('title') or '嵌入内容'}]"]
+    if isinstance(content, list):
+        nested = _blocks_markdown(content)
+        if nested:
+            return nested
+    return [inline] if inline else []
+
+
+def _blocks_markdown(blocks: Any) -> list[str]:
+    if not isinstance(blocks, list):
+        return []
+    rendered: list[str] = []
+    for block in blocks:
+        if isinstance(block, Mapping):
+            rendered.extend(part for part in _block_markdown(block) if part != "")
+    return rendered
+
+
+def smart_document_to_markdown(payload: Mapping[str, Any]) -> str:
+    result = _decode_smart_document_result(payload)
+    parts = _blocks_markdown(result.get("blocks"))
+    if not parts:
+        raise WPSApiError("WPS 智慧文档内容为空或暂不支持")
+    return "\n\n".join(parts).rstrip() + "\n"
+
+
+def write_smart_document(payload: Mapping[str, Any], target: Path) -> Path:
+    target = Path(target).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".part")
+    try:
+        temporary.write_text(smart_document_to_markdown(payload), encoding="utf-8", newline="\n")
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return target
+
+
+def _can_fallback_to_smart_content(exc: WPSApiError) -> bool:
+    return isinstance(exc, WPSDownloadUnavailableError)
 
 
 def _retry_after(value: Any) -> float | None:
@@ -778,13 +956,26 @@ class WPSExportTask:
                 parents.extend(reversed(chain))
                 target = safe_target(self.output, [*parents, node.title], used)
                 try:
-                    url = self.source.open_download(node.file_id)
-                    if target.exists():
-                        skipped += 1
-                        if self.checkpoint:
-                            self.checkpoint.complete_item(node.file_id, str(target))
-                        continue
-                    download_original_file(url, target)
+                    try:
+                        url = self.source.open_download(node.file_id)
+                    except WPSApiError as exc:
+                        if not _can_fallback_to_smart_content(exc):
+                            raise
+                        markdown_name = f"{Path(node.title).stem or node.title}.md"
+                        target = safe_target(self.output, [*parents, markdown_name], used)
+                        if target.exists():
+                            skipped += 1
+                            if self.checkpoint:
+                                self.checkpoint.complete_item(node.file_id, str(target))
+                            continue
+                        write_smart_document(self.source.query_content(node.file_id), target)
+                    else:
+                        if target.exists():
+                            skipped += 1
+                            if self.checkpoint:
+                                self.checkpoint.complete_item(node.file_id, str(target))
+                            continue
+                        download_original_file(url, target)
                     success += 1
                     if self.checkpoint:
                         self.checkpoint.complete_item(node.file_id, str(target))
@@ -862,6 +1053,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default="exports/wps")
     parser.add_argument("--file-id", dest="selected_file_ids", action="append", default=[])
     parser.add_argument("--request-delay", type=float, default=0.1)
+    parser.add_argument("--progress-every", type=int, default=1, help="每处理多少篇刷新一次进度")
     add_checkpoint_args(parser)
     return parser
 

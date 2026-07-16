@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from plugins.wps.backend import export_wps
@@ -113,6 +116,70 @@ class WPSDocumentTests(unittest.TestCase):
         self.assertEqual(body["command"], "http.otl.query")
         self.assertEqual(body["param"]["name"], "block.query")
         self.assertNotIn("exec", json.dumps(body))
+
+    def test_export_parser_accepts_provider_progress_argument(self):
+        args = export_wps.build_parser().parse_args(["--progress-every", "1"])
+
+        self.assertEqual(args.progress_every, 1)
+
+    def test_smart_document_falls_back_to_markdown_when_original_download_is_unavailable(self):
+        encoded = base64.b64encode(json.dumps({
+            "blocks": [{
+                "id": "doc",
+                "type": "doc",
+                "content": [
+                    {"type": "title", "content": [{"type": "text", "content": "Internal title"}]},
+                    {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "content": "Section"}]},
+                    {"type": "paragraph", "content": [
+                        {"type": "text", "content": "Body"},
+                        {"type": "text", "attrs": {"bold": True}, "content": "bold"},
+                    ]},
+                    {"type": "paragraph", "attrs": {"listAttrs": {"type": 1, "level": 0}}, "content": [
+                        {"type": "text", "content": "Item"},
+                    ]},
+                ],
+            }],
+        }).encode("utf-8")).decode("ascii")
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        source.open_download.side_effect = export_wps.WPSDownloadUnavailableError(
+            "Original download unavailable", status=404
+        )
+        source.query_content.return_value = {"detail": {"result": encoded}}
+        root = export_wps.WPSNode(
+            id=export_wps.WPS_DOCUMENT_ROOT_ID, file_id="", title="WPS Documents", parent_id=None, type="folder"
+        )
+        node = export_wps.WPSNode(
+            id="101", file_id="101", title="Smart document", parent_id=export_wps.WPS_DOCUMENT_ROOT_ID, type="file"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            task = export_wps.WPSExportTask(source, Path(directory))
+            report = task.export([root, node], ["101"])
+            exported = Path(directory) / "WPS Documents" / "Smart document.md"
+
+            self.assertEqual(report["successCount"], 1)
+            self.assertEqual(report["failureCount"], 0)
+            self.assertTrue(exported.is_file())
+            self.assertEqual(
+                exported.read_text(encoding="utf-8"),
+                "# Internal title\n\n## Section\n\nBody**bold**\n\n- Item\n",
+            )
+            source.query_content.assert_called_once_with("101")
+
+    def test_auth_failure_does_not_fall_back_to_content_query(self):
+        source = mock.Mock(spec=export_wps.WPSDocumentDataSource)
+        source.open_download.side_effect = export_wps.WPSAuthExpiredError("Session expired", status=401)
+        node = export_wps.WPSNode(
+            id="101", file_id="101", title="Document", parent_id=export_wps.WPS_DOCUMENT_ROOT_ID, type="file"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            task = export_wps.WPSExportTask(source, Path(directory))
+            report = task.export([node], ["101"])
+
+        self.assertEqual(report["successCount"], 0)
+        self.assertEqual(report["failureCount"], 1)
+        source.query_content.assert_not_called()
 
     def test_login_prompt_targets_wps_documents(self):
         cdp = mock.Mock()

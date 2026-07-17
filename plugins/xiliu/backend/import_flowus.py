@@ -70,6 +70,10 @@ MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^\n)]+)\)")
 MARKDOWN_DOC_EXTENSIONS = {".md", ".markdown", ".mdown"}
 
 
+class ImportTaskTerminalFailure(FlowUsError):
+    """Raised only when FlowUs explicitly reports a terminal import failure."""
+
+
 def emit(message: str, *, event: str = "log.message", level: str = "info", **fields: Any) -> None:
     emit_legacy("flowus-import", message, event=event, level=level, **fields)
 
@@ -231,15 +235,21 @@ def create_empty_page(
     parent_id: str,
     title: str,
     after: str | None = None,
+    *,
+    page_id: str = "",
+    request_id: str = "",
+    transaction_id: str = "",
 ) -> str:
-    """Create an empty page block under parent. Returns new page ID."""
-    page_id = generate_uuid()
+    """Create an empty page block under parent using stable client IDs."""
+    page_id = page_id or generate_uuid()
+    request_id = request_id or generate_uuid()
+    transaction_id = transaction_id or generate_uuid()
 
     operations = {
-        "requestId": generate_uuid(),
+        "requestId": request_id,
         "transactions": [
             {
-                "id": generate_uuid(),
+                "id": transaction_id,
                 "spaceId": space_id,
                 "operations": [
                     {
@@ -333,8 +343,18 @@ def upload_html_content(client: FlowUsClient, html_content: str) -> str:
     return oss_name
 
 
-def enqueue_import_task(client: FlowUsClient, block_id: str, space_id: str, oss_name: str) -> str:
-    """Enqueue an import task. Returns task ID."""
+def enqueue_import_task(
+    client: FlowUsClient,
+    block_id: str,
+    space_id: str,
+    oss_name: str,
+    *,
+    request_id: str = "",
+) -> str:
+    """Enqueue an import task with a stable request identifier."""
+    # FlowUs currently returns taskId only in the response and exposes no client-id field.
+    # request_id is persisted locally to identify this uncertain enqueue operation.
+    _ = request_id
     payload = {
         "eventName": "import",
         "request": {
@@ -395,10 +415,10 @@ def poll_task_result(
             if inner.get("status") == "success":
                 return task_result
             msg = inner.get("msg", "未知错误")
-            raise FlowUsError(f"导入任务失败：{msg}")
+            raise ImportTaskTerminalFailure(f"导入任务失败：{msg}")
         elif status in ("failed", "error"):
             msg = task_result.get("result", {}).get("msg", "未知错误")
-            raise FlowUsError(f"导入任务失败：{msg}")
+            raise ImportTaskTerminalFailure(f"导入任务失败：{msg}")
 
         # Still processing, wait
         wait_with_stop(args, interval)
@@ -724,6 +744,55 @@ def fetch_page_blocks(client: FlowUsClient, page_id: str) -> dict[str, Any]:
     if data.get("code") != 200:
         raise FlowUsError(f"获取页面 blocks 失败：{_api_error_msg(data)}")
     return data.get("data", {}).get("blocks", {})
+
+
+def page_exists(client: FlowUsClient, page_id: str) -> bool:
+    """Return page existence; only an explicit not-found response becomes False."""
+    url = DOCS_API.format(doc_id=page_id)
+    referer = f"https://flowus.cn/{page_id}"
+    data = client.get_json(url, referer=referer)
+    code = data.get("code")
+    if code == 200:
+        blocks = data.get("data", {}).get("blocks")
+        if not isinstance(blocks, dict):
+            raise FlowUsError("确认页面是否存在失败：响应中缺少 blocks")
+        return page_id in blocks
+    if str(code) == "404":
+        return False
+    raise FlowUsError(f"确认页面是否存在失败：{_api_error_msg(data)}")
+
+
+def page_has_imported_content(client: FlowUsClient, page_id: str) -> bool:
+    """Return whether an empty import page has received content blocks."""
+    blocks = fetch_page_blocks(client, page_id)
+    page = blocks.get(page_id)
+    if not isinstance(page, dict):
+        raise FlowUsError("确认导入结果失败：响应中缺少目标页面")
+    sub_nodes = page.get("subNodes")
+    if isinstance(sub_nodes, list) and sub_nodes:
+        return True
+    return any(str(block_id) != page_id for block_id in blocks)
+
+
+def poll_page_import_result(
+    client: FlowUsClient,
+    page_id: str,
+    *,
+    timeout: int,
+    interval: float,
+    args: argparse.Namespace | None = None,
+) -> None:
+    """Safely recover an enqueue whose response did not reveal its taskId."""
+    start = time.time()
+    while True:
+        check_stopped(args)
+        if page_has_imported_content(client, page_id):
+            return
+        if time.time() - start > timeout:
+            raise FlowUsError(
+                "导入任务入队结果不确定，且页面尚未出现内容；为避免重复任务，本次不会自动重新入队"
+            )
+        wait_with_stop(args, interval)
 
 
 def create_image_block(
@@ -1208,26 +1277,67 @@ def _ensure_parent_pages(
         parts.append(folder)
         relative = Path(*parts).as_posix()
         item_key = f"xiliu:folder:{relative}"
+        existing = checkpoint_metadata.get(item_key, {})
         metadata = {
-            **checkpoint_metadata.get(item_key, {}),
+            **existing,
             "kind": "folder",
             "relativePath": relative,
             "parentRelative": Path(*parts[:-1]).as_posix() if len(parts) > 1 else "",
             "parentPageId": current_parent,
-            "stage": "listed",
+            "stage": str(existing.get("stage") or "listed"),
         }
         page_id = folder_pages.get(relative) or str(metadata.get("pageId") or "")
-        if checkpoint:
-            checkpoint.upsert_item(item_key, title=folder, parent_key=parent_key, source_id=relative, metadata=metadata)
-        if not page_id:
+        try:
+            if page_id and metadata.get("stage") == "creating-page":
+                check_stopped(args)
+                if page_exists(client, page_id):
+                    metadata["stage"] = "folder-created"
+                else:
+                    create_empty_page(
+                        client, space_id, current_parent, folder,
+                        page_id=page_id, request_id=str(metadata.get("createRequestId") or ""),
+                    transaction_id=str(metadata.get("createTransactionId") or ""),
+                    )
+                    metadata["stage"] = "folder-created"
+            elif not page_id:
+                page_id = generate_uuid()
+                metadata.update({
+                    "pageId": page_id,
+                    "createRequestId": generate_uuid(),
+                    "createTransactionId": generate_uuid(),
+                    "stage": "creating-page",
+                })
+                if checkpoint:
+                    checkpoint.upsert_item(
+                        item_key, title=folder, parent_key=parent_key,
+                        source_id=relative, metadata=metadata,
+                    )
+                    checkpoint.start_item(item_key, "creating-page")
+                check_stopped(args)
+                create_empty_page(
+                    client, space_id, current_parent, folder,
+                    page_id=page_id, request_id=str(metadata["createRequestId"]),
+                transaction_id=str(metadata["createTransactionId"]),
+                )
+                metadata["stage"] = "folder-created"
+
             if checkpoint:
-                checkpoint.start_item(item_key, "create-folder")
-            check_stopped(args)
-            page_id = create_empty_page(client, space_id, current_parent, folder)
-            metadata.update({"pageId": page_id, "stage": "folder-created"})
-            if checkpoint:
-                checkpoint.upsert_item(item_key, title=folder, parent_key=parent_key, source_id=relative, metadata=metadata)
+                checkpoint.upsert_item(
+                    item_key, title=folder, parent_key=parent_key,
+                    source_id=relative, metadata=metadata,
+                )
                 checkpoint.complete_item(item_key, target_id=page_id, metadata=metadata)
+        except Exception as exc:
+            metadata["failureStage"] = str(metadata.get("stage") or "creating-page")
+            if checkpoint:
+                checkpoint.upsert_item(
+                    item_key, title=folder, parent_key=parent_key,
+                    source_id=relative, metadata=metadata,
+                )
+                checkpoint.fail_item(item_key, str(exc))
+            checkpoint_metadata[item_key] = metadata
+            raise
+
         folder_pages[relative] = page_id
         checkpoint_metadata[item_key] = metadata
         current_parent = page_id
@@ -1323,10 +1433,12 @@ def _import_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, 
                 client, checkpoint, args, space_id, parent_id, list(doc["folders"]),
                 folder_pages, checkpoint_metadata,
             )
-            metadata.update({"parentPageId": parent_page_id, "stage": "preparing"})
+            metadata["parentPageId"] = parent_page_id
+            if str(metadata.get("stage") or "") in ("", "listed"):
+                metadata["stage"] = "preparing"
             _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
             if checkpoint:
-                checkpoint.start_item(item_key, "preparing")
+                checkpoint.start_item(item_key, str(metadata.get("stage") or "preparing"))
 
             doc_dir = Path(doc["path"]).parent
             image_count = len(extract_local_images(doc["content"], doc_dir))
@@ -1339,38 +1451,93 @@ def _import_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, 
                 page_id = parent_page_id
                 metadata.update({"pageId": page_id, "stage": "folder-page-reused"})
                 _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
-            elif not page_id:
+            elif page_id and metadata.get("stage") == "creating-page":
                 check_stopped(args)
-                page_id = create_empty_page(client, space_id, parent_page_id, title)
-                metadata.update({"pageId": page_id, "stage": "page-created"})
+                if not page_exists(client, page_id):
+                    create_empty_page(
+                        client, space_id, parent_page_id, title,
+                        page_id=page_id, request_id=str(metadata.get("createRequestId") or ""),
+                    transaction_id=str(metadata.get("createTransactionId") or ""),
+                    )
+                metadata["stage"] = "page-created"
+                _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+            elif not page_id:
+                page_id = generate_uuid()
+                metadata.update({
+                    "pageId": page_id,
+                    "createRequestId": generate_uuid(),
+                    "createTransactionId": generate_uuid(),
+                    "stage": "creating-page",
+                })
+                _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+                check_stopped(args)
+                create_empty_page(
+                    client, space_id, parent_page_id, title,
+                    page_id=page_id, request_id=str(metadata["createRequestId"]),
+                transaction_id=str(metadata["createTransactionId"]),
+                )
+                metadata["stage"] = "page-created"
                 _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
 
             task_timeout = int(getattr(args, "task_timeout", 120) or 120)
             task_id = str(metadata.get("taskId") or "")
+            import_confirmed = False
+            if (
+                not task_id
+                and metadata.get("stage") == "enqueueing-import"
+                and metadata.get("enqueueRequestId")
+            ):
+                poll_page_import_result(
+                    client, page_id, timeout=task_timeout, interval=3.0, args=args,
+                )
+                import_confirmed = True
+                metadata["stage"] = "import-confirmed"
+                _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+
             if task_id:
                 try:
                     poll_task_result(client, task_id, timeout=task_timeout, interval=3.0, args=args)
-                except FlowUsError:
+                except ImportTaskTerminalFailure:
                     metadata.pop("taskId", None)
+                    metadata.pop("enqueueRequestId", None)
                     metadata["stage"] = "task-failed"
                     _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
                     if not is_retry_failed:
                         raise
                     task_id = ""
 
-            if not task_id:
-                check_stopped(args)
-                metadata["stage"] = "uploading-content"
-                _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
-                oss_name = upload_html_content(client, html_content)
+            if not task_id and not import_confirmed:
+                oss_name = str(metadata.get("ossName") or "")
+                if not oss_name:
+                    check_stopped(args)
+                    metadata["stage"] = "uploading-content"
+                    _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+                    oss_name = upload_html_content(client, html_content)
+                    metadata.update({"ossName": oss_name, "stage": "content-uploaded"})
+                    _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
 
                 check_stopped(args)
-                metadata["stage"] = "enqueueing-import"
+                enqueue_request_id = str(metadata.get("enqueueRequestId") or "") or generate_uuid()
+                metadata.update({
+                    "enqueueRequestId": enqueue_request_id,
+                    "pageId": page_id,
+                    "ossName": oss_name,
+                    "stage": "enqueueing-import",
+                })
                 _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
-                task_id = enqueue_import_task(client, page_id, space_id, oss_name)
+                task_id = enqueue_import_task(
+                    client, page_id, space_id, oss_name, request_id=enqueue_request_id,
+                )
                 metadata.update({"taskId": task_id, "stage": "polling-import"})
                 _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
-                poll_task_result(client, task_id, timeout=task_timeout, interval=3.0, args=args)
+                try:
+                    poll_task_result(client, task_id, timeout=task_timeout, interval=3.0, args=args)
+                except ImportTaskTerminalFailure:
+                    metadata.pop("taskId", None)
+                    metadata.pop("enqueueRequestId", None)
+                    metadata["stage"] = "task-failed"
+                    _persist_import_item(checkpoint, item_key, doc, metadata, parent_key=parent_key)
+                    raise
 
             check_stopped(args)
             update_page_title(client, space_id, page_id, title)
@@ -1382,13 +1549,15 @@ def _import_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, 
                 checkpoint.complete_item(item_key, target_id=page_id, metadata=metadata)
             emit(f"[{index}/{total}] 导入成功: {title}" + (f" (含 {image_count} 张图片)" if image_count else ""))
         except ExportStopped:
-            metadata["stage"] = "stopped"
+            metadata["stopped"] = True
+            metadata["stoppedStage"] = str(metadata.get("stage") or "preparing")
             _persist_import_item(checkpoint, item_key, doc, metadata)
             if checkpoint:
                 checkpoint.fail_item(item_key, "用户已停止当前任务")
             raise
         except Exception as exc:
-            metadata["stage"] = "failed"
+            failure_stage = str(metadata.get("stage") or "preparing")
+            metadata["failureStage"] = failure_stage
             _persist_import_item(checkpoint, item_key, doc, metadata)
             if checkpoint:
                 checkpoint.fail_item(item_key, str(exc))
@@ -1396,7 +1565,7 @@ def _import_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, 
                 "itemKey": item_key,
                 "relativePath": doc["relative"],
                 "title": title,
-                "stage": metadata["stage"],
+                "stage": failure_stage,
                 "pageId": str(metadata.get("pageId") or ""),
                 "error": str(exc),
             }

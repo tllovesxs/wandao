@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import random
@@ -59,6 +60,7 @@ from wandao_core.browser import (
     http_json,
     sanitize_filename,
     wait_for_debug_port,
+    wait_with_stop,
 )
 
 
@@ -171,7 +173,7 @@ def connect_flowus_browser(args: argparse.Namespace) -> tuple[CDPClient, subproc
     page = page_for_flowus(args.port)
     if not page:
         open_tab(args.port, FLOWUS_WEB_URL)
-        time.sleep(2)
+        wait_with_stop(args, 2)
         page = page_for_flowus(args.port)
     if not page:
         pages = http_json(f"http://127.0.0.1:{args.port}/json/list", timeout=5)
@@ -229,10 +231,10 @@ def login_and_save_auth(args: argparse.Namespace) -> dict[str, Any]:
         wait_seconds = float(getattr(args, "login_wait_seconds", 0) or 0)
         if wait_seconds > 0:
             emit(f"请在浏览器中完成登录，工具将在 {int(wait_seconds)} 秒后自动保存凭证。")
-            time.sleep(wait_seconds)
+            wait_with_stop(args, wait_seconds)
         else:
             input("After login is complete and the FlowUs workspace is visible, press Enter...")
-        time.sleep(1)
+        wait_with_stop(args, 1)
         result = save_auth_state(cdp, auth_file)
         emit(f"Saved FlowUs auth token to {auth_file}")
         return result
@@ -262,7 +264,7 @@ def throttle_request(args: argparse.Namespace | None) -> None:
     jitter = max(0.0, float(getattr(args, "request_jitter", 0) or 0))
     total = delay + (random.random() * jitter if jitter else 0)
     if total > 0:
-        time.sleep(total)
+        wait_with_stop(args, total)
 
 
 def _friendly_network_error(exc: Exception) -> str:
@@ -338,6 +340,7 @@ class FlowUsClient:
         last_error: Exception | None = None
 
         for attempt in range(1, attempts + 1):
+            check_stopped(self.args)
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as response:
                     raw = response.read()
@@ -356,7 +359,7 @@ class FlowUsClient:
                 if attempt >= attempts:
                     raise FlowUsError(_friendly_network_error(exc.reason)) from exc
                 last_error = exc
-            time.sleep(min(5.0, 0.8 * attempt))
+            wait_with_stop(self.args, min(5.0, 0.8 * attempt))
 
         raise FlowUsError(_friendly_network_error(last_error))
 
@@ -398,6 +401,7 @@ def get_signed_url(client: FlowUsClient, block_id: str, oss_name: str) -> str:
         }
 
         # Call create_urls API
+        check_stopped(getattr(client, "__dict__", {}).get("args"))
         response_data = client.request("POST", FLOWUS_FILE_URLS_API, data=payload, timeout=30)
         response = json.loads(response_data.decode("utf-8", errors="replace"))
 
@@ -407,6 +411,8 @@ def get_signed_url(client: FlowUsClient, block_id: str, oss_name: str) -> str:
                 signed_url = data[0].get("url", "")
                 if signed_url:
                     return signed_url
+    except ExportStopped:
+        raise
     except Exception as exc:
         emit(f"获取签名URL失败: {_friendly_network_error(exc)}", level="warn")
 
@@ -417,9 +423,11 @@ def get_signed_url(client: FlowUsClient, block_id: str, oss_name: str) -> str:
 def download_image_data(client: FlowUsClient, block_id: str, oss_name: str) -> bytes | None:
     """Download image data, handling both base64 and binary responses."""
     # Try to get signed URL first
+    check_stopped(getattr(client, "__dict__", {}).get("args"))
     url = get_signed_url(client, block_id, oss_name)
 
     try:
+        check_stopped(getattr(client, "__dict__", {}).get("args"))
         response = client.request("GET", url, timeout=30)
         if not response:
             return None
@@ -439,6 +447,8 @@ def download_image_data(client: FlowUsClient, block_id: str, oss_name: str) -> b
 
         # Return raw binary data
         return response
+    except ExportStopped:
+        raise
     except Exception:
         return None
 
@@ -874,7 +884,7 @@ def _stable_output_components(nodes: list[FlowUsNode]) -> dict[str, str]:
     for siblings in groups.values():
         collision = len(siblings) > 1
         for node in siblings:
-            suffix = sanitize_filename(node.id, fallback="id", max_len=12)
+            suffix = hashlib.sha256(node.id.encode("utf-8")).hexdigest()
             components[node.id] = f"{node.safe_title}-{suffix}" if collision else node.safe_title
     return components
 
@@ -970,13 +980,15 @@ def _export_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, 
         if node.is_dir:
             file_path = file_path / f"{components[node.id]}.md"
         try:
-            if args.incremental and file_path.exists() and not args.update_existing:
+            item_status = checkpoint.item_status(item_key) if checkpoint else ""
+            retrying_failed = is_retry_failed and item_status == "failed"
+            if args.incremental and file_path.exists() and not args.update_existing and not retrying_failed:
                 skipped += 1
                 if checkpoint:
                     checkpoint.upsert_item(item_key, title=node.title, metadata={"docId": node.id, "stage": "completed"})
                     checkpoint.complete_item(item_key, local_path=str(file_path), metadata={"docId": node.id, "skippedExisting": True})
                 continue
-            if checkpoint and (is_resume or is_retry_failed) and checkpoint.item_status(item_key) == "completed" and file_path.exists():
+            if checkpoint and (is_resume or is_retry_failed) and item_status == "completed" and file_path.exists():
                 skipped += 1
                 continue
             if checkpoint:
@@ -1007,9 +1019,9 @@ def _export_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, 
             if _has_markdown_body(markdown, node.title):
                 if args.incremental and args.update_existing and file_path.exists():
                     try:
-                        if file_path.read_text(encoding="utf-8") == markdown:
+                        if file_path.read_text(encoding="utf-8") == markdown and not node_resource_failures:
                             skipped += 1
-                            if checkpoint and not node_resource_failures:
+                            if checkpoint:
                                 checkpoint.upsert_item(item_key, title=node.title, metadata={"docId": node.id, "stage": "completed"})
                                 checkpoint.complete_item(item_key, local_path=str(file_path), metadata={"docId": node.id, "skippedExisting": True})
                             continue

@@ -985,9 +985,7 @@ select:focus-visible,
 }
 
 .provider-mode-switcher {
-  position: sticky;
-  top: -14px;
-  z-index: 20;
+  position: static;
   align-items: center;
   margin-bottom: 16px;
   padding: 14px 16px;
@@ -1648,9 +1646,7 @@ select:focus-visible,
 
 /* Actions and progress */
 .action-section {
-  position: sticky;
-  bottom: -22px;
-  z-index: 15;
+  position: static;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -1673,9 +1669,7 @@ select:focus-visible,
 }
 
 .progress-section {
-  position: sticky;
-  z-index: 12;
-  top: 12px;
+  position: static;
   margin-top: 0;
   margin-bottom: 18px;
   padding: 18px 20px;
@@ -2691,10 +2685,6 @@ button,
     padding-left: 0;
   }
 
-  .provider-mode-switcher {
-    top: 116px;
-  }
-
   .provider-mode-buttons {
     justify-content: flex-start;
   }
@@ -2728,10 +2718,6 @@ button,
 
   .task-history-clear {
     justify-self: start;
-  }
-
-  .progress-section {
-    top: 126px;
   }
 
   .log-header {

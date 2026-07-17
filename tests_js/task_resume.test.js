@@ -166,7 +166,7 @@ test('resource warnings are not converted into retry-failed document commands', 
   assert.match(resumeTaskHandler, /失败文档，共 \$\{documentFailures\} 个/);
 });
 
-test('latest task result card is persistent, actionable, and visible during long forms', () => {
+test('latest task result card is persistent, actionable, and never overlays long forms', () => {
   const appJs = fs.readFileSync('wandao_electron/renderer/app.js', 'utf8');
   const indexHtml = fs.readFileSync('wandao_electron/renderer/index.html', 'utf8');
   const styles = fs.readFileSync('wandao_electron/renderer/styles.css', 'utf8');
@@ -180,7 +180,9 @@ test('latest task result card is persistent, actionable, and visible during long
   assert.match(appJs, /data-task-result-action="copy-failures"/);
   assert.match(appJs, /data-task-result-action="resume"/);
   assert.match(finishHistory, /latestFinishedTaskId = task\.id[\s\S]*renderTaskResultCard\(task\)/);
-  assert.match(styles, /\.progress-section \{[\s\S]*position: sticky/);
+  assert.match(styles, /\.progress-section \{[\s\S]*position: static/);
+  assert.match(styles, /\.action-section \{[\s\S]*position: static/);
+  assert.match(styles, /\.provider-mode-switcher \{[\s\S]*position: static/);
 });
 
 test('manual stop remains stopping until command completion records its terminal state', () => {

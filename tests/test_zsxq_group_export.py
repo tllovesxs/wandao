@@ -21,8 +21,13 @@ from export_zsxq import (
     previous_zsxq_end_time,
     resolve_toc_item_api,
     should_long_sleep_after_export,
+    should_refresh_newest_group_topics,
+    should_scan_newest_before_group_resume,
     summarize_zsxq_api_failure,
     throttle_comment_request,
+    inherit_completed_group_items,
+    load_compatible_group_cursor,
+    zsxq_group_resume_key,
     zsxq_item_key_from_source,
     zsxq_resource_key,
 )
@@ -33,8 +38,48 @@ class ZsxqGroupExportTests(unittest.TestCase):
     def test_group_id_is_parsed_from_group_urls_and_query(self) -> None:
         self.assertEqual(group_id_from_url("https://wx.zsxq.com/group/123456789"), "123456789")
         self.assertEqual(group_id_from_url("https://wx.zsxq.com/groups/123456789/topics"), "123456789")
+        self.assertEqual(group_id_from_url("https://wx.zsxq.com/digests/15288445111222"), "15288445111222")
         self.assertEqual(group_id_from_url("https://wx.zsxq.com/digests?group_id=987654321"), "987654321")
         self.assertFalse(is_group_entry_url("https://wx.zsxq.com/columns/123456789"))
+
+    def test_browser_selection_never_falls_back_to_another_provider_page(self) -> None:
+        unrelated = {
+            "type": "page",
+            "url": "https://www.yuque.com/example",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/yuque",
+        }
+        zsxq_page = {
+            "type": "page",
+            "url": "https://wx.zsxq.com/digests/15288445111222",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9223/devtools/page/zsxq",
+        }
+        with mock.patch.object(export_zsxq, "http_json", side_effect=[[unrelated], [zsxq_page]]):
+            self.assertIsNone(export_zsxq.page_for_zsxq(9222))
+            self.assertEqual(export_zsxq.page_for_zsxq(9223), zsxq_page)
+
+    def test_zsxq_starts_on_a_new_port_when_default_port_is_another_provider(self) -> None:
+        args = argparse.Namespace(port=9222, profile_dir=None, browser_path=None)
+        page = {
+            "type": "page",
+            "url": "https://wx.zsxq.com/digests/15288445111222",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9223/devtools/page/zsxq",
+        }
+        cdp = mock.Mock()
+        with (
+            mock.patch.object(export_zsxq, "chrome_debug_available", side_effect=[True, True]),
+            mock.patch.object(export_zsxq, "page_for_zsxq", side_effect=[None, page]),
+            mock.patch.object(export_zsxq, "find_available_debug_port", return_value=9223),
+            mock.patch.object(export_zsxq, "start_chrome", return_value=mock.Mock()) as start,
+            mock.patch.object(export_zsxq, "wait_for_debug_port"),
+            mock.patch.object(export_zsxq, "open_tab"),
+            mock.patch.object(export_zsxq, "CDPClient", return_value=cdp),
+            mock.patch.object(export_zsxq.time, "sleep"),
+        ):
+            resolved, _browser = export_zsxq.connect_browser(args, "https://wx.zsxq.com/digests/15288445111222")
+
+        self.assertIs(resolved, cdp)
+        self.assertEqual(args.port, 9223)
+        self.assertEqual(start.call_args.args[0], 9223)
 
     def test_group_scope_auto_detects_digest_url_and_respects_explicit_choice(self) -> None:
         auto_args = argparse.Namespace(group_scope="auto")
@@ -48,6 +93,103 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(previous_zsxq_end_time("2026-07-08T10:20:30.123+0800"), "2026-07-08T10:20:30.122+0800")
         self.assertEqual(previous_zsxq_end_time("2026-07-08T10:20:30.000+0800"), "2026-07-08T10:20:29.999+0800")
         self.assertEqual(previous_zsxq_end_time("2026-07-08T00:00:00.000Z"), "2026-07-07T23:59:59.999Z")
+
+    def test_group_resume_scope_uses_group_identity_and_inherits_completed_topics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_file = root / ".wandao" / "checkpoint.sqlite"
+            scope_key = zsxq_group_resume_key("15288445111222", "digests", root)
+            old = WandaoCheckpoint.open(checkpoint_file, "old-job", "zsxq", "export")
+            try:
+                old.start_task({
+                    "source": "https://wx.zsxq.com/digests/15288445111222?from=old",
+                    "outputDir": str(root),
+                    "groupId": "15288445111222",
+                    "groupScope": "digests",
+                    "resumeKey": scope_key,
+                })
+                old.upsert_item(
+                    "zsxq:topic:82255484182121460",
+                    title="已完成帖子",
+                    source_url="https://wx.zsxq.com/topic/82255484182121460",
+                    source_id="82255484182121460",
+                )
+                completed_path = root / "01-已完成帖子.md"
+                completed_path.write_text("# 已完成", encoding="utf-8")
+                old.complete_item("zsxq:topic:82255484182121460", local_path=str(completed_path))
+                old.save_cursor("zsxq-group", {
+                    "group_id": "15288445111222",
+                    "scope": "digests",
+                    "end_time": "2026-07-11T21:15:21.881+0800",
+                })
+            finally:
+                old.close()
+
+            resumed = WandaoCheckpoint.open(checkpoint_file, "new-job", "zsxq", "export")
+            try:
+                resumed.start_task({
+                    "source": "https://wx.zsxq.com/groups/15288445111222/topics",
+                    "outputDir": str(root),
+                    "groupId": "15288445111222",
+                    "groupScope": "digests",
+                    "resumeKey": scope_key,
+                })
+                cursor, source_task_id = load_compatible_group_cursor(
+                    resumed,
+                    "15288445111222",
+                    "digests",
+                    "https://wx.zsxq.com/groups/15288445111222/topics",
+                    root,
+                    scope_key,
+                )
+                self.assertEqual(source_task_id, "old-job")
+                self.assertEqual(cursor["end_time"], "2026-07-11T21:15:21.881+0800")
+                self.assertEqual(inherit_completed_group_items(resumed, source_task_id), 1)
+                self.assertEqual(resumed.item_status("zsxq:topic:82255484182121460"), "completed")
+            finally:
+                resumed.close()
+
+    def test_checkpoint_is_claimed_before_browser_login_can_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = parse_args([
+                "--entry-url", "https://wx.zsxq.com/digests/15288445111222",
+                "--output", str(root / "out"),
+                "--checkpoint-file", str(root / "checkpoint.sqlite"),
+                "--checkpoint-task-id", "login-failure",
+            ])
+            with mock.patch.object(export_zsxq, "connect_browser", side_effect=ExportError("需要重新登录")):
+                with self.assertRaisesRegex(ExportError, "需要重新登录"):
+                    export_zsxq.export_entry(args)
+            checkpoint = WandaoCheckpoint.open(root / "checkpoint.sqlite", "login-failure", "zsxq", "export")
+            try:
+                row = checkpoint.conn.execute(
+                    "SELECT status, error_summary FROM tasks WHERE task_id = ?",
+                    ("login-failure",),
+                ).fetchone()
+                self.assertEqual(row["status"], "failed")
+                self.assertIn("需要重新登录", row["error_summary"])
+            finally:
+                checkpoint.close()
+
+    def test_login_does_not_save_invalid_session(self) -> None:
+        args = parse_args([
+            "--entry-url", "https://wx.zsxq.com/digests/15288445111222",
+            "--login",
+            "--auth-file", "auth.json",
+        ])
+        cdp = mock.Mock()
+        browser = mock.Mock()
+        invalid = {"ok": False, "text": "HTTP 401 code=1009 已在其它设备登录"}
+        with (
+            mock.patch.object(export_zsxq, "connect_browser", return_value=(cdp, browser)),
+            mock.patch.object(export_zsxq, "validate_zsxq_auth", return_value=invalid),
+            mock.patch.object(export_zsxq, "save_auth_state") as save_auth,
+        ):
+            with self.assertRaisesRegex(ExportError, "账号验证未通过"):
+                export_zsxq.login_and_save_auth(args, wait_callback=lambda: None)
+        save_auth.assert_not_called()
+        cdp.close.assert_called_once()
 
     def test_follow_link_scope_can_keep_only_article_pages(self) -> None:
         links = [
@@ -77,9 +219,49 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertFalse(should_long_sleep_after_export(args, 37))
         self.assertTrue(should_long_sleep_after_export(args, 48))
 
+    def test_newest_group_refresh_only_runs_when_a_prior_group_task_exists(self) -> None:
+        args = argparse.Namespace(resume=True, retry_failed=False)
+        self.assertFalse(
+            should_refresh_newest_group_topics(
+                args, use_group_topics=True, resumed_from_task_id=""
+            )
+        )
+
+    def test_group_resume_exports_pending_items_before_checking_new_posts(self) -> None:
+        args = argparse.Namespace(resume=True, retry_failed=False)
+        self.assertFalse(
+            should_scan_newest_before_group_resume(
+                args,
+                use_group_topics=True,
+                resumed_from_task_id="prior-job",
+                restored_pending_items=1,
+            )
+        )
+        self.assertTrue(
+            should_scan_newest_before_group_resume(
+                args,
+                use_group_topics=True,
+                resumed_from_task_id="prior-job",
+                restored_pending_items=0,
+            )
+        )
+        self.assertTrue(
+            should_refresh_newest_group_topics(
+                args, use_group_topics=True, resumed_from_task_id="prior-job"
+            )
+        )
+        self.assertFalse(
+            should_refresh_newest_group_topics(
+                argparse.Namespace(resume=True, retry_failed=True),
+                use_group_topics=True,
+                resumed_from_task_id="prior-job",
+            )
+        )
+
     def test_group_directory_pagination_has_extra_safe_delay_defaults(self) -> None:
         args = parse_args(["--entry-url", "https://wx.zsxq.com/group/123456789", "--output", "out"])
 
+        self.assertEqual(args.port, export_zsxq.DEFAULT_ZSXQ_PORT)
         self.assertEqual(args.group_page_delay, 4.0)
         self.assertEqual(args.group_page_jitter, 4.0)
         self.assertEqual(args.group_page_size, 20)

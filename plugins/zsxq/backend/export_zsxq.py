@@ -28,6 +28,7 @@ import os
 import queue
 import random
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -68,6 +69,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR
 DEFAULT_PROFILE = ".zsxq-chrome-profile"
 DEFAULT_AUTH_FILE = ".zsxq_auth.json"
+DEFAULT_ZSXQ_PORT = DEFAULT_PORT + 1
 DEFAULT_ENTRY_URL = ""
 DEFAULT_GROUP_LIMIT = 50
 DEFAULT_GROUP_BATCH_SIZE = 20
@@ -159,21 +161,64 @@ def page_for_zsxq(port: int) -> dict[str, Any] | None:
         url = page.get("url", "")
         if page.get("type") == "page" and is_zsxq_page_url(url):
             return page
-    for page in pages:
-        if page.get("type") == "page" and page.get("webSocketDebuggerUrl"):
-            return page
     return None
+
+
+def find_available_debug_port(preferred_port: int) -> int:
+    """Find a local CDP port without ever attaching to another provider's browser."""
+    for port in range(max(1024, int(preferred_port)), 65536):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+            candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                candidate.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise ExportError("没有可用的 Chrome 调试端口。请关闭占用调试端口的浏览器后重试。")
+
+
+def should_refresh_newest_group_topics(
+    args: argparse.Namespace,
+    *,
+    use_group_topics: bool,
+    resumed_from_task_id: str,
+) -> bool:
+    """Only scan for newly-created posts when there is a prior group run to compare."""
+    return bool(
+        use_group_topics
+        and getattr(args, "resume", False)
+        and not getattr(args, "retry_failed", False)
+        and str(resumed_from_task_id or "").strip()
+    )
+
+
+def should_scan_newest_before_group_resume(
+    args: argparse.Namespace,
+    *,
+    use_group_topics: bool,
+    resumed_from_task_id: str,
+    restored_pending_items: int,
+) -> bool:
+    """Prioritize durable pending work; refresh newest posts once the queue is clear."""
+    return should_refresh_newest_group_topics(
+        args,
+        use_group_topics=use_group_topics,
+        resumed_from_task_id=resumed_from_task_id,
+    ) and restored_pending_items <= 0
 
 
 def connect_browser(args: argparse.Namespace, entry_url: str) -> tuple[CDPClient, subprocess.Popen[Any] | None]:
     chrome_proc: subprocess.Popen[Any] | None = None
-    if not chrome_debug_available(args.port):
+    page = page_for_zsxq(args.port) if chrome_debug_available(args.port) else None
+    if not page:
+        # 9222 is shared by several historical providers.  If it is already a
+        # non-ZSXQ browser, never reuse it: its cookies and active page belong
+        # to another platform and would make ZSXQ calls hang or appear logged out.
+        if chrome_debug_available(args.port):
+            args.port = find_available_debug_port(args.port + 1)
         profile = Path(args.profile_dir).resolve() if args.profile_dir else default_profile_path()
         chrome_proc = start_chrome(args.port, profile, entry_url, getattr(args, "browser_path", None))
         wait_for_debug_port(args.port, timeout=30)
-
-    page = page_for_zsxq(args.port)
-    if not page:
         open_tab(args.port, entry_url)
         time.sleep(4)
         page = page_for_zsxq(args.port)
@@ -1086,7 +1131,7 @@ def group_id_from_url(entry_url: str) -> str:
         if value:
             candidates.append(value)
     for candidate in candidates:
-        match = re.search(r"(?:^|/)(?:group|groups|columns)/(\d+)(?:/|$)", candidate)
+        match = re.search(r"(?:^|/)(?:group|groups|columns|digests)/(\d+)(?:/|$)", candidate)
         if match:
             return match.group(1)
         if re.fullmatch(r"\d{6,}", candidate.strip()):
@@ -1294,12 +1339,32 @@ def group_topic_reaches_watermark(
     )
 
 
+def zsxq_group_resume_key(group_id: str, scope: str, output: Path) -> str:
+    """Build a stable checkpoint scope for one Group export target.
+
+    The desktop app creates a fresh job id for every click.  A raw entry URL is
+    not stable enough to join those jobs because equivalent Group URLs can use
+    `/group`, `/groups`, or `/digests?group_id=...` forms.  The group id,
+    selected scope, and output directory are the actual export identity.
+    """
+    identity = {
+        "provider": "zsxq",
+        "kind": "group",
+        "groupId": str(group_id or "").strip(),
+        "scope": str(scope or "").strip().lower(),
+        "output": os.path.normcase(str(output.resolve())),
+    }
+    encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return f"zsxq-group:{hashlib.sha256(encoded).hexdigest()}"
+
+
 def load_compatible_group_cursor(
     checkpoint: WandaoCheckpoint,
     group_id: str,
     scope: str,
     source: str,
     output: Path,
+    resume_key: str,
 ) -> tuple[dict[str, Any], str]:
     """Load the newest compatible cursor, including one written by an earlier UI job id."""
     current = checkpoint.load_cursor(GROUP_CURSOR_NAME, {})
@@ -1310,7 +1375,25 @@ def load_compatible_group_cursor(
     ):
         return current, checkpoint.task_id
 
-    row = checkpoint.conn.execute(
+    preferred_rows = checkpoint.conn.execute(
+        """
+        SELECT c.task_id, c.cursor_value_json
+        FROM cursors c
+        JOIN tasks t ON t.task_id = c.task_id
+        WHERE c.cursor_name = ?
+           AND c.task_id != ?
+           AND t.provider_id = 'zsxq'
+           AND t.action = 'export'
+           AND t.resume_key = ?
+        ORDER BY c.updated_at DESC, t.updated_at DESC, c.rowid DESC
+        LIMIT 20
+        """,
+        (GROUP_CURSOR_NAME, checkpoint.task_id, resume_key),
+    ).fetchall()
+
+    # Keep a legacy fallback for cursors written before the stable Group scope
+    # was introduced.  New jobs always prefer the indexed resume key above.
+    legacy_rows = checkpoint.conn.execute(
         """
         SELECT c.task_id, c.cursor_value_json
         FROM cursors c
@@ -1326,7 +1409,12 @@ def load_compatible_group_cursor(
         """,
         (GROUP_CURSOR_NAME, checkpoint.task_id, str(source), str(output.resolve())),
     ).fetchall()
-    for candidate in row:
+    seen_task_ids: set[str] = set()
+    for candidate in [*preferred_rows, *legacy_rows]:
+        task_id = str(candidate["task_id"] or "")
+        if not task_id or task_id in seen_task_ids:
+            continue
+        seen_task_ids.add(task_id)
         try:
             cursor = json.loads(candidate["cursor_value_json"] or "{}")
         except (TypeError, json.JSONDecodeError):
@@ -1336,7 +1424,7 @@ def load_compatible_group_cursor(
             and str(cursor.get("group_id") or "") == str(group_id)
             and str(cursor.get("scope") or "") == str(scope)
         ):
-            return cursor, str(candidate["task_id"] or "")
+            return cursor, task_id
     return {}, ""
 
 
@@ -1374,6 +1462,46 @@ def inherit_unresolved_group_items(checkpoint: WandaoCheckpoint, source_task_id:
                     "UPDATE items SET local_path = ? WHERE task_id = ? AND item_key = ?",
                     (local_path, checkpoint.task_id, str(row.get("item_key") or "")),
                 )
+        inherited += 1
+    return inherited
+
+
+def inherit_completed_group_items(checkpoint: WandaoCheckpoint, source_task_id: str) -> int:
+    """Carry completed topic ids into a new UI job for exact cross-job dedup."""
+    if not source_task_id or source_task_id == checkpoint.task_id:
+        return 0
+    rows = checkpoint.conn.execute(
+        """
+        SELECT * FROM items
+        WHERE task_id = ? AND status = 'completed'
+        ORDER BY completed_at, item_key
+        """,
+        (source_task_id,),
+    ).fetchall()
+    inherited = 0
+    for raw_row in rows:
+        row = dict(raw_row)
+        item_key = str(row.get("item_key") or "")
+        if not item_key:
+            continue
+        try:
+            metadata = json.loads(row.get("metadata_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        checkpoint.upsert_item(
+            item_key,
+            title=str(row.get("title") or ""),
+            source_url=str(row.get("source_url") or ""),
+            source_id=str(row.get("source_id") or ""),
+            parent_key=str(row.get("parent_key") or ""),
+            metadata=metadata if isinstance(metadata, dict) else {},
+        )
+        checkpoint.complete_item(
+            item_key,
+            local_path=str(row.get("local_path") or "") or None,
+            target_id=str(row.get("target_id") or "") or None,
+            metadata=metadata if isinstance(metadata, dict) else {},
+        )
         inherited += 1
     return inherited
 
@@ -3103,6 +3231,17 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             provider_id="zsxq",
             action="export",
         )
+        # Claim the task before opening Chrome or restoring cookies.  A login
+        # failure can happen before the Group/column branch has enough context
+        # to start its detailed task metadata; it must still be recorded as the
+        # real authentication error instead of masking it with a lease error.
+        checkpoint.start_task(
+            {
+                "source": entry_url,
+                "outputDir": str(output),
+                "resume": bool(getattr(args, "resume", False)),
+            }
+        )
     args.folder_link_threshold = max(0, int(getattr(args, "folder_link_threshold", 9) or 0))
     args.skip_video_topics = bool(getattr(args, "skip_video_topics", True))
     args.include_comments = bool(getattr(args, "include_comments", False))
@@ -3123,8 +3262,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     args.long_sleep_max = max(args.long_sleep_min, float(getattr(args, "long_sleep_max", 300) or 0))
     if getattr(args, "follow_link_scope", "all") not in {"all", "articles", "none"}:
         args.follow_link_scope = "all"
-    cdp, chrome_proc = connect_browser(args, entry_url)
+    cdp: CDPClient | None = None
+    chrome_proc: subprocess.Popen[Any] | None = None
     try:
+        cdp, chrome_proc = connect_browser(args, entry_url)
         auth_file = auth_path_from_args(args)
         if auth_file.exists() and not args.skip_auth_load:
             cookie_count = load_auth_state(cdp, auth_file)
@@ -3143,6 +3284,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         use_group_topics = False
         group_id = ""
         group_scope = ""
+        group_resume_key = ""
         group_page_size = DEFAULT_GROUP_BATCH_SIZE
         group_max_pages = 0
         if toc_mode != "off" and (is_column_entry_url(entry_url) or is_group_entry_url(entry_url)):
@@ -3157,6 +3299,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     group_scope = group_scope_from_args(entry_url, args)
                     group_page_size = normalize_group_page_size(args)
                     group_max_pages = normalize_group_max_pages(args, args.limit, group_page_size)
+                    group_resume_key = zsxq_group_resume_key(group_id, group_scope, output)
                     if checkpoint:
                         checkpoint.start_task(
                             {
@@ -3167,6 +3310,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                                 "limit": args.limit,
                                 "pageSize": group_page_size,
                                 "resume": bool(getattr(args, "resume", False)),
+                                "resumeKey": group_resume_key,
                             }
                         )
                     navigate_with_retry(cdp, entry_url, args)
@@ -3526,6 +3670,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         group_latest_topic_id = ""
         group_previous_latest_create_time = ""
         group_previous_latest_topic_id = ""
+        group_cursor_task_id = ""
         newest_discovered_count = 0
         if checkpoint and use_group_topics and getattr(args, "resume", False):
             cursor, cursor_task_id = load_compatible_group_cursor(
@@ -3534,11 +3679,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 group_scope,
                 entry_url,
                 output,
+                group_resume_key,
             )
             if (
                 str(cursor.get("group_id") or "") == str(group_id)
                 and str(cursor.get("scope") or "") == str(group_scope)
             ):
+                inherited_completed_items = inherit_completed_group_items(checkpoint, cursor_task_id)
                 inherited_items = inherit_unresolved_group_items(checkpoint, cursor_task_id)
                 group_end_time = str(cursor.get("end_time") or "")
                 group_history_page_total = int(cursor.get("page") or 0)
@@ -3546,6 +3693,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 group_exhausted = bool(cursor.get("exhausted"))
                 group_previous_latest_create_time = str(cursor.get("latest_create_time") or "")
                 group_previous_latest_topic_id = str(cursor.get("latest_topic_id") or "")
+                group_cursor_task_id = cursor_task_id
                 group_latest_create_time = group_previous_latest_create_time
                 group_latest_topic_id = group_previous_latest_topic_id
                 emit(
@@ -3558,6 +3706,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     checkpointFile=str(checkpoint.path),
                     cursor=cursor,
                     inheritedFromTask=cursor_task_id,
+                    inheritedCompletedItems=inherited_completed_items,
                     inheritedPendingItems=inherited_items,
                 )
 
@@ -3621,11 +3770,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         def discover_newest_group_topics() -> int:
             """Persist posts newer than the previous high-water mark before resuming history."""
             nonlocal group_latest_create_time, group_latest_topic_id
-            if (
-                not checkpoint
-                or not use_group_topics
-                or not getattr(args, "resume", False)
-                or getattr(args, "retry_failed", False)
+            if not checkpoint or not should_refresh_newest_group_topics(
+                args,
+                use_group_topics=use_group_topics,
+                resumed_from_task_id=group_cursor_task_id,
             ):
                 return 0
             legacy_watermark = not group_previous_latest_create_time and not group_previous_latest_topic_id
@@ -3858,8 +4006,17 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
 
         if use_group_topics:
             try:
-                newest_discovered_count = discover_newest_group_topics()
                 restored_items = enqueue_checkpoint_pending_items()
+                if should_scan_newest_before_group_resume(
+                    args,
+                    use_group_topics=use_group_topics,
+                    resumed_from_task_id=group_cursor_task_id,
+                    restored_pending_items=restored_items,
+                ):
+                    newest_discovered_count = discover_newest_group_topics()
+                    # The refresh may have persisted new items. Queue them for
+                    # this run only when there was no already-pending work.
+                    restored_items = enqueue_checkpoint_pending_items()
                 if getattr(args, "retry_failed", False):
                     group_exhausted = True
                 if not restored_items and not group_paused_for_limit:
@@ -4337,7 +4494,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         if checkpoint:
             checkpoint.close()
-        cdp.close()
+        if cdp:
+            cdp.close()
         if chrome_proc and args.close_started_chrome:
             chrome_proc.terminate()
 
@@ -4384,30 +4542,25 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
         else:
             input("After login is complete and the ZSXQ page is visible, press Enter...")
         check_stopped(args)
-        result = save_auth_state(cdp, auth_file, entry_url)
-        emit(args, f"Saved {result['cookieCount']} auth cookies to {auth_file}")
         auth_check = validate_zsxq_auth(cdp, args)
+        if not auth_check.get("ok"):
+            message = summarize_zsxq_api_failure(auth_check, "知识星球账号验证未通过")
+            emit(args, message, event="auth.warning", level="warn", result=auth_check)
+            raise ExportError(message)
+        result = save_auth_state(cdp, auth_file, entry_url)
         result["authCheck"] = auth_check
-        if auth_check.get("ok"):
-            account = auth_check.get("account") or {}
-            result["account"] = account
-            annotate_auth_state(auth_file, account)
-            display_name = str(account.get("name") or account.get("userId") or "当前账号")
-            emit(
-                args,
-                f"知识星球账号验证成功：{display_name}",
-                event="auth.verified",
-                level="success",
-                account=account,
-            )
-        else:
-            emit(
-                args,
-                summarize_zsxq_api_failure(auth_check, "知识星球账号验证未通过"),
-                event="auth.warning",
-                level="warn",
-                result=auth_check,
-            )
+        emit(args, f"Saved {result['cookieCount']} auth cookies to {auth_file}")
+        account = auth_check.get("account") or {}
+        result["account"] = account
+        annotate_auth_state(auth_file, account)
+        display_name = str(account.get("name") or account.get("userId") or "当前账号")
+        emit(
+            args,
+            f"知识星球账号验证成功：{display_name}",
+            event="auth.verified",
+            level="success",
+            account=account,
+        )
         return result
     finally:
         cdp.close()
@@ -4845,7 +4998,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--scan-toc", action="store_true", help="Read the left ZSXQ directory and print it as JSON, without exporting")
     parser.add_argument("--entry-url", help="ZSXQ column/topic/article URL")
     parser.add_argument("--output", help="Output directory")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Chrome remote debugging port")
+    parser.add_argument("--port", type=int, default=DEFAULT_ZSXQ_PORT, help="Chrome remote debugging port")
     parser.add_argument("--profile-dir", help=f"Chrome profile dir. Omit to auto-use {default_profile_path()}")
     parser.add_argument("--browser-path", help="Optional Chrome/Edge/Chromium executable path")
     parser.add_argument("--auth-file", help=f"Auth cookie file. Omit to auto-use {default_auth_path()}")

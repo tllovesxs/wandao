@@ -215,6 +215,10 @@ class WandaoCheckpoint:
             )
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_items_status ON items (task_id, status)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_resources_status ON resources (task_id, status)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_resume_key "
+                "ON tasks (provider_id, action, resume_key, updated_at DESC)"
+            )
             self._ensure_task_lease_columns()
             self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 

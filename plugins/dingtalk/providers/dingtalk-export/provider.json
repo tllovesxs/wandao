@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "id": "dingtalk-export",
+  "platform": "dingtalk",
+  "name": "钉钉文档",
+  "title": "钉钉文档 Markdown 导出",
+  "navLabel": "钉钉文档导出",
+  "description": "读取钉钉文档目录，导出普通文档为 Markdown，并尝试保存正文图片。",
+  "type": "hybrid",
+  "group": "export",
+  "trustLevel": "official",
+  "status": "experimental",
+  "defaults": { "output": "exports/dingtalk" },
+  "guide": "README.md",
+  "homepage": "https://docs.dingtalk.com/",
+  "tags": ["导出", "钉钉文档", "目录", "Markdown", "图片", "实验插件"],
+  "capabilities": {
+    "export": true,
+    "import": false,
+    "guide": true,
+    "login": true,
+    "scanToc": true,
+    "images": true,
+    "attachments": false,
+    "tree": true,
+    "batch": true,
+    "retryFailures": true
+  },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": true },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
+  "toc": {
+    "itemsPath": "nodes",
+    "idKey": "nodeId",
+    "exportIdKey": "exportId",
+    "titleKey": "title",
+    "parentIdKey": "parentNodeId",
+    "selectableKey": "selectable",
+    "selectionArg": "--doc-id",
+    "note": "读取目录后可勾选普通钉钉文档；文件夹只用于展示层级。"
+  },
+  "fields": [
+    {
+      "name": "source_url",
+      "label": "钉钉文档或文件夹链接",
+      "type": "text",
+      "arg": "--source-url",
+      "required": true,
+      "history": "url",
+      "placeholder": "https://.../i/nodes/... 或 https://.../i/spaces/.../overview",
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "document_scope",
+      "label": "文档链接的导出范围",
+      "type": "select",
+      "arg": "--document-scope",
+      "default": "selected",
+      "options": [
+        { "value": "selected", "label": "仅当前文档（默认）" },
+        { "value": "parent-folder", "label": "所在文件夹及子目录" },
+        { "value": "library-root", "label": "完整知识库根目录（可能较多）" }
+      ],
+      "description": "知识库通常复制到的是单篇文档链接；可选择所在文件夹，或显式向上定位到最上级文件夹读取完整目录树。",
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "output",
+      "label": "输出目录",
+      "type": "directory",
+      "arg": "--output",
+      "required": true,
+      "history": "path",
+      "actions": ["export"]
+    },
+    {
+      "name": "incremental",
+      "label": "跳过已经存在的 Markdown",
+      "type": "checkbox",
+      "arg": "--incremental",
+      "default": true,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "retry_failed",
+      "label": "只重试上次失败项",
+      "type": "checkbox",
+      "arg": "--retry-failed",
+      "default": false,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "request_delay",
+      "label": "请求延迟秒",
+      "type": "number",
+      "arg": "--request-delay",
+      "default": 0.3,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "request_jitter",
+      "label": "随机浮动秒",
+      "type": "number",
+      "arg": "--request-jitter",
+      "default": 0.2,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["scan", "export"]
+    }
+  ],
+  "actions": [
+    {
+      "id": "login",
+      "kind": "login",
+      "label": "登录并保存会话",
+      "script": "../../backend/export_dingtalk.py",
+      "args": ["--login"],
+      "includeSelection": false,
+      "track": false,
+      "secondary": true
+    },
+    {
+      "id": "scan",
+      "kind": "scan",
+      "label": "读取目录",
+      "script": "../../backend/export_dingtalk.py",
+      "args": ["--scan-toc"],
+      "includeSelection": false,
+      "secondary": true
+    },
+    {
+      "id": "export",
+      "kind": "export",
+      "label": "开始导出",
+      "script": "../../backend/export_dingtalk.py",
+      "args": ["--progress-every", "1"],
+      "progressTitle": "钉钉文档导出",
+      "progressDetail": "正在读取目录、正文和图片..."
+    }
+  ]
+}

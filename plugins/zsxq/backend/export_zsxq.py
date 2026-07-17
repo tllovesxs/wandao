@@ -2187,6 +2187,19 @@ def topic_source(topic: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return str(topic.get("type") or "topic"), {}
 
 
+def topic_article_url(topic: dict[str, Any]) -> str:
+    """Return only the API-declared full-article relation for this topic."""
+    _source_type, primary = topic_source(topic)
+    article = primary.get("article") if isinstance(primary.get("article"), dict) else {}
+    return str(article.get("article_url") or article.get("inline_article_url") or "").strip()
+
+
+def source_preview_article_url(source: dict[str, Any]) -> str:
+    """A raw Group topic is a preview only when its API payload declares an article relation."""
+    raw_topic = source.get("rawTopic") if isinstance(source.get("rawTopic"), dict) else {}
+    return topic_article_url(raw_topic) if raw_topic else ""
+
+
 def topic_has_exportable_content(topic: dict[str, Any]) -> bool:
     if not isinstance(topic, dict) or not topic:
         return False
@@ -2383,10 +2396,7 @@ def content_from_topic_api(
     image_urls = image_urls_from_sources(*extra_sources)
     file_items = files_from_sources(*extra_sources)
 
-    article_url = ""
-    for part in extra_sources:
-        article = part.get("article") if isinstance(part.get("article"), dict) else {}
-        article_url = article.get("article_url") or article.get("inline_article_url") or article_url
+    article_url = topic_article_url(topic)
 
     lines: list[str] = [f"# {title}", ""]
     meta = topic_meta_line(topic, primary)
@@ -2438,6 +2448,10 @@ def content_from_topic_api(
         "tocTitle": source.get("title") or title,
         "topicId": topic_id,
         "topicUid": topic_id,
+        # The topic API explicitly points to a full article, so this Markdown
+        # is only a durable fallback until the full article can be collected.
+        "contentCompleteness": "preview" if article_url else "full",
+        "previewArticleUrl": article_url,
     }
     if getattr(args, "include_comments", False):
         attach_comments_to_content(content, comments if comments is not None else comments_from_topic_api(topic), True)
@@ -2583,6 +2597,8 @@ def resolve_toc_item_api(cdp: CDPClient, source: dict[str, Any], args: argparse.
             article_content["tocKey"] = source.get("key") or ""
             article_content["tocGroup"] = source.get("groupTitle") or ""
             article_content["tocTitle"] = source.get("title") or topic_content.get("title") or ""
+            article_content["contentCompleteness"] = "full"
+            article_content["previewArticleUrl"] = article_url
             return article_content
         except (ExportStopped, SkipDocument):
             raise
@@ -3093,6 +3109,7 @@ def append_source_meta(markdown: str, item: dict[str, Any]) -> str:
         + f"知识星球帖子页: {item.get('topicUrl') or ''}\n"
         + f"知识星球文章页: {item.get('articleUrl') or ''}\n"
         + f"知识星球页面类型: {item.get('sourceType') or ''}\n"
+        + f"知识星球内容完整度: {item.get('contentCompleteness') or 'full'}\n"
         + (
             f"知识星球评论区导出: {'true' if item.get('commentsIncluded') else 'false'}\n"
             if "commentsIncluded" in item
@@ -3100,6 +3117,32 @@ def append_source_meta(markdown: str, item: dict[str, Any]) -> str:
         )
         + (f"知识星球评论数: {item.get('commentCount')}\n" if "commentCount" in item else "")
     )
+
+
+def completed_item_metadata(checkpoint: WandaoCheckpoint, item_key: str) -> dict[str, Any]:
+    if not checkpoint or not item_key:
+        return {}
+    for row in checkpoint.completed_items():
+        if str(row.get("item_key") or "") != item_key:
+            continue
+        try:
+            metadata = json.loads(row.get("metadata_json") or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return metadata if isinstance(metadata, dict) else {}
+    return {}
+
+
+def should_upgrade_completed_preview(
+    checkpoint: WandaoCheckpoint | None,
+    item_key: str,
+    source: dict[str, Any],
+) -> bool:
+    """Upgrade only an API-declared preview, never an arbitrary body link."""
+    if not checkpoint or not item_key or not source_preview_article_url(source):
+        return False
+    metadata = completed_item_metadata(checkpoint, item_key)
+    return str(metadata.get("contentCompleteness") or "").lower() != "full"
 
 
 def write_index(output: Path, title: str, rows: list[dict[str, Any]]) -> None:
@@ -4056,7 +4099,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             link, depth = queue_links.pop(0)
             href = link.get("href") or link.get("key") or ""
             checkpoint_item_key = zsxq_item_key_from_source(link)
-            if checkpoint and checkpoint_item_key and checkpoint.item_status(checkpoint_item_key) == "completed" and not args.update_existing:
+            upgrade_completed_preview = should_upgrade_completed_preview(checkpoint, checkpoint_item_key, link)
+            if checkpoint and checkpoint_item_key and checkpoint.item_status(checkpoint_item_key) == "completed" and not args.update_existing and not upgrade_completed_preview:
                 skipped += 1
                 record_skipped_item(
                     str(link.get("title") or link.get("text") or href),
@@ -4066,6 +4110,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     checkpoint_item_key,
                 )
                 continue
+            if upgrade_completed_preview:
+                emit(
+                    args,
+                    f"检测到同帖完整文章，正在升级原有预览：{link.get('title') or href}",
+                    event="document.export.started",
+                    level="info",
+                )
             if checkpoint and checkpoint_item_key:
                 checkpoint.upsert_item(
                     checkpoint_item_key,
@@ -4260,13 +4311,21 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 md_path.write_text(markdown, encoding="utf-8")
                 if checkpoint and checkpoint_item_key:
                     if img_errors or file_errors:
-                        checkpoint.complete_item(checkpoint_item_key, local_path=str(md_path), metadata={"source": item})
+                        checkpoint.complete_item(
+                            checkpoint_item_key,
+                            local_path=str(md_path),
+                            metadata={"source": item, "contentCompleteness": item.get("contentCompleteness") or "full"},
+                        )
                         checkpoint.fail_item(
                             checkpoint_item_key,
                             f"{len(img_errors)} 个图片、{len(file_errors)} 个附件下载失败",
                         )
                     else:
-                        checkpoint.complete_item(checkpoint_item_key, local_path=str(md_path), metadata={"source": item})
+                        checkpoint.complete_item(
+                            checkpoint_item_key,
+                            local_path=str(md_path),
+                            metadata={"source": item, "contentCompleteness": item.get("contentCompleteness") or "full"},
+                        )
                 if depth == 1:
                     exported_rows.append({"title": title, "path": str(md_path)})
                 record_exported_item(

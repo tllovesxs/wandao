@@ -22,6 +22,10 @@
     { "name": "limit", "label": "最多导出篇数（0 为全部）", "type": "number", "arg": "--limit", "default": 0, "min": 0, "advanced": true, "actions": ["export"] },
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
     { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },
+    { "name": "long_sleep_after", "label": "长休眠起始篇数（0 为关闭）", "type": "number", "arg": "--long-sleep-after", "default": 25, "min": 0, "advanced": true, "actions": ["export"] },
+    { "name": "long_sleep_every", "label": "长休眠间隔篇数（0 为关闭）", "type": "number", "arg": "--long-sleep-every", "default": 12, "min": 0, "advanced": true, "actions": ["export"] },
+    { "name": "long_sleep_min", "label": "长休眠最短秒数", "type": "number", "arg": "--long-sleep-min", "default": 120, "min": 0, "advanced": true, "actions": ["export"] },
+    { "name": "long_sleep_max", "label": "长休眠最长秒数", "type": "number", "arg": "--long-sleep-max", "default": 300, "min": 0, "advanced": true, "actions": ["export"] },
     { "name": "include_comments", "label": "导出可见评论", "type": "checkbox", "arg": "--include-comments", "default": false, "advanced": true, "actions": ["export"] },
     { "name": "download_files", "label": "下载附件", "type": "checkbox", "arg": "--download-files", "default": false, "advanced": true, "actions": ["export"] }
   ],

@@ -1,5 +1,6 @@
 import argparse
 import inspect
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,7 @@ from export_zsxq import (
     should_long_sleep_after_export,
     should_refresh_newest_group_topics,
     should_scan_newest_before_group_resume,
+    should_upgrade_completed_preview,
     summarize_zsxq_api_failure,
     throttle_comment_request,
     inherit_completed_group_items,
@@ -271,6 +273,23 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(args.comment_request_delay, 3.0)
         self.assertEqual(args.comment_request_jitter, 2.0)
 
+    def test_group_provider_exposes_adjustable_long_sleep_controls(self) -> None:
+        manifest = json.loads(
+            (Path(__file__).resolve().parents[1] / "plugins" / "zsxq" / "providers" / "zsxq-group" / "provider.json")
+            .read_text(encoding="utf-8")
+        )
+        fields = {field["name"]: field for field in manifest["fields"]}
+        expected = {
+            "long_sleep_after": ("--long-sleep-after", 25),
+            "long_sleep_every": ("--long-sleep-every", 12),
+            "long_sleep_min": ("--long-sleep-min", 120),
+            "long_sleep_max": ("--long-sleep-max", 300),
+        }
+        for name, (arg, default) in expected.items():
+            self.assertEqual(fields[name]["arg"], arg)
+            self.assertEqual(fields[name]["default"], default)
+            self.assertIn("export", fields[name]["actions"])
+
     def test_zsxq_timing_args_have_safe_floor(self) -> None:
         args = parse_args(
             [
@@ -451,6 +470,19 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(content["topicId"], "123456789")
         self.assertEqual(zsxq_item_key_from_source(content), "zsxq:topic:123456789")
 
+    def test_api_declared_article_marks_topic_markdown_as_upgradeable_preview(self) -> None:
+        topic = {
+            "topic_id": "22255488584842111",
+            "talk": {
+                "text": "帖子摘要",
+                "article": {"article_url": "https://articles.zsxq.com/full.html", "title": "完整文章"},
+            },
+        }
+        content = content_from_topic_api(topic, {"title": "帖子摘要"}, argparse.Namespace(include_comments=False))
+
+        self.assertEqual(content["contentCompleteness"], "preview")
+        self.assertEqual(content["previewArticleUrl"], "https://articles.zsxq.com/full.html")
+
     def test_article_content_preserves_topic_id_for_checkpoint_key(self) -> None:
         class UnusedCdp:
             pass
@@ -481,6 +513,30 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(content["topicId"], "22255488584842111")
         self.assertEqual(content["topicUid"], "22255488584842111")
         self.assertEqual(zsxq_item_key_from_source(content), "zsxq:topic:22255488584842111")
+        self.assertEqual(content["contentCompleteness"], "full")
+
+    def test_completed_preview_is_upgraded_only_for_api_declared_article_relation(self) -> None:
+        source = {
+            "topicId": "22255488584842111",
+            "rawTopic": {
+                "topic_id": "22255488584842111",
+                "talk": {"text": "摘要", "article": {"article_url": "https://articles.zsxq.com/full.html"}},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = WandaoCheckpoint.open(Path(tmp) / "checkpoint.sqlite", "preview-upgrade", "zsxq", "export")
+            try:
+                key = "zsxq:topic:22255488584842111"
+                checkpoint.start_task({"source": "https://wx.zsxq.com/group/1", "outputDir": tmp})
+                checkpoint.upsert_item(key, title="摘要")
+                checkpoint.complete_item(key, local_path=str(Path(tmp) / "preview.md"), metadata={"contentCompleteness": "preview"})
+                self.assertTrue(should_upgrade_completed_preview(checkpoint, key, source))
+
+                checkpoint.complete_item(key, metadata={"contentCompleteness": "full"})
+                self.assertFalse(should_upgrade_completed_preview(checkpoint, key, source))
+                self.assertFalse(should_upgrade_completed_preview(checkpoint, key, {"href": "https://articles.zsxq.com/related.html"}))
+            finally:
+                checkpoint.close()
 
     def test_column_overview_uses_own_checkpoint_key_before_queue_items(self) -> None:
         class FakeCdp:

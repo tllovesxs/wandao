@@ -61,7 +61,7 @@ from wandao_core.browser import (
     wait_for_debug_port,
 )
 from wandao_core.report import finalize_report
-from wandao_core.checkpoint import WandaoCheckpoint
+from wandao_core.checkpoint import CheckpointLeaseLostError, WandaoCheckpoint
 from wandao_core.credentials import write_private_json
 
 
@@ -93,6 +93,10 @@ class SkipDocument(Exception):
         self.reason = reason
         self.title = title
         self.href = href
+
+
+class RateLimitPaused(ExportError):
+    """A persisted, user-resumable pause after repeated ZSXQ rate limiting."""
 
 
 def default_auth_path() -> Path:
@@ -391,19 +395,56 @@ def detect_auth_required_page(cdp: CDPClient) -> dict[str, Any]:
         return {"required": False}
 
 
-def rate_limit_pause_seconds(args: argparse.Namespace | None, attempt: int) -> float:
-    base = max(5.0, float(getattr(args, "rate_limit_pause", 90) if args else 90))
-    return min(base * (2 ** max(0, attempt - 1)), 15 * 60)
+def rate_limit_pause_seconds(args: argparse.Namespace | None, event_index: int) -> float:
+    """Return a bounded, progressively longer cool-down for 429/1059.
+
+    A short retry can recover from a transient quota edge.  Repeating the same
+    request at that pace after a second or third risk-control response is much
+    more likely to prolong the account's restriction, so each event gets a
+    distinct long-sleep range instead of an unbounded retry loop.
+    """
+    base = max(30.0, float(getattr(args, "rate_limit_pause", 60) if args else 60))
+    ranges = (
+        (base, base * 1.5),
+        (base * 3, base * 5),
+        (base * 10, base * 15),
+    )
+    low, high = ranges[min(max(0, event_index - 1), len(ranges) - 1)]
+    return random.uniform(min(low, 15 * 60), min(high, 15 * 60))
 
 
 def pause_for_rate_limit(args: argparse.Namespace | None, label: str, attempt: int, retries: int) -> None:
+    events = 0
+    max_events = 1
     if args:
-        args._rate_limit_events = int(getattr(args, "_rate_limit_events", 0) or 0) + 1
+        events = int(getattr(args, "_rate_limit_events", 0) or 0) + 1
+        args._rate_limit_events = events
+        args._rate_limit_total_events = int(getattr(args, "_rate_limit_total_events", 0) or 0) + 1
+        max_events = max(1, int(getattr(args, "rate_limit_max_events", 4) or 4))
+    # Both HTTP 429 and ZSXQ error 1059 reach this function.  Retry only after
+    # a progressively longer cool-down; the next event beyond the configured
+    # budget becomes a resumable checkpoint pause rather than endless traffic.
+    if events >= max_events:
+        raise RateLimitPaused(
+            f"知识星球连续触发 {events} 次 429/1059 风控，已安全暂停并保存断点：{label}"
+        )
     if attempt >= retries:
-        raise ExportError(f"请求过于频繁，重试仍失败：{label}")
-    pause = rate_limit_pause_seconds(args, attempt + 1)
-    emit(args, f"触发请求频率限制，暂停 {format_duration(pause)} 后重试：{label}")
+        raise RateLimitPaused(f"429/1059 风控重试次数已用尽，已安全暂停并保存断点：{label}")
+    pause = rate_limit_pause_seconds(args, events)
+    emit(
+        args,
+        f"触发 429/1059 风控第 {events} 次，长休眠 {format_duration(pause)} 后重试：{label}",
+        event="task.paused",
+        level="warn",
+        stats={"rateLimitEvents": events, "rateLimitBackoffSeconds": round(pause, 1)},
+    )
     wait_with_stop(args, pause)
+
+
+def clear_rate_limit_streak(args: argparse.Namespace | None) -> None:
+    """A successful protected request starts a later 429/1059 at stage one."""
+    if args:
+        args._rate_limit_events = 0
 
 
 def pause_between_group_pages(args: argparse.Namespace | None, page_count: int, total_topics: int) -> None:
@@ -425,9 +466,17 @@ def pause_between_group_pages(args: argparse.Namespace | None, page_count: int, 
 
 
 def should_long_sleep_after_export(args: argparse.Namespace, exported_count: int) -> bool:
-    after = int(getattr(args, "long_sleep_after", 25) or 0)
+    after = int(getattr(args, "long_sleep_after", 12) or 0)
     every = int(getattr(args, "long_sleep_every", 12) or 0)
-    return after > 0 and every > 0 and exported_count > after and exported_count % every == 0
+    # "Start at 20, every 20" must sleep after document 20, 40, 60, ...;
+    # treating the start as an exclusive boundary silently skipped the first
+    # protective pause and made the UI value misleading.
+    return after > 0 and every > 0 and exported_count >= after and (exported_count - after) % every == 0
+
+
+def should_long_sleep_after_group_page(args: argparse.Namespace, page_count: int) -> bool:
+    """Use the Group long-sleep controls as page intervals, not post counts."""
+    return should_long_sleep_after_export(args, page_count)
 
 
 def navigate_with_retry(cdp: CDPClient, url: str, args: argparse.Namespace | None = None) -> None:
@@ -442,6 +491,7 @@ def navigate_with_retry(cdp: CDPClient, url: str, args: argparse.Namespace | Non
             auth = detect_auth_required_page(cdp)
             if auth.get("required"):
                 raise ExportError("知识星球需要重新登录：请先运行登录保存凭证，或在浏览器中完成登录后重试。")
+            clear_rate_limit_streak(args)
             return
         pause_for_rate_limit(args, url, attempt, retries)
 
@@ -1447,6 +1497,16 @@ def inherit_unresolved_group_items(checkpoint: WandaoCheckpoint, source_task_id:
             metadata = json.loads(row.get("metadata_json") or "{}")
         except (TypeError, json.JSONDecodeError):
             metadata = {}
+        if isinstance(metadata, dict):
+            source = metadata.get("source")
+            if isinstance(source, dict):
+                # Older runs did not persist the queue kind.  Preserve it now,
+                # and infer it conservatively for older rows: a short/article
+                # URL is a link, never a table-of-contents entry.
+                metadata["resumeKind"] = str(
+                    metadata.get("resumeKind")
+                    or ("toc" if str(source.get("topicId") or source.get("topicUid") or "").strip() else "link")
+                )
         checkpoint.upsert_item(
             str(row.get("item_key") or ""),
             title=str(row.get("title") or ""),
@@ -1464,6 +1524,20 @@ def inherit_unresolved_group_items(checkpoint: WandaoCheckpoint, source_task_id:
                 )
         inherited += 1
     return inherited
+
+
+def group_resume_queue_kind(source: dict[str, Any], metadata: dict[str, Any] | None = None) -> str:
+    """Return the safe queue kind for a restored Group item.
+
+    Group topics have a topic id and can use the API-backed TOC resolver.  A
+    historical short/article URL without a topic id must use the normal link
+    resolver; treating it as a TOC item caused issue #82's "directory group
+    missing" failure during resume.
+    """
+    saved = str((metadata or {}).get("resumeKind") or "").strip()
+    if saved in {"toc", "link"}:
+        return saved
+    return "toc" if str(source.get("topicId") or source.get("topicUid") or "").strip() else "link"
 
 
 def inherit_completed_group_items(checkpoint: WandaoCheckpoint, source_task_id: str) -> int:
@@ -1777,6 +1851,8 @@ def fetch_group_topics_page(
         if result.get("rateLimited"):
             pause_for_rate_limit(args, f"知识星球 group topics {group_id}", attempt, retries)
             continue
+        if result.get("ok"):
+            clear_rate_limit_streak(args)
         return result
     return result
 
@@ -2073,6 +2149,8 @@ def inspect_topic_api(cdp: CDPClient, topic_id: str, args: argparse.Namespace | 
         throttle_request(args)
         result = cdp.evaluate(expression, timeout=20) or {}
         if not result.get("rateLimited"):
+            if result.get("ok"):
+                clear_rate_limit_streak(args)
             return result
         pause_for_rate_limit(args, f"topic API {topic_id}", attempt, retries)
     return result
@@ -2137,6 +2215,8 @@ def fetch_topic_info_api(cdp: CDPClient, topic_id: str, args: argparse.Namespace
         if result.get("rateLimited"):
             pause_for_rate_limit(args, f"topic API {topic_id}", attempt, retries)
             continue
+        if result.get("ok"):
+            clear_rate_limit_streak(args)
         return result
     return result
 
@@ -2518,6 +2598,8 @@ def fetch_topic_comments_api(
         if result.get("rateLimited"):
             pause_for_rate_limit(args, f"topic comments API {topic_id}", attempt, retries)
             continue
+        if result.get("ok"):
+            clear_rate_limit_streak(args)
         break
     if not result.get("ok"):
         return []
@@ -2554,6 +2636,7 @@ def collect_article_content(
             continue
         content["sourceType"] = "article"
         content["articleUrl"] = cdp.evaluate("location.href", timeout=10) or article_url
+        clear_rate_limit_streak(args)
         return content
     raise ExportError(f"知识星球文章页触发频率限制，重试仍失败：{article_url}")
 
@@ -2786,6 +2869,7 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
             content["topicUrl"] = topic_url
         content["shortUrl"] = href
         content["sourceText"] = link.get("text") or href
+        clear_rate_limit_streak(args)
         return content
     raise ExportError(f"请求过于频繁，重试仍失败：{href}")
 
@@ -2956,6 +3040,32 @@ def scan_exported_docs(output: Path) -> dict[str, Path]:
     return exported
 
 
+def scan_exported_topic_ids(output: Path) -> dict[str, Path]:
+    """Index prior Group exports by immutable topic ID instead of filename/URL.
+
+    Topic short links and article URLs can change shape while referring to the
+    same post.  The persisted topic ID is therefore the only reliable local
+    incremental-dedup key.
+    """
+    exported: dict[str, Path] = {}
+    if not output.exists():
+        return exported
+    for md_file in output.rglob("*.md"):
+        try:
+            text = md_file.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for match in SOURCE_TOPIC_ID_PATTERN.finditer(text):
+            topic_id = str(match.group(1) or "").strip()
+            if topic_id:
+                exported.setdefault(topic_id, md_file)
+        for match in re.finditer(r"https?://wx\.zsxq\.com/topic/([^/?#\s)]+)", text):
+            topic_id = str(match.group(1) or "").strip()
+            if topic_id:
+                exported.setdefault(topic_id, md_file)
+    return exported
+
+
 def normalize_url_for_seen(url: str) -> str:
     url = (url or "").strip()
     if not url:
@@ -3010,13 +3120,19 @@ def zsxq_resource_key(resource_type: str, source: str) -> str:
     return f"{resource_type}:{hashlib.sha256(source.encode('utf-8')).hexdigest()}"
 
 
-def item_seen(item: dict[str, Any], seen_urls: set[str]) -> bool:
+def item_seen(item: dict[str, Any], seen_urls: set[str], seen_topic_ids: set[str] | None = None) -> bool:
+    topic_id = str(item.get("topicId") or item.get("topicUid") or "").strip()
+    if topic_id and seen_topic_ids is not None and topic_id in seen_topic_ids:
+        return True
     keys = canonical_url_keys(item.get("topicUrl"), item.get("articleUrl"))
     return bool(keys & seen_urls)
 
 
-def mark_item_seen(item: dict[str, Any], seen_urls: set[str]) -> None:
+def mark_item_seen(item: dict[str, Any], seen_urls: set[str], seen_topic_ids: set[str] | None = None) -> None:
     seen_urls.update(canonical_url_keys(item.get("shortUrl"), item.get("topicUrl"), item.get("articleUrl")))
+    topic_id = str(item.get("topicId") or item.get("topicUid") or "").strip()
+    if topic_id and seen_topic_ids is not None:
+        seen_topic_ids.add(topic_id)
 
 
 def link_seen(link: dict[str, str], seen_urls: set[str]) -> bool:
@@ -3106,6 +3222,7 @@ def append_source_meta(markdown: str, item: dict[str, Any]) -> str:
         + (f"知识星球目录分组: {item.get('tocGroup') or ''}\n" if item.get("tocGroup") else "")
         + (f"知识星球目录标题: {item.get('tocTitle') or ''}\n" if item.get("tocTitle") else "")
         + f"知识星球短链: {item.get('shortUrl') or ''}\n"
+        + f"知识星球帖子 ID: {item.get('topicId') or item.get('topicUid') or ''}\n"
         + f"知识星球帖子页: {item.get('topicUrl') or ''}\n"
         + f"知识星球文章页: {item.get('articleUrl') or ''}\n"
         + f"知识星球页面类型: {item.get('sourceType') or ''}\n"
@@ -3163,6 +3280,7 @@ SOURCE_META_PATTERNS = [
     re.compile(r"知识星球文章页:\s*(https?://\S+)"),
     re.compile(r"知识星球帖子页:\s*(https?://\S+)"),
 ]
+SOURCE_TOPIC_ID_PATTERN = re.compile(r"知识星球帖子 ID:\s*([^\s]+)")
 
 
 def source_meta_start(text: str) -> int:
@@ -3258,6 +3376,31 @@ def unique_zsxq_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return unique
 
 
+def finish_checkpoint_task_safely(
+    checkpoint: WandaoCheckpoint | None,
+    *,
+    status: str,
+    error: str = "",
+    report: dict[str, Any] | None = None,
+) -> str:
+    """Finish a task without masking a completed export if its lease was lost.
+
+    A stop request and a UI retry can race.  The output and report remain
+    useful in that case; the user should see a clear checkpoint warning, not a
+    misleading secondary exception about `start_task()`.
+    """
+    if not checkpoint:
+        return ""
+    try:
+        if status == "completed":
+            checkpoint.complete_task(report)
+        else:
+            checkpoint.fail_task(error or status, status=status)
+    except CheckpointLeaseLostError as exc:
+        return str(exc)
+    return ""
+
+
 def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     entry_url = normalize_entry_url(args.entry_url)
     output = Path(args.output).resolve()
@@ -3274,17 +3417,6 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             provider_id="zsxq",
             action="export",
         )
-        # Claim the task before opening Chrome or restoring cookies.  A login
-        # failure can happen before the Group/column branch has enough context
-        # to start its detailed task metadata; it must still be recorded as the
-        # real authentication error instead of masking it with a lease error.
-        checkpoint.start_task(
-            {
-                "source": entry_url,
-                "outputDir": str(output),
-                "resume": bool(getattr(args, "resume", False)),
-            }
-        )
     args.folder_link_threshold = max(0, int(getattr(args, "folder_link_threshold", 9) or 0))
     args.skip_video_topics = bool(getattr(args, "skip_video_topics", True))
     args.include_comments = bool(getattr(args, "include_comments", False))
@@ -3294,17 +3426,38 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     args.request_jitter = max(0.0, float(getattr(args, "request_jitter", 0.6) or 0))
     args.comment_request_delay = max(0.0, float(getattr(args, "comment_request_delay", 3.0) or 0))
     args.comment_request_jitter = max(0.0, float(getattr(args, "comment_request_jitter", 2.0) or 0))
-    args.rate_limit_pause = max(5.0, float(getattr(args, "rate_limit_pause", 90) or 90))
-    args.rate_limit_retries = max(0, int(getattr(args, "rate_limit_retries", 5) or 0))
+    args.rate_limit_pause = max(30.0, float(getattr(args, "rate_limit_pause", 60) or 60))
+    args.rate_limit_retries = max(0, int(getattr(args, "rate_limit_retries", 3) or 0))
+    args.rate_limit_max_events = max(1, int(getattr(args, "rate_limit_max_events", 4) or 4))
     args.max_depth = max(0, int(getattr(args, "max_depth", 2) or 0))
     args.group_page_delay = max(0.0, float(getattr(args, "group_page_delay", 4.0) or 0))
     args.group_page_jitter = max(0.0, float(getattr(args, "group_page_jitter", 4.0) or 0))
-    args.long_sleep_after = max(0, int(getattr(args, "long_sleep_after", 25) or 0))
+    args.long_sleep_after = max(0, int(getattr(args, "long_sleep_after", 12) or 0))
     args.long_sleep_every = max(0, int(getattr(args, "long_sleep_every", 12) or 0))
-    args.long_sleep_min = max(0.0, float(getattr(args, "long_sleep_min", 120) or 0))
-    args.long_sleep_max = max(args.long_sleep_min, float(getattr(args, "long_sleep_max", 300) or 0))
+    args.long_sleep_min = max(0.0, float(getattr(args, "long_sleep_min", 180) or 0))
+    args.long_sleep_max = max(args.long_sleep_min, float(getattr(args, "long_sleep_max", 240) or 0))
     if getattr(args, "follow_link_scope", "all") not in {"all", "articles", "none"}:
         args.follow_link_scope = "all"
+    args.follow_group_links = bool(getattr(args, "follow_group_links", False))
+    # Claim exactly once, before Chrome/login work.  Previously a Group run
+    # claimed once with generic metadata and again after parsing the Group;
+    # the second claim could reset task state during a stop/resume hand-off.
+    if checkpoint:
+        task_metadata: dict[str, Any] = {
+            "source": entry_url,
+            "outputDir": str(output),
+            "resume": bool(getattr(args, "resume", False)),
+        }
+        if is_group_entry_url(entry_url):
+            task_group_id = group_id_from_url(entry_url)
+            task_group_scope = group_scope_from_args(entry_url, args)
+            if task_group_id:
+                task_metadata.update({
+                    "groupId": task_group_id,
+                    "groupScope": task_group_scope,
+                    "resumeKey": zsxq_group_resume_key(task_group_id, task_group_scope, output),
+                })
+        checkpoint.start_task(task_metadata)
     cdp: CDPClient | None = None
     chrome_proc: subprocess.Popen[Any] | None = None
     try:
@@ -3343,19 +3496,6 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     group_page_size = normalize_group_page_size(args)
                     group_max_pages = normalize_group_max_pages(args, args.limit, group_page_size)
                     group_resume_key = zsxq_group_resume_key(group_id, group_scope, output)
-                    if checkpoint:
-                        checkpoint.start_task(
-                            {
-                                "source": entry_url,
-                                "outputDir": str(output),
-                                "groupId": group_id,
-                                "groupScope": group_scope,
-                                "limit": args.limit,
-                                "pageSize": group_page_size,
-                                "resume": bool(getattr(args, "resume", False)),
-                                "resumeKey": group_resume_key,
-                            }
-                        )
                     navigate_with_retry(cdp, entry_url, args)
                     toc = {
                         "href": entry_url,
@@ -3408,6 +3548,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             if args.limit and args.limit > 0 and not use_toc:
                 links = links[: args.limit]
         existing = scan_exported_docs(output)
+        existing_topic_ids = scan_exported_topic_ids(output)
         exported_rows: list[dict[str, Any]] = []
         failures: list[dict[str, str]] = []
         image_failures: list[dict[str, Any]] = []
@@ -3420,6 +3561,9 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         total_comments = 0
         comments_updated_existing = 0
         stopped = False
+        rate_limited_paused = False
+        rate_limit_pause_reason = ""
+        checkpoint_finalize_warning = ""
         folderized = 0
         deepened_existing = 0
         queued_from_existing = 0
@@ -3438,17 +3582,6 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         run_skipped_items: list[dict[str, Any]] = []
         source_count = args.limit if use_group_topics else (len(toc_items) if use_toc else len(links))
         source_mode = "group" if use_group_topics else ("toc" if use_toc else "links")
-        if checkpoint and not use_group_topics:
-            checkpoint.start_task(
-                {
-                    "source": entry_url,
-                    "outputDir": str(output),
-                    "sourceMode": source_mode,
-                    "totalDocs": source_count,
-                    "resume": bool(getattr(args, "resume", False)),
-                    "retryFailed": bool(getattr(args, "retry_failed", False)),
-                }
-            )
         emit(
             args,
             f"开始导出知识星球内容：共 {source_count} 个来源条目。",
@@ -3572,6 +3705,11 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
 
         def maybe_long_sleep_after_export() -> None:
             nonlocal long_sleep_count, long_sleep_seconds
+            # Group exports protect the account at list-page boundaries.  A
+            # page contains a bounded batch of posts, so sleeping after every
+            # N pages is predictable even when posts differ wildly in assets.
+            if use_group_topics:
+                return
             has_more_work = bool(queue_links) or (use_group_topics and not group_exhausted)
             if not has_more_work or not should_long_sleep_after_export(args, exported):
                 return
@@ -3592,6 +3730,29 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 event="task.resumed",
                 level="info",
                 stats={"exportedDocs": exported, "longSleepCount": long_sleep_count},
+            )
+
+        def maybe_long_sleep_after_group_page() -> None:
+            nonlocal long_sleep_count, long_sleep_seconds
+            if not should_long_sleep_after_group_page(args, group_page_count):
+                return
+            pause = random.uniform(args.long_sleep_min, args.long_sleep_max)
+            long_sleep_count += 1
+            long_sleep_seconds += pause
+            emit(
+                args,
+                f"大批量保护：已完成 Group 第 {group_page_count} 页，长休眠 {format_duration(pause)} 后继续。",
+                event="task.paused",
+                level="info",
+                stats={"groupPage": group_page_count, "longSleepSeconds": round(pause, 1), "longSleepCount": long_sleep_count},
+            )
+            wait_with_stop(args, pause)
+            emit(
+                args,
+                f"长休眠结束，继续读取 Group 第 {group_page_count + 1} 页。",
+                event="task.resumed",
+                level="info",
+                stats={"groupPage": group_page_count, "longSleepCount": long_sleep_count},
             )
 
         if include_overview:
@@ -3700,6 +3861,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         seen_urls: set[str] = set()
         queued_urls: set[str] = set()
         seen_toc_keys: set[str] = set()
+        seen_topic_ids: set[str] = set(existing_topic_ids)
         group_seen_topic_ids: set[str] = set()
         group_end_time = ""
         group_history_page_total = 0
@@ -3778,15 +3940,15 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             if not checkpoint or not use_group_topics:
                 return 0
             rows = checkpoint.failed_items() if getattr(args, "retry_failed", False) else checkpoint.pending_items()
-            decoded_rows: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+            decoded_rows: list[tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
             for row in rows:
                 metadata = json.loads(row.get("metadata_json") or "{}")
                 source = metadata.get("source") if isinstance(metadata, dict) else None
                 if isinstance(source, dict):
-                    decoded_rows.append((str(source.get("createTime") or ""), row, source))
+                    decoded_rows.append((str(source.get("createTime") or ""), row, source, metadata))
             decoded_rows.sort(key=lambda value: value[0], reverse=True)
             added = 0
-            for _, row, source in decoded_rows:
+            for _, row, source, metadata in decoded_rows:
                 if group_selected_count >= args.limit:
                     group_paused_for_limit = True
                     break
@@ -3796,7 +3958,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     group_seen_topic_ids.add(topic_id)
                 if item_key and checkpoint.item_status(item_key) == "completed":
                     continue
-                queue_links.append((dict(source, kind="toc", outputDir=str(output)), 1))
+                queue_links.append((
+                    dict(source, kind=group_resume_queue_kind(source, metadata), outputDir=str(output)),
+                    1,
+                ))
                 added += 1
                 group_selected_count += 1
             if added:
@@ -3924,6 +4089,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 return 0
             if group_page_count > 0:
+                maybe_long_sleep_after_group_page()
                 pause_between_group_pages(args, group_page_count, group_fetched_count)
 
             result = fetch_group_topics_page(cdp, group_id, group_scope, group_end_time, group_page_size, args)
@@ -3938,6 +4104,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 group_latest_create_time = str(batch[0].get("create_time") or "").strip()
                 group_latest_topic_id = str(batch[0].get("topic_id") or batch[0].get("topic_uid") or "").strip()
             added = 0
+            last_queued_create_time = ""
             for topic in batch:
                 topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or "").strip()
                 if topic_id and topic_id in group_seen_topic_ids:
@@ -3947,15 +4114,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 item = group_topic_to_item(topic, group_scope, group_fetched_count, include_raw=True)
                 item["entryUrl"] = entry_url
                 item_key = zsxq_item_key_from_source(item)
-                if checkpoint and item_key:
-                    checkpoint.upsert_item(
-                        item_key,
-                        title=str(item.get("title") or item.get("text") or topic_id),
-                        source_url=str(item.get("topicUrl") or item.get("articleUrl") or entry_url),
-                        source_id=topic_id,
-                        metadata={"source": item},
-                    )
-                item_existing = next(
+                item_existing = existing_topic_ids.get(topic_id) or next(
                     (
                         existing[key]
                         for key in canonical_url_keys(item.get("topicUrl"), item.get("articleUrl"))
@@ -3968,9 +4127,18 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     or (args.incremental and item_existing and not args.update_existing)
                 )
                 if not already_exported and group_selected_count < args.limit:
+                    if checkpoint and item_key:
+                        checkpoint.upsert_item(
+                            item_key,
+                            title=str(item.get("title") or item.get("text") or topic_id),
+                            source_url=str(item.get("topicUrl") or item.get("articleUrl") or entry_url),
+                            source_id=topic_id,
+                            metadata={"source": item, "resumeKind": "toc"},
+                        )
                     queue_links.append((dict(item, kind="toc", outputDir=str(output)), 1))
                     added += 1
                     group_selected_count += 1
+                    last_queued_create_time = str(topic.get("create_time") or "").strip()
 
             toc["pageCount"] = group_page_count
             toc["totalTopics"] = group_fetched_count
@@ -4002,7 +4170,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 group_exhausted = True
                 save_group_checkpoint_cursor(exhausted=True)
                 return added
-            group_end_time = previous_zsxq_end_time(last_time)
+            # If the run stopped in the middle of an API page because of the
+            # user limit, resume immediately after the last *queued* topic.
+            # Advancing to `batch[-1]` would silently skip the rest of that
+            # page; checkpointing every unselected item instead made a later
+            # run exceed the requested limit.  Keep neither failure mode.
+            cursor_time = last_queued_create_time if group_selected_count >= args.limit else last_time
+            group_end_time = previous_zsxq_end_time(cursor_time)
             if len(batch) < group_page_size:
                 group_exhausted = True
                 save_group_checkpoint_cursor(exhausted=True)
@@ -4024,6 +4198,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             return md_path.parent
 
         def enqueue_children_from_existing(md_path: Path, source: dict[str, Any], depth: int) -> int:
+            if use_group_topics and not args.follow_group_links:
+                # A Group feed is already the authoritative list of posts.
+                # Re-crawling links found in old Markdown turns index pages
+                # into a recursive crawl and is the main source of repeated
+                # API calls and rate limiting.  This does not affect resolving
+                # the current topic's own preview/article relationship.
+                return 0
             if depth >= args.max_depth:
                 return 0
             children = filter_follow_zsxq_links(extract_remote_zsxq_links_from_markdown(md_path), args)
@@ -4064,6 +4245,11 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     group_exhausted = True
                 if not restored_items and not group_paused_for_limit:
                     enqueue_next_group_batch()
+            except RateLimitPaused as exc:
+                rate_limited_paused = True
+                rate_limit_pause_reason = str(exc)
+                group_paused_for_limit = True
+                emit(args, f"知识星球已安全暂停：{exc}", event="task.paused", level="warn")
             except ExportStopped:
                 stopped = True
                 group_paused_for_limit = True
@@ -4085,6 +4271,12 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             if not queue_links and use_group_topics and not group_exhausted and not group_paused_for_limit:
                 try:
                     enqueue_next_group_batch()
+                except RateLimitPaused as exc:
+                    rate_limited_paused = True
+                    rate_limit_pause_reason = str(exc)
+                    group_paused_for_limit = True
+                    emit(args, f"知识星球已安全暂停：{exc}", event="task.paused", level="warn")
+                    break
                 except ExportStopped:
                     stopped = True
                     group_paused_for_limit = True
@@ -4099,6 +4291,17 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             link, depth = queue_links.pop(0)
             href = link.get("href") or link.get("key") or ""
             checkpoint_item_key = zsxq_item_key_from_source(link)
+            link_topic_id = str(link.get("topicId") or link.get("topicUid") or "").strip()
+            # A Markdown file may already exist when only an image/attachment
+            # retry is pending.  Let the checkpoint state win over the local
+            # topic-ID index so resume rewrites that same file instead of
+            # classifying it as a duplicate.
+            if (
+                link_topic_id
+                and checkpoint
+                and checkpoint.item_status(checkpoint_item_key) in {"pending", "failed", "running"}
+            ):
+                seen_topic_ids.discard(link_topic_id)
             upgrade_completed_preview = should_upgrade_completed_preview(checkpoint, checkpoint_item_key, link)
             if checkpoint and checkpoint_item_key and checkpoint.item_status(checkpoint_item_key) == "completed" and not args.update_existing and not upgrade_completed_preview:
                 skipped += 1
@@ -4123,7 +4326,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     title=str(link.get("title") or link.get("text") or href),
                     source_url=str(link.get("topicUrl") or link.get("articleUrl") or link.get("href") or ""),
                     source_id=str(link.get("topicId") or link.get("topicUid") or ""),
-                    metadata={"source": {k: v for k, v in link.items() if k not in {"kind", "outputDir"}}},
+                    metadata={
+                        "source": {k: v for k, v in link.items() if k not in {"kind", "outputDir"}},
+                        "resumeKind": str(link.get("kind") or "link"),
+                    },
                 )
             href_existing = next((existing[key] for key in canonical_url_keys(href) if key in existing), None)
             existing_update_path: Path | None = reusable_checkpoint_path(checkpoint_item_key)
@@ -4156,10 +4362,12 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     checkpoint.start_item(checkpoint_item_key, "content")
                 if link.get("kind") == "toc":
                     item = resolve_toc_item(cdp, link, args)
-                    already_seen = bool(canonical_url_keys(item.get("tocKey")) & seen_urls)
+                    already_seen = bool(canonical_url_keys(item.get("tocKey")) & seen_urls) or item_seen(
+                        item, seen_urls, seen_topic_ids
+                    )
                 else:
                     item = resolve_link(cdp, link, args)
-                    already_seen = item_seen(item, seen_urls)
+                    already_seen = item_seen(item, seen_urls, seen_topic_ids)
                 resolved_item_key = zsxq_item_key_from_source(item) or checkpoint_item_key
                 if checkpoint and resolved_item_key and resolved_item_key != checkpoint_item_key:
                     previous_item_key = checkpoint_item_key
@@ -4174,7 +4382,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     if previous_item_key:
                         checkpoint.skip_item(previous_item_key, f"resolved-to:{resolved_item_key}")
                     checkpoint_item_key = resolved_item_key
-                mark_item_seen(item, seen_urls)
+                mark_item_seen(item, seen_urls, seen_topic_ids)
                 seen_urls.update(canonical_url_keys(item.get("tocKey")))
                 if already_seen and not args.update_existing:
                     if checkpoint and checkpoint_item_key:
@@ -4231,6 +4439,12 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 current_output = Path(link.get("outputDir") or output)
                 raw_markdown = item.get("markdown") or f"# {title}\n"
                 children = filter_follow_zsxq_links((item.get("zsxqLinks") or []) + markdown_links(raw_markdown), args)
+                if use_group_topics and not args.follow_group_links:
+                    # resolve_toc_item_api has already upgraded this topic's
+                    # preview to its own full article where available.  The
+                    # remaining links are references to other posts, not a
+                    # requirement for this topic's complete export.
+                    children = []
                 should_folderize = (
                     depth < args.max_depth
                     and args.folder_link_threshold > 0
@@ -4309,6 +4523,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                                 error={"message": failure.get("error", "")},
                             )
                 md_path.write_text(markdown, encoding="utf-8")
+                for key in canonical_url_keys(
+                    item.get("shortUrl"), item.get("topicUrl"), item.get("articleUrl"), href
+                ):
+                    existing[key] = md_path
+                topic_id = str(item.get("topicId") or item.get("topicUid") or "").strip()
+                if topic_id:
+                    existing_topic_ids.setdefault(topic_id, md_path)
                 if checkpoint and checkpoint_item_key:
                     if img_errors or file_errors:
                         checkpoint.complete_item(
@@ -4358,6 +4579,11 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                             mark_link_seen(child_link, queued_urls)
                             queue_links.append((dict(child_link, kind="link", outputDir=str(child_output)), depth + 1))
                 maybe_long_sleep_after_export()
+            except RateLimitPaused as exc:
+                rate_limited_paused = True
+                rate_limit_pause_reason = str(exc)
+                emit(args, f"知识星球已安全暂停：{exc}", event="task.paused", level="warn")
+                break
             except ExportStopped:
                 stopped = True
                 emit(args, "收到停止请求，正在结束并写入已完成的导出结果。", event="task.stopped", level="warn")
@@ -4478,20 +4704,25 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             "folderLinkThreshold": args.folder_link_threshold,
             "maxDepth": args.max_depth,
             "followLinkScope": args.follow_link_scope,
+            "followGroupLinks": bool(args.follow_group_links),
             "longSleepAfter": args.long_sleep_after,
             "longSleepEvery": args.long_sleep_every,
+            "longSleepUnit": "group-pages" if use_group_topics else "exported-docs",
             "longSleepMinSeconds": args.long_sleep_min,
             "longSleepMaxSeconds": args.long_sleep_max,
             "longSleepCount": long_sleep_count,
             "longSleepSeconds": round(long_sleep_seconds, 1),
             "stopped": stopped,
+            "rateLimitedPaused": rate_limited_paused,
+            "rateLimitPauseReason": rate_limit_pause_reason,
             "imageSuccess": image_success,
             "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
             "attachmentSuccess": file_success,
             "attachmentFailureCount": sum(len(item["failures"]) for item in file_failures),
             "localLinkRewriteFiles": local_link_rewrite_count,
             "requestCount": int(getattr(args, "_request_count", 0) or 0),
-            "rateLimitEvents": int(getattr(args, "_rate_limit_events", 0) or 0),
+            "rateLimitEvents": int(getattr(args, "_rate_limit_total_events", 0) or 0),
+            "rateLimitCurrentStreak": int(getattr(args, "_rate_limit_events", 0) or 0),
             "requestDelaySeconds": float(getattr(args, "request_delay", 0) or 0),
             "requestJitterSeconds": float(getattr(args, "request_jitter", 0) or 0),
             "commentRequestDelaySeconds": float(getattr(args, "comment_request_delay", 0) or 0),
@@ -4520,9 +4751,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         report_history_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         emit(
             args,
-            "知识星球导出完成" if not stopped else "知识星球导出已停止",
-            event="task.completed" if not stopped else "task.stopped",
-            level="success" if not stopped and not failures else "warn",
+            (
+                "知识星球导出已因频率限制安全暂停"
+                if rate_limited_paused
+                else ("知识星球导出完成" if not stopped else "知识星球导出已停止")
+            ),
+            event="task.paused" if rate_limited_paused else ("task.completed" if not stopped else "task.stopped"),
+            level="success" if not stopped and not rate_limited_paused and not failures else "warn",
             reportFile=str(report_path),
             stats={
                 "exportedDocs": exported,
@@ -4534,21 +4769,35 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             },
         )
         if checkpoint:
-            if stopped:
-                checkpoint.fail_task("stopped", status="stopped")
+            if rate_limited_paused:
+                checkpoint_finalize_warning = finish_checkpoint_task_safely(
+                    checkpoint,
+                    status="paused",
+                    error=rate_limit_pause_reason or "rate-limited",
+                )
+            elif stopped:
+                checkpoint_finalize_warning = finish_checkpoint_task_safely(checkpoint, status="stopped", error="stopped")
             elif failures or image_failures or file_failures:
-                checkpoint.fail_task(
-                    f"{len(failures)} 个文档失败，"
-                    f"{sum(len(item['failures']) for item in image_failures)} 个图片失败，"
-                    f"{sum(len(item['failures']) for item in file_failures)} 个附件失败",
+                checkpoint_finalize_warning = finish_checkpoint_task_safely(
+                    checkpoint,
                     status="failed",
+                    error=(
+                        f"{len(failures)} 个文档失败，"
+                        f"{sum(len(item['failures']) for item in image_failures)} 个图片失败，"
+                        f"{sum(len(item['failures']) for item in file_failures)} 个附件失败"
+                    ),
                 )
             else:
-                checkpoint.complete_task(report)
+                checkpoint_finalize_warning = finish_checkpoint_task_safely(
+                    checkpoint, status="completed", report=report
+                )
+            if checkpoint_finalize_warning:
+                report["checkpointFinalizeWarning"] = checkpoint_finalize_warning
+                emit(args, f"断点任务收尾警告：{checkpoint_finalize_warning}", event="log.message", level="warn")
         return report
     except Exception as exc:
         if checkpoint:
-            checkpoint.fail_task(str(exc))
+            finish_checkpoint_task_safely(checkpoint, status="failed", error=str(exc))
         raise
     finally:
         if checkpoint:
@@ -5091,6 +5340,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Which ZSXQ links to follow recursively: all links, articles.zsxq.com only, or none",
     )
     parser.add_argument(
+        "--follow-group-links",
+        action="store_true",
+        help="For /group/ exports, also recursively export other posts linked from a post body. Disabled by default.",
+    )
+    parser.add_argument(
         "--folder-link-threshold",
         type=int,
         default=9,
@@ -5098,12 +5352,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--request-delay", type=float, default=DEFAULT_REQUEST_DELAY, help="Seconds to wait before each ZSXQ navigation/API request")
     parser.add_argument("--request-jitter", type=float, default=DEFAULT_REQUEST_JITTER, help="Extra random seconds added to request delay")
-    parser.add_argument("--rate-limit-pause", type=float, default=90, help="Seconds to pause after Too Many Requests before retrying")
-    parser.add_argument("--rate-limit-retries", type=int, default=5, help="Retries for the same URL/API call after Too Many Requests")
-    parser.add_argument("--long-sleep-after", type=int, default=25, help="Enable long sleep only after this many successfully exported docs. 0 disables it")
-    parser.add_argument("--long-sleep-every", type=int, default=12, help="After --long-sleep-after, sleep whenever exported docs is a multiple of this value. 0 disables it")
-    parser.add_argument("--long-sleep-min", type=float, default=120, help="Minimum long sleep seconds for large ZSXQ exports")
-    parser.add_argument("--long-sleep-max", type=float, default=300, help="Maximum long sleep seconds for large ZSXQ exports")
+    parser.add_argument("--rate-limit-pause", type=float, default=60, help="Base seconds for progressive 429/1059 long sleeps before retrying")
+    parser.add_argument("--rate-limit-retries", type=int, default=3, help="Maximum retries after progressive 429/1059 long sleeps")
+    parser.add_argument(
+        "--rate-limit-max-events",
+        type=int,
+        default=4,
+        help="Safely pause the resumable task on this 429/1059 event; the first three events use progressively longer sleeps",
+    )
+    parser.add_argument("--long-sleep-after", type=int, default=12, help="For Group exports, enable long sleep after this many list pages. 0 disables it")
+    parser.add_argument("--long-sleep-every", type=int, default=12, help="For Group exports, sleep after this many further list pages")
+    parser.add_argument("--long-sleep-min", type=float, default=180, help="Minimum long sleep seconds for large ZSXQ exports")
+    parser.add_argument("--long-sleep-max", type=float, default=240, help="Maximum long sleep seconds for large ZSXQ exports")
     parser.add_argument("--include-video-topics", dest="skip_video_topics", action="store_false", help="Export video-only ZSXQ topic pages instead of skipping them")
     parser.add_argument("--skip-video-topics", dest="skip_video_topics", action="store_true", help="Skip video-only ZSXQ topic pages")
     parser.set_defaults(skip_video_topics=True)

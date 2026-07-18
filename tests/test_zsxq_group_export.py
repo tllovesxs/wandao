@@ -9,6 +9,7 @@ from unittest import mock
 import export_zsxq
 from export_zsxq import (
     ExportError,
+    RateLimitPaused,
     content_from_topic_api,
     filter_follow_zsxq_links,
     group_id_from_url,
@@ -17,14 +18,20 @@ from export_zsxq import (
     group_scope_from_args,
     is_group_entry_url,
     localize_files,
+    group_resume_queue_kind,
     normalize_group_limit,
     parse_args,
     previous_zsxq_end_time,
     resolve_toc_item_api,
     should_long_sleep_after_export,
+    should_long_sleep_after_group_page,
+    clear_rate_limit_streak,
     should_refresh_newest_group_topics,
     should_scan_newest_before_group_resume,
     should_upgrade_completed_preview,
+    pause_for_rate_limit,
+    scan_exported_topic_ids,
+    finish_checkpoint_task_safely,
     summarize_zsxq_api_failure,
     throttle_comment_request,
     inherit_completed_group_items,
@@ -212,14 +219,13 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(len(filter_follow_zsxq_links(links, all_args)), 3)
 
     def test_long_sleep_starts_after_threshold_on_every_interval(self) -> None:
-        args = argparse.Namespace(long_sleep_after=25, long_sleep_every=12)
+        args = argparse.Namespace(long_sleep_after=12, long_sleep_every=12)
 
-        self.assertFalse(should_long_sleep_after_export(args, 24))
-        self.assertFalse(should_long_sleep_after_export(args, 25))
-        self.assertFalse(should_long_sleep_after_export(args, 35))
-        self.assertTrue(should_long_sleep_after_export(args, 36))
-        self.assertFalse(should_long_sleep_after_export(args, 37))
-        self.assertTrue(should_long_sleep_after_export(args, 48))
+        self.assertFalse(should_long_sleep_after_export(args, 11))
+        self.assertTrue(should_long_sleep_after_export(args, 12))
+        self.assertFalse(should_long_sleep_after_export(args, 13))
+        self.assertTrue(should_long_sleep_after_group_page(args, 24))
+        self.assertFalse(should_long_sleep_after_group_page(args, 25))
 
     def test_newest_group_refresh_only_runs_when_a_prior_group_task_exists(self) -> None:
         args = argparse.Namespace(resume=True, retry_failed=False)
@@ -280,10 +286,10 @@ class ZsxqGroupExportTests(unittest.TestCase):
         )
         fields = {field["name"]: field for field in manifest["fields"]}
         expected = {
-            "long_sleep_after": ("--long-sleep-after", 25),
+            "long_sleep_after": ("--long-sleep-after", 12),
             "long_sleep_every": ("--long-sleep-every", 12),
-            "long_sleep_min": ("--long-sleep-min", 120),
-            "long_sleep_max": ("--long-sleep-max", 300),
+            "long_sleep_min": ("--long-sleep-min", 180),
+            "long_sleep_max": ("--long-sleep-max", 240),
         }
         for name, (arg, default) in expected.items():
             self.assertEqual(fields[name]["arg"], arg)
@@ -333,6 +339,141 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(args.checkpoint_file, "out/.wandao/checkpoint.sqlite")
         self.assertTrue(args.resume)
         self.assertTrue(args.retry_failed)
+
+    def test_group_defaults_do_not_recursively_follow_related_posts(self) -> None:
+        args = parse_args([
+            "--entry-url", "https://wx.zsxq.com/group/15288445111222",
+            "--output", "out",
+        ])
+        self.assertFalse(args.follow_group_links)
+
+    def test_resume_preserves_short_link_as_link_not_toc(self) -> None:
+        self.assertEqual(
+            group_resume_queue_kind({"href": "https://t.zsxq.com/1fjgM"}, {}),
+            "link",
+        )
+        self.assertEqual(
+            group_resume_queue_kind({"topicId": "123", "topicUrl": "https://wx.zsxq.com/topic/123"}, {}),
+            "toc",
+        )
+        self.assertEqual(
+            group_resume_queue_kind({"topicId": "123"}, {"resumeKind": "link"}),
+            "link",
+        )
+
+    def test_topic_id_index_deduplicates_url_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            (output / "01-帖子.md").write_text(
+                "# 帖子\n\n---\n\n知识星球帖子 ID: 82255484182121460\n"
+                "知识星球帖子页: https://wx.zsxq.com/topic/82255484182121460\n",
+                encoding="utf-8",
+            )
+            indexed = scan_exported_topic_ids(output)
+            self.assertEqual(indexed["82255484182121460"].name, "01-帖子.md")
+
+    def test_repeated_rate_limits_pause_instead_of_escalating(self) -> None:
+        args = argparse.Namespace(
+            _rate_limit_events=0,
+            rate_limit_max_events=2,
+            rate_limit_retries=5,
+            rate_limit_pause=90,
+        )
+        with mock.patch.object(export_zsxq, "wait_with_stop") as wait:
+            pause_for_rate_limit(args, attempt=0, retries=5, label="group topic")
+        self.assertEqual(args._rate_limit_events, 1)
+        self.assertEqual(wait.call_count, 1)
+        with self.assertRaises(RateLimitPaused):
+            pause_for_rate_limit(args, attempt=0, retries=5, label="group topic")
+        self.assertEqual(args._rate_limit_events, 2)
+
+    def test_rate_limit_backoff_grows_before_the_safe_pause(self) -> None:
+        args = argparse.Namespace(rate_limit_pause=60)
+        with mock.patch.object(export_zsxq.random, "uniform", side_effect=lambda low, high: (low + high) / 2):
+            first = export_zsxq.rate_limit_pause_seconds(args, 1)
+            second = export_zsxq.rate_limit_pause_seconds(args, 2)
+            third = export_zsxq.rate_limit_pause_seconds(args, 3)
+
+        self.assertGreater(second, first)
+        self.assertGreater(third, second)
+        self.assertLessEqual(third, 15 * 60)
+
+    def test_successful_protected_request_resets_only_the_rate_limit_streak(self) -> None:
+        args = argparse.Namespace(_rate_limit_events=2, _rate_limit_total_events=5)
+
+        clear_rate_limit_streak(args)
+
+        self.assertEqual(args._rate_limit_events, 0)
+        self.assertEqual(args._rate_limit_total_events, 5)
+
+    def test_group_api_stops_after_second_429_without_more_requests(self) -> None:
+        args = argparse.Namespace(
+            _rate_limit_events=0,
+            rate_limit_max_events=2,
+            rate_limit_retries=5,
+            rate_limit_pause=90,
+            request_delay=0,
+            request_jitter=0,
+        )
+        cdp = mock.Mock()
+        cdp.evaluate.return_value = {"ok": False, "rateLimited": True}
+        with (
+            mock.patch.object(export_zsxq, "ensure_zsxq_api_origin"),
+            mock.patch.object(export_zsxq, "throttle_request"),
+            mock.patch.object(export_zsxq, "wait_with_stop") as wait,
+        ):
+            with self.assertRaises(RateLimitPaused):
+                export_zsxq.fetch_group_topics_page(cdp, "15288445111222", "digests", "", 20, args)
+
+        self.assertEqual(cdp.evaluate.call_count, 2)
+        self.assertEqual(wait.call_count, 1)
+
+    def test_rate_limit_pause_ends_group_run_without_retry_loop(self) -> None:
+        class FakeCdp:
+            def close(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_path = root / "checkpoint.sqlite"
+            args = parse_args([
+                "--entry-url", "https://wx.zsxq.com/group/15288445111222",
+                "--output", str(root / "output"),
+                "--toc-mode", "toc",
+                "--limit", "1",
+                "--skip-auth-load",
+                "--checkpoint-file", str(checkpoint_path),
+                "--checkpoint-task-id", "rate-limit-pause",
+                "--incremental",
+            ])
+            with (
+                mock.patch.object(export_zsxq, "connect_browser", return_value=(FakeCdp(), None)),
+                mock.patch.object(export_zsxq, "navigate_with_retry"),
+                mock.patch.object(
+                    export_zsxq,
+                    "fetch_group_topics_page",
+                    side_effect=RateLimitPaused("连续 429，安全暂停"),
+                ) as fetch,
+            ):
+                report = export_zsxq.export_entry(args)
+
+            self.assertTrue(report["rateLimitedPaused"])
+            self.assertEqual(report["outcome"], "paused")
+            self.assertEqual(fetch.call_count, 1)
+            checkpoint = WandaoCheckpoint.open(checkpoint_path, "rate-limit-pause", "zsxq", "export")
+            try:
+                row = checkpoint.conn.execute(
+                    "SELECT status FROM tasks WHERE task_id = ?", ("rate-limit-pause",)
+                ).fetchone()
+                self.assertEqual(row["status"], "paused")
+            finally:
+                checkpoint.close()
+
+    def test_checkpoint_lease_loss_does_not_mask_export_result(self) -> None:
+        checkpoint = mock.Mock()
+        checkpoint.complete_task.side_effect = export_zsxq.CheckpointLeaseLostError("lease lost")
+        warning = finish_checkpoint_task_safely(checkpoint, status="completed", report={"exportedDocs": 1})
+        self.assertEqual(warning, "lease lost")
 
     def test_full_comment_api_uses_smaller_safe_batch(self) -> None:
         self.assertEqual(export_zsxq.DEFAULT_COMMENT_BATCH_SIZE, 30)

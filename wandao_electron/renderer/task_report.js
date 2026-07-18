@@ -149,6 +149,8 @@
       output: firstNonEmpty(source.output, source.outputDir),
       reportFile: firstNonEmpty(source.reportFile),
       stopped: Boolean(source.stopped),
+      rateLimitedPaused: Boolean(source.rateLimitedPaused),
+      outcome: firstNonEmpty(source.outcome),
       stats,
       failures: failureItems,
       raw: source
@@ -215,6 +217,7 @@
       interrupted: '\u5df2\u4e2d\u65ad',
       completed: '\u5df2\u5b8c\u6210',
       partial: '\u90e8\u5206\u5b8c\u6210',
+      paused: '\u56e0\u98ce\u63a7\u6682\u505c',
       failed: '\u5931\u8d25',
       stopped: '\u5df2\u505c\u6b62'
     };
@@ -384,6 +387,11 @@
       || report?.stopped === true;
 
     if (stopped) return 'stopped';
+    const rateLimitedPaused = explicitStatus === 'paused'
+      || result?.data?.rateLimitedPaused === true
+      || report?.rateLimitedPaused === true
+      || report?.raw?.rateLimitedPaused === true;
+    if (rateLimitedPaused) return 'paused';
     if (explicitStatus === 'running' || explicitStatus === 'stopping' || explicitStatus === 'interrupted') {
       return explicitStatus;
     }

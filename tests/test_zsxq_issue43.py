@@ -151,6 +151,46 @@ class ZsxqIssue43Tests(unittest.TestCase):
             self.assertEqual(third_report["exportedItems"][0]["sequence"], 3)
             self.assertEqual(third_report["pendingItems"], [])
 
+    def test_group_limit_does_not_park_unselected_api_page_items_as_pending(self) -> None:
+        class FakeCdp:
+            def close(self) -> None:
+                return None
+
+        topics = [
+            {
+                "topic_id": str(300 - index),
+                "create_time": f"2026-07-15T10:0{index}:00.000+0800",
+                "talk": {"text": f"帖子 {index}"},
+            }
+            for index in range(3)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "output"
+            checkpoint = root / "checkpoint.sqlite"
+            args = export_zsxq.parse_args([
+                "--entry-url", "https://wx.zsxq.com/group/123456789",
+                "--output", str(output),
+                "--toc-mode", "toc",
+                "--group-scope", "all",
+                "--limit", "1",
+                "--skip-auth-load",
+                "--checkpoint-file", str(checkpoint),
+                "--checkpoint-task-id", "limited-page",
+                "--incremental",
+                "--max-depth", "0",
+            ])
+            with (
+                mock.patch.object(export_zsxq, "connect_browser", return_value=(FakeCdp(), None)),
+                mock.patch.object(export_zsxq, "navigate_with_retry"),
+                mock.patch.object(export_zsxq, "fetch_group_topics_page", return_value={"ok": True, "topics": topics}),
+            ):
+                report = export_zsxq.export_entry(args)
+
+            self.assertEqual(report["exportedDocs"], 1)
+            self.assertEqual(report["pendingItems"], [])
+            self.assertEqual(report["checkpoint"]["items"], {"completed": 1})
+
     def test_stopped_group_report_lists_exported_and_pending_files(self) -> None:
         class FakeCdp:
             def close(self) -> None:

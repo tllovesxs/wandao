@@ -156,9 +156,14 @@
         <details class="advanced-section">
           <summary>导出选项</summary>
           <div class="advanced-content">
+            <p class="helper-note">每个帖子会自动从预览升级为它自己的完整正文；默认不会递归导出正文中引用的其他帖子，避免把 Group 帖子流扩展成高频全站爬取。</p>
+            <label class="checkbox-label">
+              <input type="checkbox" id="zsxq-group-follow-related-links">
+              <span>额外导出正文引用的关联帖子（可能显著增加请求并触发风控）</span>
+            </label>
             <div class="form-row">
               <div class="form-group flex-1">
-                <label for="zsxq-group-follow-link-scope">正文 URL 跟进范围</label>
+                <label for="zsxq-group-follow-link-scope">关联帖子跟进范围</label>
                 <select id="zsxq-group-follow-link-scope">
                   <option value="articles" selected>只跟进文章页（推荐）</option>
                   <option value="all">跟进全部知识星球链接</option>
@@ -166,16 +171,34 @@
                 </select>
               </div>
               <div class="form-group flex-1">
-                <label for="zsxq-group-max-depth">URL 跟进深度</label>
+                <label for="zsxq-group-max-depth">关联帖子跟进深度</label>
                 <input type="number" id="zsxq-group-max-depth" value="1" min="0">
               </div>
               <div class="form-group flex-1">
                 <label for="zsxq-group-delay">请求延迟秒</label>
-                <input type="number" id="zsxq-group-delay" value="2.5" min="1" step="0.1">
+                <input type="number" id="zsxq-group-delay" value="3" min="1" step="0.1">
               </div>
               <div class="form-group flex-1">
                 <label for="zsxq-group-jitter">随机浮动秒</label>
-                <input type="number" id="zsxq-group-jitter" value="2.5" min="1" step="0.1">
+                <input type="number" id="zsxq-group-jitter" value="1" min="0" step="0.1">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="zsxq-group-long-sleep-after">长休眠起始翻页数（0 关闭）</label>
+                <input type="number" id="zsxq-group-long-sleep-after" value="12" min="0" step="1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="zsxq-group-long-sleep-every">长休眠翻页间隔（0 关闭）</label>
+                <input type="number" id="zsxq-group-long-sleep-every" value="12" min="0" step="1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="zsxq-group-long-sleep-min">长休眠最短秒数</label>
+                <input type="number" id="zsxq-group-long-sleep-min" value="180" min="0" step="1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="zsxq-group-long-sleep-max">长休眠最长秒数</label>
+                <input type="number" id="zsxq-group-long-sleep-max" value="240" min="0" step="1">
               </div>
             </div>
             <label class="checkbox-label">
@@ -190,7 +213,7 @@
               <input type="checkbox" id="zsxq-group-download-files">
               <span>下载帖子附件到本地</span>
             </label>
-            <p class="helper-note">Group 是帖子流，不读取完整星球。导出时会按批次读取：默认每批 20 条，导完一批再读取下一批；超过 1000 条会提示风险，尽量不要让单次任务超过 24 小时；附件默认只保留原链接，勾选后才下载；视频帖会跳过并记录。</p>
+            <p class="helper-note">Group 是帖子流，不读取完整星球。导出时会按批次读取：默认每批 20 条，导完一批再读取下一批；遇到连续频率限制会安全暂停并保留断点；附件默认只保留原链接，勾选后才下载；视频帖会跳过并记录。</p>
           </div>
         </details>
       </section>

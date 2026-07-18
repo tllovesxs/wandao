@@ -7,11 +7,14 @@ import argparse
 import json
 import os
 import subprocess
+import re
 import sys
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+ELECTRON_ROOT = REPO_ROOT / "wandao_electron"
+LOCAL_REQUIRE_PATTERN = re.compile(r"\brequire\(\s*['\"](\.{1,2}/[^'\"]+)['\"]\s*\)")
 
 
 def expected_providers() -> set[str]:
@@ -50,6 +53,48 @@ def packaged_python_env() -> dict[str, str]:
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     return env
+
+def packaged_asar_entries(resources: Path) -> set[str]:
+    """List app.asar through electron-builder's bundled asar CLI."""
+    app_asar = resources / "app.asar"
+    if not app_asar.is_file():
+        raise RuntimeError(f"缺少打包后的 Electron 应用归档：{app_asar}")
+    result = subprocess.run(
+        ["npm.cmd" if os.name == "nt" else "npm", "exec", "--prefix", str(ELECTRON_ROOT), "--", "asar", "list", str(app_asar)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode:
+        raise RuntimeError(f"无法读取打包后的 app.asar：{result.stderr.strip() or result.stdout.strip()}")
+    return {line.strip().replace("\\", "/").lstrip("/") for line in result.stdout.splitlines() if line.strip()}
+
+
+def required_main_process_modules() -> set[str]:
+    """Collect direct static local CommonJS dependencies of Electron entrypoints."""
+    required: set[str] = set()
+    for source_relative in ("main.js", "preload.js"):
+        source_path = ELECTRON_ROOT / source_relative
+        if not source_path.is_file():
+            raise RuntimeError(f"源码缺少 Electron 入口：{source_path}")
+        required.add(source_relative)
+        for request in LOCAL_REQUIRE_PATTERN.findall(source_path.read_text(encoding="utf-8")):
+            relative_path = request.lstrip("./")
+            candidate = relative_path if Path(relative_path).suffix else f"{relative_path}.js"
+            if not (ELECTRON_ROOT / candidate).is_file():
+                raise RuntimeError(f"无法解析主程序本地依赖：{source_relative} -> {request}")
+            required.add(candidate)
+    return required
+
+
+def verify_packaged_main_dependencies(resources: Path) -> None:
+    archive_entries = packaged_asar_entries(resources)
+    missing = sorted(required_main_process_modules() - archive_entries)
+    if missing:
+        raise RuntimeError(f"app.asar 缺少主进程本地依赖：{', '.join(missing)}")
 
 
 def discovered_provider_ids(resources: Path) -> set[str]:
@@ -98,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resources", required=True, type=Path, help="解包应用的 resources 目录")
     args = parser.parse_args(argv)
     resources = args.resources.resolve()
+    verify_packaged_main_dependencies(resources)
     expected_plugins = {path.name for path in (REPO_ROOT / "plugins").iterdir() if path.is_dir() and (path / "plugin.json").is_file()}
     packaged_plugins = {path.name for path in (resources / "plugins").iterdir() if path.is_dir() and (path / "plugin.json").is_file()}
     if packaged_plugins != expected_plugins:

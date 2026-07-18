@@ -4,7 +4,7 @@
   "id": "onenote",
   "name": "OneNote",
   "description": "Windows 桌面版 OneNote 本地 Markdown 导出。",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "Wandao Official",
   "homepage": "https://www.onenote.com/",
   "license": "AGPL-3.0-only",

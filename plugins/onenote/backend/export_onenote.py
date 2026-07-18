@@ -10,6 +10,7 @@ in Python.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import html
 import json
@@ -43,11 +44,39 @@ FORBIDDEN_FILENAME_CHARS = r'<>:"/\|?*'
 CSHARP_BRIDGE_SOURCE = r'''
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using Microsoft.Office.Interop.OneNote;
 
 public static class WandaoOneNoteBridge
 {
+    private const int RpcCallFailed = unchecked((int)0x800706BE);
+
+    private static bool HasPublishedFile(string outputPath)
+    {
+        return File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+    }
+
+    private static void ReleaseApplication(Application app)
+    {
+        if (app != null && Marshal.IsComObject(app))
+        {
+            Marshal.FinalReleaseComObject(app);
+        }
+    }
+
+    private static string EncodeMessage(Exception ex)
+    {
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(ex.Message ?? ex.ToString()));
+    }
+
+    private static void WritePublishResult(string pageId, string status, Exception error = null)
+    {
+        string message = error == null ? "" : EncodeMessage(error);
+        Console.WriteLine("publish-result\t" + pageId + "\t" + status + "\t" + message);
+    }
+
     public static int Main(string[] args)
     {
         try
@@ -58,18 +87,26 @@ public static class WandaoOneNoteBridge
                 return 2;
             }
 
-            var app = new Application();
             if (args[0] == "hierarchy")
             {
-                string xml;
-                app.GetHierarchy(null, HierarchyScope.hsPages, out xml, XMLSchema.xs2013);
-                File.WriteAllText(args[1], xml, new UTF8Encoding(false));
+                var app = new Application();
+                try
+                {
+                    string xml;
+                    app.GetHierarchy(null, HierarchyScope.hsPages, out xml, XMLSchema.xs2013);
+                    File.WriteAllText(args[1], xml, new UTF8Encoding(false));
+                }
+                finally
+                {
+                    ReleaseApplication(app);
+                }
                 return 0;
             }
 
             if (args[0] == "publish-list")
             {
                 int index = 0;
+                Application app = null;
                 foreach (string rawLine in File.ReadLines(args[1], Encoding.UTF8))
                 {
                     if (String.IsNullOrWhiteSpace(rawLine)) continue;
@@ -80,8 +117,64 @@ public static class WandaoOneNoteBridge
                     Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
                     index++;
                     Console.WriteLine("publish\t" + index + "\t" + outputPath);
-                    app.Publish(pageId, outputPath, PublishFormat.pfMHTML, "");
+                    try
+                    {
+                        if (File.Exists(outputPath)) File.Delete(outputPath);
+                        if (app == null) app = new Application();
+                        app.Publish(pageId, outputPath, PublishFormat.pfMHTML, "");
+                        if (!HasPublishedFile(outputPath))
+                        {
+                            throw new Exception("OneNote Publish returned without creating an MHT file.");
+                        }
+                        WritePublishResult(pageId, "ok");
+                    }
+                    catch (COMException ex)
+                    {
+                        if (ex.ErrorCode != RpcCallFailed)
+                        {
+                            ReleaseApplication(app);
+                            app = null;
+                            WritePublishResult(pageId, "failed", ex);
+                            continue;
+                        }
+                        if (HasPublishedFile(outputPath))
+                        {
+                            ReleaseApplication(app);
+                            app = null;
+                            WritePublishResult(pageId, "recovered-output", ex);
+                            continue;
+                        }
+
+                        try
+                        {
+                            if (File.Exists(outputPath)) File.Delete(outputPath);
+                            ReleaseApplication(app);
+                            app = null;
+                            Console.WriteLine("publish-retry\t" + index + "\t" + pageId);
+                            Thread.Sleep(3000);
+                            app = new Application();
+                            app.Publish(pageId, outputPath, PublishFormat.pfMHTML, "");
+                            if (!HasPublishedFile(outputPath))
+                            {
+                                throw new Exception("OneNote Publish retry returned without creating an MHT file.");
+                            }
+                            WritePublishResult(pageId, "retried", ex);
+                        }
+                        catch (Exception retryEx)
+                        {
+                            ReleaseApplication(app);
+                            app = null;
+                            WritePublishResult(pageId, "failed", retryEx);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        ReleaseApplication(app);
+                        app = null;
+                        WritePublishResult(pageId, "failed", ex);
+                    }
                 }
+                ReleaseApplication(app);
                 return 0;
             }
 
@@ -776,6 +869,49 @@ def write_publish_list(items: list[tuple[TocNode, Path]], path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def parse_publish_results(output: str) -> dict[str, dict[str, str]]:
+    results: dict[str, dict[str, str]] = {}
+    for line in output.splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) < 3 or parts[0] != "publish-result":
+            continue
+        page_id, status = parts[1], parts[2]
+        encoded_message = parts[3] if len(parts) > 3 else ""
+        try:
+            message = base64.b64decode(encoded_message, validate=True).decode("utf-8", errors="replace") if encoded_message else ""
+        except (ValueError, UnicodeError):
+            message = "OneNote bridge returned an invalid diagnostic payload."
+        results[page_id] = {"status": status, "message": message}
+    return results
+
+
+def publish_mht_items(
+    items: list[tuple[TocNode, Path]],
+    list_path: Path,
+    *,
+    helper_dir: Path | None,
+) -> dict[str, dict[str, str]]:
+    try:
+        for _page, mht_path in items:
+            if mht_path.exists():
+                mht_path.unlink()
+        write_publish_list(items, list_path)
+        output = run_bridge(["publish-list", str(list_path)], helper_dir=helper_dir, stream=True)
+    except (ExportError, OSError) as exc:
+        return {page.id: {"status": "failed", "message": str(exc)} for page, _mht in items}
+
+    results = parse_publish_results(output)
+    for page, _mht in items:
+        results.setdefault(
+            page.id,
+            {
+                "status": "failed",
+                "message": "OneNote bridge ended before reporting the page publish result.",
+            },
+        )
+    return results
+
+
 def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[TocNode]) -> dict[str, Any]:
     output = Path(args.output).expanduser().resolve() if args.output else default_output_dir()
     output.mkdir(parents=True, exist_ok=True)
@@ -862,38 +998,70 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
 
         if publish_items:
             list_path = mht_root / "publish-list.tsv"
-            write_publish_list(publish_items, list_path)
             emit(f"开始调用 OneNote 导出 MHT：{len(publish_items)} 篇")
-            run_bridge(["publish-list", str(list_path)], helper_dir=helper_dir, stream=True)
+            for page, _mht_path in publish_items:
+                if checkpoint:
+                    checkpoint.start_item(f"onenote:page:{page.id}", "publish")
+            publish_results = publish_mht_items(publish_items, list_path, helper_dir=helper_dir)
+        else:
+            publish_results = {}
 
         mht_by_id = {page.id: mht for page, mht in publish_items}
         total = len(targets)
         for index, (page, md_path) in enumerate(targets, start=1):
             item_key = f"onenote:page:{page.id}"
+            publish_result = publish_results.get(page.id, {"status": "failed", "message": "Missing OneNote publish result."})
+            if publish_result["status"] == "failed":
+                error_message = publish_result["message"] or "OneNote did not create an MHT file for this page."
+                if checkpoint:
+                    checkpoint.fail_item(item_key, error_message)
+                failures.append({
+                    "id": page.id,
+                    "title": page.title,
+                    "path": str(md_path),
+                    "stage": "publish",
+                    "error": error_message,
+                })
+                emit(
+                    f"OneNote 页面 MHT 导出失败，已跳过并继续后续页面：{page.title}：{error_message}",
+                    event="document.export.failed",
+                    level="error",
+                    doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+                    error={"type": "OneNotePublishError", "message": error_message},
+                )
+            else:
+                if publish_result["status"] in {"recovered-output", "retried"}:
+                    emit(
+                        f"OneNote 页面发布已恢复：{page.title}（{publish_result['status']}）",
+                        event="document.export.recovered",
+                        level="warn",
+                        doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+                    )
             try:
-                if checkpoint:
-                    checkpoint.start_item(item_key, "convert")
-                emit(
-                    f"开始转换 OneNote 页面：{page.title}",
-                    event="document.export.started",
-                    doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
-                )
-                stats = convert_mht_to_markdown(mht_by_id[page.id], md_path)
-                image_success += stats["images"]
-                attachment_success += stats["attachments"]
-                exported += 1
-                if checkpoint:
-                    checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"id": page.id})
-                emit(
-                    f"OneNote 页面导出完成：{page.title}",
-                    event="document.export.completed",
-                    doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
-                    stats={
-                        "imageSuccessInDoc": stats["images"],
-                        "attachmentSuccessInDoc": stats["attachments"],
-                        "chars": stats["chars"],
-                    },
-                )
+                if publish_result["status"] != "failed":
+                    if checkpoint:
+                        checkpoint.start_item(item_key, "convert")
+                    emit(
+                        f"开始转换 OneNote 页面：{page.title}",
+                        event="document.export.started",
+                        doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+                    )
+                    stats = convert_mht_to_markdown(mht_by_id[page.id], md_path)
+                    image_success += stats["images"]
+                    attachment_success += stats["attachments"]
+                    exported += 1
+                    if checkpoint:
+                        checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"id": page.id})
+                    emit(
+                        f"OneNote 页面导出完成：{page.title}",
+                        event="document.export.completed",
+                        doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+                        stats={
+                            "imageSuccessInDoc": stats["images"],
+                            "attachmentSuccessInDoc": stats["attachments"],
+                            "chars": stats["chars"],
+                        },
+                    )
             except Exception as exc:  # noqa: BLE001 - keep exporting other pages.
                 if checkpoint:
                     checkpoint.fail_item(item_key, str(exc))

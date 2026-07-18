@@ -73,6 +73,18 @@ test('task status preserves partial work from non-zero process exits', () => {
   assert.equal(deriveTaskStatus({ status: 'stopping', report }), 'stopping');
 });
 
+test('rate-limit pause remains resumable instead of looking completed', () => {
+  const report = normalizeTaskReport({
+    exportedDocs: 2,
+    rateLimitedPaused: true,
+    rateLimitPauseReason: '连续 429，安全暂停'
+  });
+
+  assert.equal(report.rateLimitedPaused, true);
+  assert.equal(deriveTaskStatus({ status: 'completed', report }), 'paused');
+  assert.equal(taskStatusText({ status: 'completed', report }), '\u56e0\u98ce\u63a7\u6682\u505c');
+});
+
 test('document failures and resource warnings stay distinct for retry decisions', () => {
   const report = normalizeTaskReport({
     totalDocs: 3,

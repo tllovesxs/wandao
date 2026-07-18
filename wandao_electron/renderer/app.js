@@ -886,6 +886,8 @@ function finishProgressForTaskResult(result, completedDetail, options = {}) {
     finishProgress('partial', completedDetail + '，' + summary + '。请在任务历史查看失败项。');
   } else if (status === 'stopped') {
     finishProgress('stopped', options.stoppedDetail || (completedDetail + '已停止'));
+  } else if (status === 'paused') {
+    finishProgress('paused', options.pausedDetail || (completedDetail + '因频率限制安全暂停，可在任务历史继续'));
   } else if (status === 'completed') {
     finishProgress('completed', completedDetail);
   } else {
@@ -1518,7 +1520,12 @@ async function resumeTask(task) {
       parentRunId: task.runId || task.id
     });
     const outcome = taskResultStatus(result, { provider: task.providerId, mode: task.action });
-    if ((outcome === 'completed' || outcome === 'partial') && !isStoppedResult(result)) {
+    if ((outcome === 'completed' || outcome === 'partial' || outcome === 'paused') && !isStoppedResult(result)) {
+      if (outcome === 'paused') {
+        log('历史任务因频率限制安全暂停，可稍后继续。', 'warn');
+        finishProgressForTaskResult(result, '历史任务继续执行', { provider: task.providerId, mode: task.action });
+        return;
+      }
       log(outcome === 'partial' ? '历史任务继续执行部分完成，请查看失败项' : '历史任务继续执行完成', outcome === 'partial' ? 'warn' : 'success');
       if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
       finishProgressForTaskResult(result, '历史任务继续执行完成', { provider: task.providerId, mode: task.action });
@@ -1610,6 +1617,7 @@ function finishProgress(outcome, detail) {
     partial: { label: '部分完成', className: 'partial', ariaValue: '', fallback: '任务部分完成，请查看失败项' },
     attention: { label: '需操作', className: 'partial', ariaValue: '', fallback: '还需要完成后续操作' },
     stopped: { label: '已停止', className: 'stopped', ariaValue: '', fallback: '任务已停止，可在任务历史继续' },
+    paused: { label: '因风控暂停', className: 'partial', ariaValue: '', fallback: '任务因频率限制暂停，可在任务历史继续' },
     failed: { label: '失败', className: 'error', ariaValue: '', fallback: '任务失败，请查看运行日志' }
   }[status] || { label: '失败', className: 'error', ariaValue: '', fallback: '任务失败，请查看运行日志' };
   progressVisible = false;
@@ -5326,10 +5334,26 @@ function buildExportArgs(toolId, options = {}) {
 
   if (isZsxqProvider(toolId)) {
     const maxDepth = document.getElementById(`${prefix}-max-depth`)?.value;
-    if (maxDepth) args.push('--max-depth', maxDepth);
-
     const followLinkScope = document.getElementById(`${prefix}-follow-link-scope`)?.value;
-    if (followLinkScope) args.push('--follow-link-scope', followLinkScope);
+    const followRelatedLinks = document.getElementById(`${prefix}-follow-related-links`);
+    const shouldFollowRelatedLinks = toolId !== 'zsxq-group' || Boolean(followRelatedLinks?.checked);
+    if (toolId === 'zsxq-group' && !shouldFollowRelatedLinks) {
+      // Always pass explicit safe values.  Old form drafts may still contain
+      // `all` and a deep recursion value from releases before this checkbox.
+      args.push('--max-depth', '0', '--follow-link-scope', 'none');
+    } else {
+      if (maxDepth) args.push('--max-depth', maxDepth);
+      if (followLinkScope) args.push('--follow-link-scope', followLinkScope);
+      if (toolId === 'zsxq-group') {
+        const depth = Number.parseInt(maxDepth || '1', 10);
+        if ((followLinkScope === 'all' || depth > 1) && !window.confirm(
+          '关联帖子递归会显著增加请求并更容易触发知识星球风控。确认继续吗？'
+        )) {
+          throw new Error('已取消关联帖子递归导出。');
+        }
+        args.push('--follow-group-links');
+      }
+    }
 
     const groupScope = document.getElementById(`${prefix}-group-scope`)?.value;
     if (groupScope) args.push('--group-scope', groupScope);
@@ -5341,6 +5365,15 @@ function buildExportArgs(toolId, options = {}) {
         throw new Error('知识星球 Group 单次导出数量至少为 1 条。');
       }
       args.push('--limit', String(limit));
+      for (const [field, flag] of [
+        ['long-sleep-after', '--long-sleep-after'],
+        ['long-sleep-every', '--long-sleep-every'],
+        ['long-sleep-min', '--long-sleep-min'],
+        ['long-sleep-max', '--long-sleep-max']
+      ]) {
+        const value = document.getElementById(`${prefix}-${field}`)?.value;
+        if (value !== undefined && value !== '') args.push(flag, value);
+      }
     } else if (!forScan && limitInput !== undefined && limitInput !== '') {
       args.push('--limit', limitInput);
     }
@@ -5745,7 +5778,8 @@ async function handleExport(toolId) {
       log(`${actionName}已停止，已完成项目会在下次继续时跳过。`, 'warn');
       finishProgress('stopped', `${actionName}已停止`);
     } else if (result.success) {
-      log(`${actionName}完成`, 'success');
+      const outcome = taskResultStatus(result, { provider: toolId, mode: actionName });
+      log(outcome === 'paused' ? `${actionName}因频率限制安全暂停，可稍后继续。` : `${actionName}完成`, outcome === 'paused' ? 'warn' : 'success');
       if (result.data) {
         log(JSON.stringify(result.data, null, 2), 'success');
       }

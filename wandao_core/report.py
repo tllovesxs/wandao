@@ -69,6 +69,8 @@ def derive_outcome(report: dict[str, Any]) -> str:
 
     if report.get("stopped"):
         return "stopped"
+    if report.get("rateLimitedPaused"):
+        return "paused"
     if _failure_count(report) or _resource_failure_count(report):
         return "partial"
     return "completed"

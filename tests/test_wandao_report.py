@@ -96,6 +96,7 @@ class WandaoReportTests(unittest.TestCase):
         self.assertEqual(report["failureCount"], 1)
         self.assertEqual(report["outcome"], "partial")
         self.assertEqual(derive_outcome({"stopped": True}), "stopped")
+        self.assertEqual(derive_outcome({"rateLimitedPaused": True}), "paused")
 
 
 if __name__ == "__main__":

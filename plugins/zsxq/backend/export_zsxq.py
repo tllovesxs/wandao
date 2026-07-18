@@ -1847,7 +1847,29 @@ def fetch_group_topics_page(
         check_stopped(args)
         ensure_zsxq_api_origin(cdp, args, f"https://wx.zsxq.com/group/{group_id}")
         throttle_request(args)
-        result = cdp.evaluate(expression, timeout=60) or {}
+        try:
+            result = cdp.evaluate(expression, timeout=60) or {}
+        except (TimeoutError, OSError, ConnectionError) as exc:
+            # A lost/slow DevTools response is not a failed export item.  The
+            # cursor was written after the previous page, so one bounded cool
+            # down and retry is safe; a later resume continues from that page.
+            if attempt < retries:
+                pause = min(30.0, 10.0 * (attempt + 1))
+                emit(
+                    args,
+                    f"知识星球目录请求暂时超时，暂停 {format_duration(pause)} 后重试：{exc}",
+                    event="task.paused",
+                    level="warn",
+                    stats={"groupRequestTimeouts": attempt + 1, "retryDelaySeconds": pause},
+                )
+                wait_with_stop(args, pause)
+                continue
+            return {
+                "ok": False,
+                "transient": True,
+                "text": f"知识星球目录请求超时；断点已保存，可继续任务：{exc}",
+                "attempts": [{"error": str(exc)}],
+            }
         if result.get("rateLimited"):
             pause_for_rate_limit(args, f"知识星球 group topics {group_id}", attempt, retries)
             continue
@@ -3836,11 +3858,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         )
                 overview_path.write_text(markdown, encoding="utf-8")
                 if checkpoint and overview_item_key:
-                    if img_errors:
-                        checkpoint.complete_item(overview_item_key, local_path=str(overview_path), metadata={"source": overview_key})
-                        checkpoint.fail_item(overview_item_key, f"{len(img_errors)} 个图片下载失败")
-                    else:
-                        checkpoint.complete_item(overview_item_key, local_path=str(overview_path), metadata={"source": overview_key})
+                    # Resource failures are tracked by the resource table.
+                    # The Markdown document itself is complete and must not be
+                    # reclassified as a failed document on "继续任务".
+                    checkpoint.complete_item(overview_item_key, local_path=str(overview_path), metadata={"source": overview_key})
                 exported_rows.append({"title": entry.get("title") or "专栏正文", "path": str(overview_path)})
                 record_exported_item(
                     str(entry.get("title") or "专栏正文"),
@@ -4531,22 +4552,14 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 if topic_id:
                     existing_topic_ids.setdefault(topic_id, md_path)
                 if checkpoint and checkpoint_item_key:
-                    if img_errors or file_errors:
-                        checkpoint.complete_item(
-                            checkpoint_item_key,
-                            local_path=str(md_path),
-                            metadata={"source": item, "contentCompleteness": item.get("contentCompleteness") or "full"},
-                        )
-                        checkpoint.fail_item(
-                            checkpoint_item_key,
-                            f"{len(img_errors)} 个图片、{len(file_errors)} 个附件下载失败",
-                        )
-                    else:
-                        checkpoint.complete_item(
-                            checkpoint_item_key,
-                            local_path=str(md_path),
-                            metadata={"source": item, "contentCompleteness": item.get("contentCompleteness") or "full"},
-                        )
+                    # Resource failures remain visible in report/resources,
+                    # but do not turn an otherwise written Markdown document
+                    # into a retry-failed item.
+                    checkpoint.complete_item(
+                        checkpoint_item_key,
+                        local_path=str(md_path),
+                        metadata={"source": item, "contentCompleteness": item.get("contentCompleteness") or "full"},
+                    )
                 if depth == 1:
                     exported_rows.append({"title": title, "path": str(md_path)})
                 record_exported_item(

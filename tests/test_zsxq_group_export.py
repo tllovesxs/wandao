@@ -428,6 +428,26 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(cdp.evaluate.call_count, 2)
         self.assertEqual(wait.call_count, 1)
 
+    def test_group_api_retries_a_transient_devtools_timeout_before_failing_the_page(self) -> None:
+        args = argparse.Namespace(
+            _rate_limit_events=0,
+            rate_limit_retries=1,
+            request_delay=0,
+            request_jitter=0,
+        )
+        cdp = mock.Mock()
+        cdp.evaluate.side_effect = [TimeoutError("timed out"), {"ok": True, "topics": []}]
+        with (
+            mock.patch.object(export_zsxq, "ensure_zsxq_api_origin"),
+            mock.patch.object(export_zsxq, "throttle_request"),
+            mock.patch.object(export_zsxq, "wait_with_stop") as wait,
+        ):
+            result = export_zsxq.fetch_group_topics_page(cdp, "15288445111222", "digests", "", 20, args)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(cdp.evaluate.call_count, 2)
+        wait.assert_called_once_with(args, 10.0)
+
     def test_rate_limit_pause_ends_group_run_without_retry_loop(self) -> None:
         class FakeCdp:
             def close(self) -> None:
@@ -761,10 +781,13 @@ class ZsxqGroupExportTests(unittest.TestCase):
                 overview_key = zsxq_item_key_from_source({"href": "https://wx.zsxq.com/columns/15288445111222", "key": "overview"})
                 resource_key = zsxq_resource_key("image", "https://example.com/cover.png")
 
-                self.assertEqual(checkpoint.item_status(overview_key), "failed")
+                # A resource timeout must not make the Markdown document a
+                # retry-failed item.  The resource itself remains retryable.
+                self.assertEqual(checkpoint.item_status(overview_key), "completed")
                 resource = checkpoint.resource_record(resource_key)
                 self.assertIsNotNone(resource)
                 self.assertEqual(resource["item_key"], overview_key)
+                self.assertEqual(resource["status"], "failed")
             finally:
                 checkpoint.close()
 

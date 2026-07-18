@@ -61,6 +61,7 @@
 
   function collectFailureItems(data, limit = 100) {
     const items = [];
+    const seen = new Set();
     const visit = (value, source = '') => {
       if (!value || items.length >= limit) return;
       if (Array.isArray(value)) {
@@ -69,13 +70,32 @@
       }
       if (typeof value !== 'object') return;
       const looksLikeFailure = value.error || value.reason || value.message || value.relativePath || value.url || value.title;
-      if (looksLikeFailure) items.push({ source, ...value });
+      if (looksLikeFailure) {
+        const fingerprint = [
+          value.type,
+          value.url,
+          value.error,
+          value.reason,
+          value.message,
+          value.document,
+          value.path,
+          value.relativePath,
+          value.title
+        ].map((part) => String(part || '')).join('\u0000');
+        if (!seen.has(fingerprint)) {
+          seen.add(fingerprint);
+          items.push({ source, ...value });
+        }
+      }
       Object.entries(value).forEach(([key, child]) => {
         if (/fail|error/i.test(key)) visit(child, key);
       });
     };
     if (data && typeof data === 'object') {
-      ['failures', 'resourceFailures', 'imageFailures', 'attachmentFailures', 'errors'].forEach((key) => {
+      const resourceKeys = Array.isArray(data.resourceFailures) && data.resourceFailures.length
+        ? ['failures', 'resourceFailures', 'errors']
+        : ['failures', 'imageFailures', 'attachmentFailures', 'errors'];
+      resourceKeys.forEach((key) => {
         visit(data[key], key);
       });
     }
@@ -177,6 +197,7 @@
 
   function collectFailureDiagnostics(data, limit = 80) {
     const lines = [];
+    const source = data && typeof data === 'object' ? data : {};
     const report = normalizeTaskReport(data);
     const pushLine = (label, text) => {
       const content = compact(text, 700);
@@ -198,10 +219,14 @@
     if (report.stats.failed > 0 && !lines.length) {
       pushLine('失败统计', `failureCount=${report.stats.failed}，脚本没有返回逐项失败原因，请查看 Python 原始日志。`);
     }
-    if (report.stats.imageFailed > 0 && !lines.some((line) => line.includes('图片'))) {
+    const hasImageDetails = asArray(source.resourceFailures).some((item) => item?.type === 'image')
+      || asArray(source.imageFailures).length > 0;
+    const hasAttachmentDetails = asArray(source.resourceFailures).some((item) => item?.type === 'attachment')
+      || asArray(source.attachmentFailures).length > 0;
+    if (report.stats.imageFailed > 0 && !hasImageDetails) {
       pushLine('图片失败统计', `imageFailureCount=${report.stats.imageFailed}，脚本没有返回逐项图片失败原因。`);
     }
-    if (report.stats.attachmentFailed > 0 && !lines.some((line) => line.includes('\u9644\u4ef6'))) {
+    if (report.stats.attachmentFailed > 0 && !hasAttachmentDetails) {
       pushLine('\u9644\u4ef6\u5931\u8d25\u7edf\u8ba1', `attachmentFailureCount=${report.stats.attachmentFailed}\uff0c\u811a\u672c\u6ca1\u6709\u8fd4\u56de\u9010\u9879\u9644\u4ef6\u5931\u8d25\u539f\u56e0\u3002`);
     }
     if (lines.length >= limit) {

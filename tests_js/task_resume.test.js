@@ -108,6 +108,13 @@ test('a real failed task still retries only its failed items when supported', ()
   assert.equal(shouldRetryFailureItems(task, '--retry-failed', 2), true);
 });
 
+test('a failed cursor-based Group export continues from its saved cursor instead of narrowing to retry-failed items', () => {
+  const task = { status: 'failed', args: ['--resume'] };
+  const provider = { checkpoint: { supported: true, strategy: 'cursor' } };
+  assert.deepEqual(buildResumeArgs(task, '--retry-failed', 12, provider), ['--resume']);
+  assert.equal(shouldRetryFailureItems(task, '--retry-failed', 12, provider), false);
+});
+
 test('a service-paused task continues pending pages instead of narrowing to failed items', () => {
   const task = {
     status: 'partial',
@@ -176,6 +183,23 @@ test('resource warnings are not converted into retry-failed document commands', 
   assert.match(resumeArgs, /taskDocumentFailureCount\(task\)/);
   assert.match(resumeTaskHandler, /const documentFailures = taskDocumentFailureCount\(task\)/);
   assert.match(resumeTaskHandler, /失败文档，共 \$\{documentFailures\} 个/);
+});
+
+test('resource diagnostics are not duplicated after reports are finalized', () => {
+  const report = require('../wandao_electron/renderer/task_report');
+  const resource = {
+    type: 'image',
+    document: '示例文档',
+    path: 'out/example.md',
+    failures: [{ url: 'https://images.zsxq.com/example', error: 'timed out' }]
+  };
+  const diagnostics = report.collectFailureDiagnostics({
+    imageFailureCount: 1,
+    imageFailures: [resource],
+    resourceFailures: [resource]
+  });
+  assert.equal(diagnostics.filter((line) => line.includes('https://images.zsxq.com/example')).length, 1);
+  assert.ok(!diagnostics.some((line) => line.includes('脚本没有返回逐项图片失败原因')));
 });
 
 test('latest task result card is persistent, actionable, and never overlays long forms', () => {

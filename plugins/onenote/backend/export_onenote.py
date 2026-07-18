@@ -799,10 +799,16 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
             checkpoint.upsert_item(
                 f"onenote:page:{page.id}",
                 title=page.title,
-                source_url=page.path,
+                source_url="/".join(page.path_parts),
                 source_id=page.id,
-                parent_key=page.parent_id,
-                metadata={"id": page.id, "path": page.path, "level": page.level},
+                parent_key=page.parent_node_id,
+                metadata={
+                    "id": page.id,
+                    "path": page.path_parts,
+                    "level": page.page_level,
+                    "parentNodeId": page.parent_node_id,
+                    "sectionId": page.section_id,
+                },
             )
         if getattr(args, "retry_failed", False):
             selected = [page for page in selected if checkpoint.item_status(f"onenote:page:{page.id}") == "failed"]

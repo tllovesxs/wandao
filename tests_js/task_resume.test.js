@@ -191,14 +191,14 @@ test('resource diagnostics are not duplicated after reports are finalized', () =
     type: 'image',
     document: '示例文档',
     path: 'out/example.md',
-    failures: [{ url: 'https://images.zsxq.com/example', error: 'timed out' }]
+    failures: [{ url: 'https://image.example.test/resource.png', error: 'timed out' }]
   };
   const diagnostics = report.collectFailureDiagnostics({
     imageFailureCount: 1,
     imageFailures: [resource],
     resourceFailures: [resource]
   });
-  assert.equal(diagnostics.filter((line) => line.includes('https://images.zsxq.com/example')).length, 1);
+  assert.equal(diagnostics.filter((line) => line.includes('https://image.example.test/resource.png')).length, 1);
   assert.ok(!diagnostics.some((line) => line.includes('脚本没有返回逐项图片失败原因')));
 });
 

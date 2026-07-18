@@ -245,7 +245,7 @@ class ZsxqIssue43Tests(unittest.TestCase):
             self.assertTrue((output / "00-导出报告.json").exists())
             self.assertTrue((output / ".wandao" / "reports" / f"zsxq-{report['runId']}.json").exists())
 
-    def test_resource_retry_reuses_original_markdown_path(self) -> None:
+    def test_resource_failure_does_not_turn_completed_markdown_into_a_retry_item(self) -> None:
         class FakeCdp:
             def close(self) -> None:
                 return None
@@ -319,9 +319,8 @@ class ZsxqIssue43Tests(unittest.TestCase):
             second_report = run(resume=True, task_id="job-2", image_errors=[])
 
             self.assertEqual(first_report["exportedItems"][0]["sequence"], 1)
-            self.assertEqual(len(first_report["failedItems"]), 1)
-            self.assertEqual(second_report["exportedItems"][0]["sequence"], 1)
-            self.assertEqual(first_report["exportedItems"][0]["localPath"], second_report["exportedItems"][0]["localPath"])
+            self.assertEqual(first_report["failedItems"], [])
+            self.assertEqual(second_report["exportedItems"], [])
             self.assertEqual(len([path for path in output.glob("*.md") if export_sequence_from_name(path.name)]), 1)
 
 

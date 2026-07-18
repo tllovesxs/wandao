@@ -954,7 +954,7 @@ function resumeTaskArgs(task) {
   const retryArg = providerRetryFailureArg(provider);
   const helper = window.WandaoTaskResume?.buildResumeArgs;
   if (typeof helper === 'function') {
-    return helper(task, retryArg, taskDocumentFailureCount(task));
+    return helper(task, retryArg, taskDocumentFailureCount(task), provider);
   }
   const args = Array.isArray(task?.args) ? [...task.args] : [];
   const interrupted = ['stopped', 'interrupted'].includes(String(task?.status || '').toLowerCase());
@@ -1504,7 +1504,7 @@ async function resumeTask(task) {
   const documentFailures = taskDocumentFailureCount(task);
   const shouldRetry = window.WandaoTaskResume?.shouldRetryFailureItems;
   const retryingFailures = typeof shouldRetry === 'function'
-    ? shouldRetry(task, retryArg, documentFailures)
+    ? shouldRetry(task, retryArg, documentFailures, provider)
     : Boolean(
       retryArg
       && !['stopped', 'interrupted'].includes(String(task?.status || '').toLowerCase())

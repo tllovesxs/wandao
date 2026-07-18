@@ -801,6 +801,7 @@ def open_checkpoint_from_args(
     action: str,
     *,
     default_task_id: str = "default",
+    lease_seconds: float = DEFAULT_LEASE_SECONDS,
 ) -> WandaoCheckpoint | None:
     checkpoint_file = str(getattr(args, "checkpoint_file", "") or "").strip()
     if not checkpoint_file:
@@ -810,6 +811,7 @@ def open_checkpoint_from_args(
         task_id=str(getattr(args, "checkpoint_task_id", "") or os.environ.get("WANDAO_JOB_ID") or default_task_id),
         provider_id=provider_id,
         action=action,
+        lease_seconds=lease_seconds,
     )
     if getattr(args, "reset_checkpoint", False):
         checkpoint.reset_task()

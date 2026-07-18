@@ -911,6 +911,13 @@ function providerRetryFailureArg(provider) {
   return provider.retryFailures?.arg || '--retry-failures';
 }
 
+function taskHasDeferredDocuments(task) {
+  const helper = window.WandaoTaskResume?.hasDeferredDocuments;
+  if (typeof helper === 'function') return helper(task);
+  const report = task?.report || task?.resultData || {};
+  return Array.isArray(report?.deferred) && report.deferred.length > 0;
+}
+
 function canResumeTask(task) {
   if (!task) return false;
   if (task.argsUnavailable) return false;
@@ -951,7 +958,7 @@ function resumeTaskArgs(task) {
   }
   const args = Array.isArray(task?.args) ? [...task.args] : [];
   const interrupted = ['stopped', 'interrupted'].includes(String(task?.status || '').toLowerCase());
-  if (interrupted && retryArg) return args.filter((arg) => arg !== retryArg);
+  if ((interrupted || taskHasDeferredDocuments(task)) && retryArg) return args.filter((arg) => arg !== retryArg);
   if (retryArg && taskDocumentFailureCount(task) > 0 && !args.includes(retryArg)) {
     args.push(retryArg);
   }
@@ -961,6 +968,10 @@ function resumeTaskArgs(task) {
 function taskResumeActionLabel(task) {
   const status = taskDisplayStatus(task);
   const documentFailures = taskDocumentFailureCount(task);
+  if (taskHasDeferredDocuments(task)) {
+    const count = (task.report?.deferred || task.resultData?.deferred || []).length;
+    return `继续任务（${count} 篇待处理）`;
+  }
   if ((status === 'completed' || status === 'partial') && documentFailures > 0) {
     return `重试失败文档${documentFailures > 1 ? `（${documentFailures}）` : ''}`;
   }
@@ -1497,6 +1508,7 @@ async function resumeTask(task) {
     : Boolean(
       retryArg
       && !['stopped', 'interrupted'].includes(String(task?.status || '').toLowerCase())
+      && !taskHasDeferredDocuments(task)
       && documentFailures > 0
       && args.includes(retryArg)
     );

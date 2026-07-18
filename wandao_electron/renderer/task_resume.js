@@ -4,16 +4,21 @@
     return status === 'stopped' || status === 'interrupted';
   }
 
+  function hasDeferredDocuments(task) {
+    const report = task?.report || task?.resultData || {};
+    return Array.isArray(report?.deferred) && report.deferred.length > 0;
+  }
+
   function buildResumeArgs(task, retryArg, failureCount = 0) {
     const args = Array.isArray(task?.args) ? [...task.args] : [];
-    if (isInterruptedTask(task)) return args.filter((arg) => arg !== retryArg);
+    if (isInterruptedTask(task) || hasDeferredDocuments(task)) return args.filter((arg) => arg !== retryArg);
     if (!retryArg || !Number.isFinite(Number(failureCount)) || Number(failureCount) <= 0) return args;
     if (!args.includes(retryArg)) args.push(retryArg);
     return args;
   }
 
   function shouldRetryFailureItems(task, retryArg, failureCount = 0) {
-    return Boolean(retryArg && !isInterruptedTask(task) && Number(failureCount) > 0);
+    return Boolean(retryArg && !isInterruptedTask(task) && !hasDeferredDocuments(task) && Number(failureCount) > 0);
   }
 
   function providerCheckpointFile(provider, values = {}) {
@@ -34,6 +39,7 @@
 
   const api = {
     buildResumeArgs,
+    hasDeferredDocuments,
     isInterruptedTask,
     providerCheckpointArgs,
     providerCheckpointFile,

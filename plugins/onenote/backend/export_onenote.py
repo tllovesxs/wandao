@@ -52,6 +52,8 @@ using Microsoft.Office.Interop.OneNote;
 public static class WandaoOneNoteBridge
 {
     private const int RpcCallFailed = unchecked((int)0x800706BE);
+    private const int RpcServerUnavailable = unchecked((int)0x800706BA);
+    private const int ComServerExecutionFailed = unchecked((int)0x80080005);
 
     private static bool HasPublishedFile(string outputPath)
     {
@@ -130,42 +132,55 @@ public static class WandaoOneNoteBridge
                     }
                     catch (COMException ex)
                     {
-                        if (ex.ErrorCode != RpcCallFailed)
+                        if (ex.ErrorCode == RpcCallFailed)
                         {
+                            // The call reached OneNote but the RPC channel then failed.  A
+                            // retry can duplicate a partially completed publish, so keep a
+                            // completed file when present and otherwise defer this page.
+                            bool published = HasPublishedFile(outputPath);
                             ReleaseApplication(app);
                             app = null;
-                            WritePublishResult(pageId, "failed", ex);
-                            continue;
-                        }
-                        if (HasPublishedFile(outputPath))
-                        {
-                            ReleaseApplication(app);
-                            app = null;
-                            WritePublishResult(pageId, "recovered-output", ex);
+                            WritePublishResult(pageId, published ? "recovered-output" : "failed", ex);
                             continue;
                         }
 
-                        try
+                        if (ex.ErrorCode == ComServerExecutionFailed)
                         {
-                            if (File.Exists(outputPath)) File.Delete(outputPath);
                             ReleaseApplication(app);
                             app = null;
-                            Console.WriteLine("publish-retry\t" + index + "\t" + pageId);
-                            Thread.Sleep(3000);
-                            app = new Application();
-                            app.Publish(pageId, outputPath, PublishFormat.pfMHTML, "");
-                            if (!HasPublishedFile(outputPath))
+                            WritePublishResult(pageId, "service-unavailable", ex);
+                            continue;
+                        }
+
+                        if (ex.ErrorCode == RpcServerUnavailable)
+                        {
+                            try
                             {
-                                throw new Exception("OneNote Publish retry returned without creating an MHT file.");
+                                if (File.Exists(outputPath)) File.Delete(outputPath);
+                                ReleaseApplication(app);
+                                app = null;
+                                Console.WriteLine("publish-retry\t" + index + "\t" + pageId);
+                                Thread.Sleep(10000);
+                                app = new Application();
+                                app.Publish(pageId, outputPath, PublishFormat.pfMHTML, "");
+                                if (!HasPublishedFile(outputPath))
+                                {
+                                    throw new Exception("OneNote Publish retry returned without creating an MHT file.");
+                                }
+                                WritePublishResult(pageId, "retried", ex);
                             }
-                            WritePublishResult(pageId, "retried", ex);
+                            catch (Exception retryEx)
+                            {
+                                ReleaseApplication(app);
+                                app = null;
+                                WritePublishResult(pageId, "failed", retryEx);
+                            }
+                            continue;
                         }
-                        catch (Exception retryEx)
-                        {
-                            ReleaseApplication(app);
-                            app = null;
-                            WritePublishResult(pageId, "failed", retryEx);
-                        }
+
+                        ReleaseApplication(app);
+                        app = null;
+                        WritePublishResult(pageId, "failed", ex);
                     }
                     catch (Exception ex)
                     {
@@ -912,10 +927,17 @@ def publish_mht_items(
     return results
 
 
+def is_onenote_service_unavailable(result: dict[str, str]) -> bool:
+    """Return whether OneNote itself could not be started for this page."""
+    return result.get("status") == "service-unavailable" or "0x80080005" in result.get("message", "")
+
+
 def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[TocNode]) -> dict[str, Any]:
     output = Path(args.output).expanduser().resolve() if args.output else default_output_dir()
     output.mkdir(parents=True, exist_ok=True)
-    checkpoint = open_checkpoint_from_args(args, "onenote", "export")
+    # OneNote can take several minutes to recover its COM server.  Each page
+    # still renews the lease, while the longer lease protects one slow call.
+    checkpoint = open_checkpoint_from_args(args, "onenote", "export", lease_seconds=15 * 60)
     pages_by_id = {page.id: page for page in pages}
     planner = PathPlanner(output, pages_by_id, child_page_ids(pages))
     selected = selected_pages(args, pages)
@@ -990,29 +1012,53 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
         temp_dir = tempfile.TemporaryDirectory(prefix="wandao-onenote-mht-")
         mht_root = Path(temp_dir.name)
 
+    deferred: list[dict[str, str]] = []
     try:
-        publish_items: list[tuple[TocNode, Path]] = []
-        for index, (page, _md_path) in enumerate(targets, start=1):
-            mht_path = mht_root / f"{index:04d}-{short_hash(page.id)}.mht"
-            publish_items.append((page, mht_path))
-
-        if publish_items:
-            list_path = mht_root / "publish-list.tsv"
-            emit(f"开始调用 OneNote 导出 MHT：{len(publish_items)} 篇")
-            for page, _mht_path in publish_items:
-                if checkpoint:
-                    checkpoint.start_item(f"onenote:page:{page.id}", "publish")
-            publish_results = publish_mht_items(publish_items, list_path, helper_dir=helper_dir)
-        else:
-            publish_results = {}
-
-        mht_by_id = {page.id: mht for page, mht in publish_items}
         total = len(targets)
+        if targets:
+            emit(f"开始逐页调用 OneNote 导出 MHT：{total} 篇")
         for index, (page, md_path) in enumerate(targets, start=1):
             item_key = f"onenote:page:{page.id}"
-            publish_result = publish_results.get(page.id, {"status": "failed", "message": "Missing OneNote publish result."})
+            mht_path = mht_root / f"{index:04d}-{short_hash(page.id)}.mht"
+            if checkpoint:
+                checkpoint.heartbeat()
+                checkpoint.start_item(item_key, "publish")
+            emit(
+                f"开始调用 OneNote 导出页面 MHT：{page.title}",
+                event="document.publish.started",
+                doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+            )
+            publish_result = publish_mht_items(
+                [(page, mht_path)],
+                mht_root / f"publish-{index:04d}.tsv",
+                helper_dir=helper_dir,
+            ).get(page.id, {"status": "failed", "message": "Missing OneNote publish result."})
+            error_message = publish_result["message"] or "OneNote did not create an MHT file for this page."
+
+            if is_onenote_service_unavailable(publish_result):
+                if checkpoint:
+                    checkpoint.fail_item(item_key, error_message)
+                failures.append({
+                    "id": page.id,
+                    "title": page.title,
+                    "path": str(md_path),
+                    "stage": "onenote-service",
+                    "error": error_message,
+                })
+                deferred = [
+                    {"id": remaining.id, "title": remaining.title, "path": str(remaining_path)}
+                    for remaining, remaining_path in targets[index:]
+                ]
+                emit(
+                    "OneNote 本地服务无法启动，已保留其余 "
+                    f"{len(deferred)} 篇为待续传项。请关闭并重新打开 Windows 桌面版 OneNote 后继续任务。",
+                    event="task.paused",
+                    level="error",
+                    error={"type": "OneNoteServiceUnavailable", "message": error_message},
+                )
+                break
+
             if publish_result["status"] == "failed":
-                error_message = publish_result["message"] or "OneNote did not create an MHT file for this page."
                 if checkpoint:
                     checkpoint.fail_item(item_key, error_message)
                 failures.append({
@@ -1030,23 +1076,23 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
                     error={"type": "OneNotePublishError", "message": error_message},
                 )
             else:
-                if publish_result["status"] in {"recovered-output", "retried"}:
-                    emit(
-                        f"OneNote 页面发布已恢复：{page.title}（{publish_result['status']}）",
-                        event="document.export.recovered",
-                        level="warn",
-                        doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
-                    )
-            try:
-                if publish_result["status"] != "failed":
+                try:
+                    if publish_result["status"] in {"recovered-output", "retried"}:
+                        emit(
+                            f"OneNote 页面发布已恢复：{page.title}（{publish_result['status']}）",
+                            event="document.export.recovered",
+                            level="warn",
+                            doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+                        )
                     if checkpoint:
+                        checkpoint.heartbeat()
                         checkpoint.start_item(item_key, "convert")
                     emit(
                         f"开始转换 OneNote 页面：{page.title}",
                         event="document.export.started",
                         doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
                     )
-                    stats = convert_mht_to_markdown(mht_by_id[page.id], md_path)
+                    stats = convert_mht_to_markdown(mht_path, md_path)
                     image_success += stats["images"]
                     attachment_success += stats["attachments"]
                     exported += 1
@@ -1062,27 +1108,28 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
                             "chars": stats["chars"],
                         },
                     )
-            except Exception as exc:  # noqa: BLE001 - keep exporting other pages.
-                if checkpoint:
-                    checkpoint.fail_item(item_key, str(exc))
-                failures.append({
-                    "id": page.id,
-                    "title": page.title,
-                    "path": str(md_path),
-                    "error": str(exc),
-                })
-                emit(
-                    f"OneNote 页面导出失败：{page.title}：{exc}",
-                    event="document.export.failed",
-                    level="error",
-                    doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
-                    error={"type": type(exc).__name__, "message": str(exc)},
-                )
+                except Exception as exc:  # noqa: BLE001 - keep exporting other pages.
+                    if checkpoint:
+                        checkpoint.fail_item(item_key, str(exc))
+                    failures.append({
+                        "id": page.id,
+                        "title": page.title,
+                        "path": str(md_path),
+                        "stage": "convert",
+                        "error": str(exc),
+                    })
+                    emit(
+                        f"OneNote 页面导出失败：{page.title}：{exc}",
+                        event="document.export.failed",
+                        level="error",
+                        doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+                        error={"type": type(exc).__name__, "message": str(exc)},
+                    )
             if index % max(1, args.progress_every) == 0 or index == total:
                 emit(
                     "progress "
                     f"{index}/{total} exported={exported} skipped={skipped} "
-                    f"image_success={image_success} failures={len(failures)}",
+                    f"image_success={image_success} failures={len(failures)} deferred={len(deferred)}",
                     event="task.progress",
                     progress={"current": index, "total": total},
                     stats={
@@ -1091,6 +1138,7 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
                         "imageSuccess": image_success,
                         "attachmentSuccess": attachment_success,
                         "failureCount": len(failures),
+                        "deferredCount": len(deferred),
                     },
                 )
     finally:
@@ -1104,6 +1152,7 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
         "exported": exported,
         "skipped": skipped,
         "failures": failures,
+        "deferred": deferred,
         "imageSuccess": image_success,
         "attachmentSuccess": attachment_success,
         "elapsedSeconds": round(time.time() - started, 2),

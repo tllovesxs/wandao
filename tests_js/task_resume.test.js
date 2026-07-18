@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const test = require('node:test');
 const {
   buildResumeArgs,
+  hasDeferredDocuments,
   isInterruptedTask,
   providerCheckpointArgs,
   providerCheckpointFile,
@@ -105,6 +106,17 @@ test('a real failed task still retries only its failed items when supported', ()
   const task = { status: 'failed', args: ['--resume'] };
   assert.deepEqual(buildResumeArgs(task, '--retry-failed', 2), ['--resume', '--retry-failed']);
   assert.equal(shouldRetryFailureItems(task, '--retry-failed', 2), true);
+});
+
+test('a service-paused task continues pending pages instead of narrowing to failed items', () => {
+  const task = {
+    status: 'partial',
+    args: ['--resume', '--retry-failed'],
+    report: { deferred: [{ id: 'pending-page' }] }
+  };
+  assert.equal(hasDeferredDocuments(task), true);
+  assert.deepEqual(buildResumeArgs(task, '--retry-failed', 1), ['--resume']);
+  assert.equal(shouldRetryFailureItems(task, '--retry-failed', 1), false);
 });
 
 test('the renderer loads and uses the resume helper before app startup', () => {

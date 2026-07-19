@@ -495,6 +495,86 @@ class ZsxqGroupExportTests(unittest.TestCase):
         warning = finish_checkpoint_task_safely(checkpoint, status="completed", report={"exportedDocs": 1})
         self.assertEqual(warning, "lease lost")
 
+    def test_toc_rate_limit_pause_does_not_fall_back_to_page_click(self) -> None:
+        source = {
+            "key": "column:1:123",
+            "title": "专栏条目",
+            "topicId": "123",
+            "entryUrl": "https://wx.zsxq.com/columns/123",
+        }
+        cdp = mock.Mock()
+        with mock.patch.object(
+            export_zsxq,
+            "resolve_toc_item_api",
+            side_effect=RateLimitPaused("连续 4 次 429，安全暂停"),
+        ):
+            with self.assertRaises(RateLimitPaused):
+                export_zsxq.resolve_toc_item(cdp, source, argparse.Namespace())
+
+        cdp.evaluate.assert_not_called()
+
+    def test_article_rate_limit_pause_does_not_degrade_to_preview(self) -> None:
+        source = {
+            "key": "column:1:123",
+            "title": "专栏文章",
+            "topicId": "123",
+            "rawTopic": {
+                "talk": {
+                    "text": "摘要",
+                    "article": {"article_url": "https://articles.zsxq.com/example"},
+                }
+            },
+        }
+        with mock.patch.object(
+            export_zsxq,
+            "collect_article_content",
+            side_effect=RateLimitPaused("连续 4 次 429，安全暂停"),
+        ):
+            with self.assertRaises(RateLimitPaused):
+                export_zsxq.resolve_toc_item_api(mock.Mock(), source, argparse.Namespace())
+
+    def test_link_rate_limit_pause_does_not_fall_back_to_page_export(self) -> None:
+        link = {"href": "https://t.zsxq.com/CsGBs", "text": "专栏正文链接"}
+        cdp = mock.Mock()
+        cdp.evaluate.return_value = "https://wx.zsxq.com/topic/82811424545181252"
+        with (
+            mock.patch.object(export_zsxq, "navigate_with_retry") as navigate,
+            mock.patch.object(
+                export_zsxq,
+                "find_article_url_on_topic",
+                return_value={"href": "https://wx.zsxq.com/topic/82811424545181252", "article": ""},
+            ),
+            mock.patch.object(export_zsxq, "detect_rate_limited_page", return_value={"limited": False}),
+            mock.patch.object(
+                export_zsxq,
+                "resolve_toc_item_api",
+                side_effect=RateLimitPaused("连续 4 次 429，安全暂停"),
+            ),
+        ):
+            with self.assertRaises(RateLimitPaused):
+                export_zsxq.resolve_link(cdp, link, argparse.Namespace(rate_limit_retries=0))
+
+        navigate.assert_called_once_with(cdp, link["href"], mock.ANY)
+
+    def test_long_wait_heartbeats_checkpoint_without_network_requests(self) -> None:
+        args = argparse.Namespace(
+            _checkpoint_heartbeat=mock.Mock(),
+            _checkpoint_heartbeat_interval=5,
+        )
+        clock = [0.0]
+
+        def advance(seconds: float) -> None:
+            clock[0] += seconds
+
+        with (
+            mock.patch.object(export_zsxq.time, "monotonic", side_effect=lambda: clock[0]),
+            mock.patch.object(export_zsxq.time, "sleep", side_effect=advance),
+        ):
+            export_zsxq.wait_with_stop(args, 16)
+
+        self.assertEqual(args._checkpoint_heartbeat.call_count, 3)
+
+
     def test_full_comment_api_uses_smaller_safe_batch(self) -> None:
         self.assertEqual(export_zsxq.DEFAULT_COMMENT_BATCH_SIZE, 30)
         source = inspect.getsource(export_zsxq.fetch_topic_comments_api)

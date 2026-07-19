@@ -34,6 +34,7 @@ from export_zsxq import (
     finish_checkpoint_task_safely,
     summarize_zsxq_api_failure,
     throttle_comment_request,
+    throttle_resource_request,
     inherit_completed_group_items,
     load_compatible_group_cursor,
     zsxq_group_resume_key,
@@ -296,6 +297,32 @@ class ZsxqGroupExportTests(unittest.TestCase):
             self.assertEqual(fields[name]["default"], default)
             self.assertIn("export", fields[name]["actions"])
 
+    def test_provider_defaults_disable_recursive_links_but_keep_manual_control(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "plugins" / "zsxq" / "providers"
+        column = json.loads((root / "zsxq-column" / "provider.json").read_text(encoding="utf-8"))
+        group = json.loads((root / "zsxq-group" / "provider.json").read_text(encoding="utf-8"))
+        column_fields = {field["name"]: field for field in column["fields"]}
+        group_fields = {field["name"]: field for field in group["fields"]}
+
+        self.assertEqual(column_fields["follow_link_scope"]["default"], "none")
+        self.assertEqual(column_fields["follow_link_scope"]["arg"], "--follow-link-scope")
+        self.assertEqual(column_fields["max_depth"]["default"], 1)
+        self.assertEqual(column_fields["request_delay"]["default"], 3)
+        self.assertEqual(column_fields["request_jitter"]["default"], 1)
+        self.assertFalse(group_fields["follow_group_links"]["default"])
+        self.assertEqual(group_fields["request_delay"]["default"], 3)
+        self.assertEqual(group_fields["request_jitter"]["default"], 1)
+
+    def test_direct_resource_requests_are_counted_by_type_without_extra_delay(self) -> None:
+        args = argparse.Namespace(resource_request_delay=0, resource_request_jitter=0)
+
+        throttle_resource_request(args, "image")
+        throttle_resource_request(args, "attachment")
+
+        self.assertEqual(args._resource_request_count, 2)
+        self.assertEqual(args._resource_image_request_count, 1)
+        self.assertEqual(args._resource_attachment_request_count, 1)
+
     def test_zsxq_timing_args_have_safe_floor(self) -> None:
         args = parse_args(
             [
@@ -321,6 +348,8 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(args.comment_request_delay, 3.0)
         self.assertEqual(args.comment_request_jitter, 2.0)
         self.assertEqual(args.group_page_size, 20)
+        self.assertEqual(args.follow_link_scope, "none")
+        self.assertEqual(args.max_depth, 1)
 
     def test_checkpoint_args_are_parsed(self) -> None:
         args = parse_args(

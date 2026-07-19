@@ -369,6 +369,30 @@ def throttle_comment_request(args: argparse.Namespace | None) -> None:
     args._comment_request_count = int(getattr(args, "_comment_request_count", 0) or 0) + 1
 
 
+def throttle_resource_request(args: argparse.Namespace | None, resource_type: str) -> None:
+    """Keep image and attachment downloads from becoming an uncounted burst.
+
+    The browser/API flow is already serialized by ``throttle_request``. Asset
+    downloads used to bypass that guard entirely, so an image-heavy post could
+    issue a direct HTTP burst after its Markdown had been parsed. Keep the
+    first asset responsive, then add a short gap between later assets.
+    """
+    if not args:
+        return
+    delay = max(0.0, float(getattr(args, "resource_request_delay", 0.25) or 0))
+    jitter = max(0.0, float(getattr(args, "resource_request_jitter", 0.25) or 0))
+    previous = float(getattr(args, "_last_resource_request_at", 0.0) or 0.0)
+    if previous > 0 and (delay > 0 or jitter > 0):
+        minimum_gap = delay + (random.uniform(0, jitter) if jitter else 0)
+        remaining = minimum_gap - (time.monotonic() - previous)
+        if remaining > 0:
+            wait_with_stop(args, remaining)
+    args._last_resource_request_at = time.monotonic()
+    args._resource_request_count = int(getattr(args, "_resource_request_count", 0) or 0) + 1
+    count_key = f"_resource_{resource_type}_request_count"
+    setattr(args, count_key, int(getattr(args, count_key, 0) or 0) + 1)
+
+
 def detect_rate_limited_page(cdp: CDPClient) -> dict[str, Any]:
     try:
         return cdp.evaluate(
@@ -1892,7 +1916,13 @@ def fetch_group_topics_page(
     return result
 
 
-def collect_group_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace | None = None) -> dict[str, Any]:
+def collect_group_toc(
+    cdp: CDPClient,
+    entry_url: str,
+    args: argparse.Namespace | None = None,
+    *,
+    navigate: bool = True,
+) -> dict[str, Any]:
     group_id = group_id_from_url(entry_url)
     if not group_id:
         raise ExportError("无法从知识星球 group URL 中识别星球 ID")
@@ -1900,7 +1930,8 @@ def collect_group_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace |
     count = normalize_group_page_size(args)
     limit = normalize_group_limit(args)
     max_pages = normalize_group_max_pages(args, limit, count)
-    navigate_with_retry(cdp, entry_url, args)
+    if navigate:
+        navigate_with_retry(cdp, entry_url, args)
 
     topics: list[dict[str, Any]] = []
     seen_topic_ids: set[str] = set()
@@ -1967,8 +1998,15 @@ def collect_group_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace |
     }
 
 
-def collect_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace | None = None) -> dict[str, Any]:
-    navigate_with_retry(cdp, entry_url, args)
+def collect_toc(
+    cdp: CDPClient,
+    entry_url: str,
+    args: argparse.Namespace | None = None,
+    *,
+    navigate: bool = True,
+) -> dict[str, Any]:
+    if navigate:
+        navigate_with_retry(cdp, entry_url, args)
     wait_eval(
         cdp,
         """(() => ({
@@ -2797,7 +2835,7 @@ def is_zsxq_article_url(url: str) -> bool:
 
 
 def should_follow_zsxq_link(link: dict[str, Any], args: argparse.Namespace | None = None) -> bool:
-    scope = str(getattr(args, "follow_link_scope", "all") if args else "all").strip() or "all"
+    scope = str(getattr(args, "follow_link_scope", "none") if args else "none").strip() or "none"
     href = str(link.get("href") or "").strip()
     if scope == "none":
         return False
@@ -2929,7 +2967,8 @@ def guess_extension(url: str, content_type: str | None) -> str:
     return "png"
 
 
-def download_image(url: str, dest_dir: Path, timeout: int) -> Path:
+def download_image(url: str, dest_dir: Path, timeout: int, args: argparse.Namespace | None = None) -> Path:
+    throttle_resource_request(args, "image")
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://wx.zsxq.com/"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data = response.read()
@@ -2962,7 +3001,8 @@ def guess_file_extension(url: str, content_type: str | None) -> str:
     return "bin"
 
 
-def download_file(url: str, filename: str, dest_dir: Path, timeout: int) -> Path:
+def download_file(url: str, filename: str, dest_dir: Path, timeout: int, args: argparse.Namespace | None = None) -> Path:
+    throttle_resource_request(args, "attachment")
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://wx.zsxq.com/"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data = response.read()
@@ -3005,7 +3045,7 @@ def localize_images(
                     continue
             if checkpoint and resource_key:
                 checkpoint.start_resource(resource_key)
-            target = download_image(url, md_path.parent / "assets", timeout)
+            target = download_image(url, md_path.parent / "assets", timeout, args=args)
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
             if checkpoint and resource_key:
                 checkpoint.complete_resource(resource_key, local_path=str(target))
@@ -3047,7 +3087,7 @@ def localize_files(
                     continue
             if checkpoint and resource_key:
                 checkpoint.start_resource(resource_key)
-            target = download_file(url, file_item.get("name") or "知识星球附件", md_path.parent / "assets" / "files", timeout)
+            target = download_file(url, file_item.get("name") or "知识星球附件", md_path.parent / "assets" / "files", timeout, args=args)
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
             if checkpoint and resource_key:
                 checkpoint.complete_resource(resource_key, local_path=str(target))
@@ -3461,6 +3501,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     args.request_jitter = max(0.0, float(getattr(args, "request_jitter", 0.6) or 0))
     args.comment_request_delay = max(0.0, float(getattr(args, "comment_request_delay", 3.0) or 0))
     args.comment_request_jitter = max(0.0, float(getattr(args, "comment_request_jitter", 2.0) or 0))
+    args.resource_request_delay = max(0.0, float(getattr(args, "resource_request_delay", 0.25) or 0))
+    args.resource_request_jitter = max(0.0, float(getattr(args, "resource_request_jitter", 0.25) or 0))
     args.rate_limit_pause = max(30.0, float(getattr(args, "rate_limit_pause", 60) or 60))
     args.rate_limit_retries = max(0, int(getattr(args, "rate_limit_retries", 3) or 0))
     args.rate_limit_max_events = max(1, int(getattr(args, "rate_limit_max_events", 4) or 4))
@@ -3471,8 +3513,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     args.long_sleep_every = max(0, int(getattr(args, "long_sleep_every", 12) or 0))
     args.long_sleep_min = max(0.0, float(getattr(args, "long_sleep_min", 180) or 0))
     args.long_sleep_max = max(args.long_sleep_min, float(getattr(args, "long_sleep_max", 240) or 0))
-    if getattr(args, "follow_link_scope", "all") not in {"all", "articles", "none"}:
-        args.follow_link_scope = "all"
+    if getattr(args, "follow_link_scope", "none") not in {"all", "articles", "none"}:
+        args.follow_link_scope = "none"
     args.follow_group_links = bool(getattr(args, "follow_group_links", False))
     # Claim exactly once, before Chrome/login work.  Previously a Group run
     # claimed once with generic metadata and again after parsing the Group;
@@ -3501,12 +3543,14 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     chrome_proc: subprocess.Popen[Any] | None = None
     try:
         cdp, chrome_proc = connect_browser(args, entry_url)
+        entry_page_loaded = False
         auth_file = auth_path_from_args(args)
         if auth_file.exists() and not args.skip_auth_load:
             cookie_count = load_auth_state(cdp, auth_file)
             emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
             navigate_with_retry(cdp, entry_url, args)
             time.sleep(2)
+            entry_page_loaded = True
 
         emit(args, "Chrome page is ready. If login is required, finish login in Chrome.")
         if args.wait_login:
@@ -3535,7 +3579,9 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     group_page_size = normalize_group_page_size(args)
                     group_max_pages = normalize_group_max_pages(args, args.limit, group_page_size)
                     group_resume_key = zsxq_group_resume_key(group_id, group_scope, output)
-                    navigate_with_retry(cdp, entry_url, args)
+                    if not entry_page_loaded:
+                        navigate_with_retry(cdp, entry_url, args)
+                        entry_page_loaded = True
                     toc = {
                         "href": entry_url,
                         "title": f"知识星球 {group_scope_title(group_scope)}",
@@ -3553,7 +3599,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         level="info",
                     )
                 else:
-                    toc = collect_toc(cdp, entry_url, args)
+                    toc = collect_toc(cdp, entry_url, args, navigate=not entry_page_loaded)
+                    entry_page_loaded = True
                     toc_items = select_toc_items(toc, args)
                     use_toc = bool(toc_items)
                     emit(
@@ -4751,10 +4798,15 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             "attachmentFailureCount": sum(len(item["failures"]) for item in file_failures),
             "localLinkRewriteFiles": local_link_rewrite_count,
             "requestCount": int(getattr(args, "_request_count", 0) or 0),
+            "resourceRequestCount": int(getattr(args, "_resource_request_count", 0) or 0),
+            "imageRequestCount": int(getattr(args, "_resource_image_request_count", 0) or 0),
+            "attachmentRequestCount": int(getattr(args, "_resource_attachment_request_count", 0) or 0),
             "rateLimitEvents": int(getattr(args, "_rate_limit_total_events", 0) or 0),
             "rateLimitCurrentStreak": int(getattr(args, "_rate_limit_events", 0) or 0),
             "requestDelaySeconds": float(getattr(args, "request_delay", 0) or 0),
             "requestJitterSeconds": float(getattr(args, "request_jitter", 0) or 0),
+            "resourceRequestDelaySeconds": float(getattr(args, "resource_request_delay", 0) or 0),
+            "resourceRequestJitterSeconds": float(getattr(args, "resource_request_jitter", 0) or 0),
             "commentRequestDelaySeconds": float(getattr(args, "comment_request_delay", 0) or 0),
             "commentRequestJitterSeconds": float(getattr(args, "comment_request_jitter", 0) or 0),
             "groupPageDelaySeconds": float(getattr(args, "group_page_delay", 0) or 0),
@@ -4844,16 +4896,22 @@ def scan_toc_entry(args: argparse.Namespace) -> dict[str, Any]:
     entry_url = normalize_entry_url(args.entry_url)
     cdp, chrome_proc = connect_browser(args, entry_url)
     try:
+        entry_page_loaded = False
         auth_file = auth_path_from_args(args)
         if auth_file.exists() and not args.skip_auth_load:
             cookie_count = load_auth_state(cdp, auth_file)
             emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
             navigate_with_retry(cdp, entry_url, args)
             time.sleep(2)
+            entry_page_loaded = True
         emit(args, "开始读取知识星球目录。")
         if args.wait_login:
             input("Press Enter after the ZSXQ page is logged in and visible...")
-        toc = collect_group_toc(cdp, entry_url, args) if is_group_entry_url(entry_url) else collect_toc(cdp, entry_url, args)
+        toc = (
+            collect_group_toc(cdp, entry_url, args, navigate=not entry_page_loaded)
+            if is_group_entry_url(entry_url)
+            else collect_toc(cdp, entry_url, args, navigate=not entry_page_loaded)
+        )
         selected = select_toc_items(toc, args)
         toc["selectedTopics"] = len(selected)
         return toc
@@ -5364,12 +5422,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--group-page-delay", type=float, default=4.0, help="Extra seconds to wait between ZSXQ group topic list pages")
     parser.add_argument("--group-page-jitter", type=float, default=4.0, help="Extra random seconds added to --group-page-delay")
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of source links to export. 0 means no limit")
-    parser.add_argument("--max-depth", type=int, default=2, help="Recursion depth for ZSXQ links inside exported pages")
+    parser.add_argument("--max-depth", type=int, default=1, help="Recursion depth for manually enabled ZSXQ links inside exported pages")
     parser.add_argument(
         "--follow-link-scope",
         choices=("all", "articles", "none"),
-        default="all",
-        help="Which ZSXQ links to follow recursively: all links, articles.zsxq.com only, or none",
+        default="none",
+        help="Which ZSXQ links to follow recursively: none by default, articles.zsxq.com only, or all links",
     )
     parser.add_argument(
         "--follow-group-links",
@@ -5384,6 +5442,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--request-delay", type=float, default=DEFAULT_REQUEST_DELAY, help="Seconds to wait before each ZSXQ navigation/API request")
     parser.add_argument("--request-jitter", type=float, default=DEFAULT_REQUEST_JITTER, help="Extra random seconds added to request delay")
+    parser.add_argument("--resource-request-delay", type=float, default=0.25, help="Minimum seconds between direct image or attachment downloads")
+    parser.add_argument("--resource-request-jitter", type=float, default=0.25, help="Extra random seconds between direct image or attachment downloads")
     parser.add_argument("--rate-limit-pause", type=float, default=60, help="Base seconds for progressive 429/1059 long sleeps before retrying")
     parser.add_argument("--rate-limit-retries", type=int, default=3, help="Maximum retries after progressive 429/1059 long sleeps")
     parser.add_argument(

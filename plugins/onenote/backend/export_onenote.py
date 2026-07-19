@@ -937,7 +937,10 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
     output.mkdir(parents=True, exist_ok=True)
     # OneNote can take several minutes to recover its COM server.  Each page
     # still renews the lease, while the longer lease protects one slow call.
-    checkpoint = open_checkpoint_from_args(args, "onenote", "export", lease_seconds=15 * 60)
+    checkpoint = open_checkpoint_from_args(args, "onenote", "export")
+    if checkpoint:
+        checkpoint.lease_seconds = 15 * 60
+
     pages_by_id = {page.id: page for page in pages}
     planner = PathPlanner(output, pages_by_id, child_page_ids(pages))
     selected = selected_pages(args, pages)

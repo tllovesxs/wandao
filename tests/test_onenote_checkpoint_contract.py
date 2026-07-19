@@ -52,10 +52,13 @@ class OneNoteCheckpointContractTests(unittest.TestCase):
                 "--doc-id", page.id,
                 "--resume",
             ])
-            with mock.patch.object(onenote, "open_checkpoint_from_args", return_value=checkpoint):
+            with mock.patch.object(onenote, "open_checkpoint_from_args", return_value=checkpoint) as open_checkpoint:
                 report = onenote.export_onenote(args, [page], [page])
 
         self.assertEqual(report["exported"], 0)
+        open_checkpoint.assert_called_once_with(args, "onenote", "export")
+        # Keep slow COM recovery safe without requiring the newer core API.
+        self.assertEqual(checkpoint.lease_seconds, 15 * 60)
         self.assertEqual(report["skipped"], 1)
         self.assertTrue(checkpoint.closed)
         self.assertEqual(len(checkpoint.upserts), 1)

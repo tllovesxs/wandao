@@ -55,6 +55,20 @@ test('every bundled provider with an old HTML template resolves legacy parameter
   }
 });
 
+test('knowledge-star legacy templates explicitly declare their required entry URL', () => {
+  const repoRoot = path.resolve(__dirname, '..');
+  for (const providerId of ['zsxq-column', 'zsxq-group']) {
+    const manifestPath = path.join(repoRoot, 'plugins', 'zsxq', 'providers', providerId, 'provider.json');
+    const provider = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    assert.equal(provider.urlParam, '--entry-url', `${providerId} must be compatible with desktop releases that infer template URL fields`);
+    assert.equal(provider.noUrl, false, `${providerId} login must require an entry URL`);
+    assert.deepEqual(resolveLegacyTemplateConfig(provider), {
+      urlParam: '--entry-url',
+      outputParam: '--output',
+      noUrl: false
+    });
+  }
+});
 test('main process applies compatibility after validating Provider v1 fields', () => {
   const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'wandao_electron', 'main.js'), 'utf8');
   assert.match(mainSource, /Object\.assign\(provider, resolveLegacyTemplateConfig\(raw\)\)/);

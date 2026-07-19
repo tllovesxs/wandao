@@ -11,6 +11,8 @@
   "trustLevel": "official",
   "status": "stable",
   "templateId": "template-zsxq-group",
+  "urlParam": "--entry-url",
+  "noUrl": false,
   "defaults": { "output": "exports/zsxq-group" },
   "capabilities": { "export": true, "import": false, "guide": false, "login": true, "scanToc": false, "images": true, "attachments": true, "tree": false, "batch": true, "retryFailures": true },
   "checkpoint": { "supported": true, "strategy": "cursor", "resourceTracking": true },

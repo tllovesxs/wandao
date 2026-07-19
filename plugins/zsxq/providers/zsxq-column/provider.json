@@ -11,6 +11,8 @@
   "trustLevel": "official",
   "status": "stable",
   "templateId": "template-zsxq-column",
+  "urlParam": "--entry-url",
+  "noUrl": false,
   "defaults": { "output": "exports/zsxq-column" },
   "capabilities": { "export": true, "import": false, "guide": false, "login": true, "scanToc": true, "images": true, "attachments": true, "tree": true, "batch": true, "retryFailures": true },
   "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": true },

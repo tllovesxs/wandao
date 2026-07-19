@@ -152,15 +152,60 @@ def remove_previous_output(output_dir: pathlib.Path) -> None:
 
 
 def cleanup_runtime(output_dir: pathlib.Path) -> None:
-    for folder_name in ("__pycache__", "test", "tests"):
+    for folder_name in ("__pycache__", ".pytest_cache", "test", "tests"):
         for folder in output_dir.rglob(folder_name):
             if folder.is_dir():
                 shutil.rmtree(folder, ignore_errors=True)
-    for pyc in output_dir.rglob("*.pyc"):
-        try:
-            pyc.unlink()
-        except OSError:
-            pass
+    for pattern in ("*.pyc", "*.pyo"):
+        for compiled_file in output_dir.rglob(pattern):
+            try:
+                compiled_file.unlink()
+            except OSError:
+                pass
+
+def remove_build_only_runtime_files(output_dir: pathlib.Path) -> None:
+    """Remove installation tooling after dependencies have been installed and verified.
+
+    The bundled interpreter never installs packages on an end user's machine.
+    Keeping pip, setuptools and ensurepip in a release only increases the
+    installer size and exposes unnecessary package-management entry points.
+    """
+    for relative_dir in ("Lib/ensurepip", "lib/python3.11/ensurepip"):
+        shutil.rmtree(output_dir / relative_dir, ignore_errors=True)
+
+    for site_packages in output_dir.rglob("site-packages"):
+        if not site_packages.is_dir():
+            continue
+        for name in ("pip", "setuptools", "pkg_resources"):
+            shutil.rmtree(site_packages / name, ignore_errors=True)
+        for pattern in ("pip-*.dist-info", "setuptools-*.dist-info"):
+            for metadata in site_packages.glob(pattern):
+                shutil.rmtree(metadata, ignore_errors=True)
+
+    for scripts_dir in (output_dir / "Scripts", output_dir / "bin"):
+        if not scripts_dir.is_dir():
+            continue
+        for pattern in ("pip*", "easy_install*"):
+            for script in scripts_dir.glob(pattern):
+                if script.is_file() or script.is_symlink():
+                    script.unlink(missing_ok=True)
+
+
+def verify_runtime_is_release_only(output_dir: pathlib.Path) -> None:
+    forbidden = []
+    for relative_dir in ("Lib/ensurepip", "lib/python3.11/ensurepip"):
+        candidate = output_dir / relative_dir
+        if candidate.exists():
+            forbidden.append(str(candidate.relative_to(output_dir)))
+    for site_packages in output_dir.rglob("site-packages"):
+        for name in ("pip", "setuptools", "pkg_resources"):
+            if (site_packages / name).exists():
+                forbidden.append(str((site_packages / name).relative_to(output_dir)))
+        for pattern in ("pip-*.dist-info", "setuptools-*.dist-info"):
+            forbidden.extend(str(path.relative_to(output_dir)) for path in site_packages.glob(pattern))
+    if forbidden:
+        raise SystemExit(f"运行时仍包含仅构建期工具：{', '.join(sorted(forbidden))}")
+
 
 
 def python_executable(output_dir: pathlib.Path, target: str) -> pathlib.Path:
@@ -226,6 +271,8 @@ def prepare_runtime(target: str, output_dir: pathlib.Path, cache_dir: pathlib.Pa
     install_requirements(py, PROJECT_DIR / "requirements.txt")
     cleanup_runtime(output_dir)
     verify_runtime(py)
+    remove_build_only_runtime_files(output_dir)
+    verify_runtime_is_release_only(output_dir)
     write_build_info(output_dir, target, asset_name)
     print(f"Prepared bundled Python runtime: {output_dir}")
 

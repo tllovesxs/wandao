@@ -2025,6 +2025,7 @@ ipcMain.handle('get-app-path', async () => {
   const userData = app.getPath('userData');
   return {
     appPath: app.getAppPath(),
+    appVersion: PROJECT_INFO.version,
     userData,
     dataRoot: userData,
     projectRoot: pythonLibraryDir()

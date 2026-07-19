@@ -14,10 +14,14 @@ function firstFieldArg(fields, predicate) {
 }
 
 function legacyUrlParam(fields) {
-  return firstFieldArg(fields, (field) => (
-    LEGACY_URL_FIELD_NAME.test(String(field.name || ''))
-    || /(?:^|-)url(?:$|-)/i.test(String(field.arg || ''))
-  ));
+  return firstFieldArg(fields, (field) => {
+    const type = String(field.type || '').toLowerCase();
+    if (type && type !== 'text' && type !== 'url') return false;
+    return (
+      LEGACY_URL_FIELD_NAME.test(String(field.name || ''))
+      || /(?:^|-)url(?:$|-)/i.test(String(field.arg || ''))
+    );
+  });
 }
 
 function legacyOutputParam(fields) {

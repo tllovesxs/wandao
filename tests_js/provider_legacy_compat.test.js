@@ -11,6 +11,14 @@ test('maps Plugin v1 URL and output fields for legacy templates', () => {
   ] }), { urlParam: '--wiki-url', outputParam: '--output', noUrl: false });
 });
 
+test('does not confuse a select field containing link in its name with the URL input', () => {
+  assert.deepEqual(resolveLegacyTemplateConfig({ fields: [
+    { name: 'entry_url', type: 'text', arg: '--entry-url' },
+    { name: 'follow_link_scope', type: 'select', arg: '--follow-link-scope' },
+    { name: 'output', type: 'directory', arg: '--output' }
+  ] }), { urlParam: '--entry-url', outputParam: '--output', noUrl: false });
+});
+
 test('preserves explicit legacy settings and recognizes no-URL providers', () => {
   assert.deepEqual(resolveLegacyTemplateConfig({
     urlParam: '--entry-url', outputParam: '--destination', noUrl: false,

@@ -22,6 +22,10 @@
     { "name": "incremental", "label": "增量导出", "type": "checkbox", "arg": "--incremental", "default": true, "advanced": true, "actions": ["export"] },
     { "name": "update_existing", "label": "更新已有文档", "type": "checkbox", "arg": "--update-existing", "default": false, "advanced": true, "actions": ["export"] },
     { "name": "retry_failed", "label": "只重试失败项", "type": "checkbox", "arg": "--retry-failed", "default": false, "advanced": true, "actions": ["export"] },
+    { "name": "follow_link_scope", "label": "正文内链接跟进", "type": "select", "arg": "--follow-link-scope", "default": "none", "options": [{ "value": "none", "label": "不自动跟进（推荐）" }, { "value": "articles", "label": "仅文章正文链接" }, { "value": "all", "label": "所有知识星球链接（较易触发风控）" }], "advanced": true, "actions": ["export"] },
+    { "name": "max_depth", "label": "正文链接最大跟进层数", "type": "number", "arg": "--max-depth", "default": 1, "min": 0, "advanced": true, "actions": ["export"] },
+    { "name": "request_delay", "label": "请求延迟秒", "type": "number", "arg": "--request-delay", "default": 3, "min": 1, "step": 0.1, "advanced": true, "actions": ["export"] },
+    { "name": "request_jitter", "label": "随机浮动秒", "type": "number", "arg": "--request-jitter", "default": 1, "min": 0, "step": 0.1, "advanced": true, "actions": ["export"] },
     { "name": "include_comments", "label": "导出可见评论", "type": "checkbox", "arg": "--include-comments", "default": false, "advanced": true, "actions": ["export"] },
     { "name": "download_files", "label": "下载附件", "type": "checkbox", "arg": "--download-files", "default": false, "advanced": true, "actions": ["export"] }
   ],

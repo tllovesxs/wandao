@@ -34,6 +34,7 @@ from export_zsxq import (
     finish_checkpoint_task_safely,
     summarize_zsxq_api_failure,
     throttle_comment_request,
+    throttle_resource_request,
     inherit_completed_group_items,
     load_compatible_group_cursor,
     zsxq_group_resume_key,
@@ -296,6 +297,32 @@ class ZsxqGroupExportTests(unittest.TestCase):
             self.assertEqual(fields[name]["default"], default)
             self.assertIn("export", fields[name]["actions"])
 
+    def test_provider_defaults_disable_recursive_links_but_keep_manual_control(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "plugins" / "zsxq" / "providers"
+        column = json.loads((root / "zsxq-column" / "provider.json").read_text(encoding="utf-8"))
+        group = json.loads((root / "zsxq-group" / "provider.json").read_text(encoding="utf-8"))
+        column_fields = {field["name"]: field for field in column["fields"]}
+        group_fields = {field["name"]: field for field in group["fields"]}
+
+        self.assertEqual(column_fields["follow_link_scope"]["default"], "none")
+        self.assertEqual(column_fields["follow_link_scope"]["arg"], "--follow-link-scope")
+        self.assertEqual(column_fields["max_depth"]["default"], 1)
+        self.assertEqual(column_fields["request_delay"]["default"], 3)
+        self.assertEqual(column_fields["request_jitter"]["default"], 1)
+        self.assertFalse(group_fields["follow_group_links"]["default"])
+        self.assertEqual(group_fields["request_delay"]["default"], 3)
+        self.assertEqual(group_fields["request_jitter"]["default"], 1)
+
+    def test_direct_resource_requests_are_counted_by_type_without_extra_delay(self) -> None:
+        args = argparse.Namespace(resource_request_delay=0, resource_request_jitter=0)
+
+        throttle_resource_request(args, "image")
+        throttle_resource_request(args, "attachment")
+
+        self.assertEqual(args._resource_request_count, 2)
+        self.assertEqual(args._resource_image_request_count, 1)
+        self.assertEqual(args._resource_attachment_request_count, 1)
+
     def test_zsxq_timing_args_have_safe_floor(self) -> None:
         args = parse_args(
             [
@@ -321,6 +348,8 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(args.comment_request_delay, 3.0)
         self.assertEqual(args.comment_request_jitter, 2.0)
         self.assertEqual(args.group_page_size, 20)
+        self.assertEqual(args.follow_link_scope, "none")
+        self.assertEqual(args.max_depth, 1)
 
     def test_checkpoint_args_are_parsed(self) -> None:
         args = parse_args(
@@ -494,6 +523,86 @@ class ZsxqGroupExportTests(unittest.TestCase):
         checkpoint.complete_task.side_effect = export_zsxq.CheckpointLeaseLostError("lease lost")
         warning = finish_checkpoint_task_safely(checkpoint, status="completed", report={"exportedDocs": 1})
         self.assertEqual(warning, "lease lost")
+
+    def test_toc_rate_limit_pause_does_not_fall_back_to_page_click(self) -> None:
+        source = {
+            "key": "column:1:123",
+            "title": "专栏条目",
+            "topicId": "123",
+            "entryUrl": "https://wx.zsxq.com/columns/123",
+        }
+        cdp = mock.Mock()
+        with mock.patch.object(
+            export_zsxq,
+            "resolve_toc_item_api",
+            side_effect=RateLimitPaused("连续 4 次 429，安全暂停"),
+        ):
+            with self.assertRaises(RateLimitPaused):
+                export_zsxq.resolve_toc_item(cdp, source, argparse.Namespace())
+
+        cdp.evaluate.assert_not_called()
+
+    def test_article_rate_limit_pause_does_not_degrade_to_preview(self) -> None:
+        source = {
+            "key": "column:1:123",
+            "title": "专栏文章",
+            "topicId": "123",
+            "rawTopic": {
+                "talk": {
+                    "text": "摘要",
+                    "article": {"article_url": "https://articles.zsxq.com/example"},
+                }
+            },
+        }
+        with mock.patch.object(
+            export_zsxq,
+            "collect_article_content",
+            side_effect=RateLimitPaused("连续 4 次 429，安全暂停"),
+        ):
+            with self.assertRaises(RateLimitPaused):
+                export_zsxq.resolve_toc_item_api(mock.Mock(), source, argparse.Namespace())
+
+    def test_link_rate_limit_pause_does_not_fall_back_to_page_export(self) -> None:
+        link = {"href": "https://t.zsxq.com/CsGBs", "text": "专栏正文链接"}
+        cdp = mock.Mock()
+        cdp.evaluate.return_value = "https://wx.zsxq.com/topic/82811424545181252"
+        with (
+            mock.patch.object(export_zsxq, "navigate_with_retry") as navigate,
+            mock.patch.object(
+                export_zsxq,
+                "find_article_url_on_topic",
+                return_value={"href": "https://wx.zsxq.com/topic/82811424545181252", "article": ""},
+            ),
+            mock.patch.object(export_zsxq, "detect_rate_limited_page", return_value={"limited": False}),
+            mock.patch.object(
+                export_zsxq,
+                "resolve_toc_item_api",
+                side_effect=RateLimitPaused("连续 4 次 429，安全暂停"),
+            ),
+        ):
+            with self.assertRaises(RateLimitPaused):
+                export_zsxq.resolve_link(cdp, link, argparse.Namespace(rate_limit_retries=0))
+
+        navigate.assert_called_once_with(cdp, link["href"], mock.ANY)
+
+    def test_long_wait_heartbeats_checkpoint_without_network_requests(self) -> None:
+        args = argparse.Namespace(
+            _checkpoint_heartbeat=mock.Mock(),
+            _checkpoint_heartbeat_interval=5,
+        )
+        clock = [0.0]
+
+        def advance(seconds: float) -> None:
+            clock[0] += seconds
+
+        with (
+            mock.patch.object(export_zsxq.time, "monotonic", side_effect=lambda: clock[0]),
+            mock.patch.object(export_zsxq.time, "sleep", side_effect=advance),
+        ):
+            export_zsxq.wait_with_stop(args, 16)
+
+        self.assertEqual(args._checkpoint_heartbeat.call_count, 3)
+
 
     def test_full_comment_api_uses_smaller_safe_batch(self) -> None:
         self.assertEqual(export_zsxq.DEFAULT_COMMENT_BATCH_SIZE, 30)

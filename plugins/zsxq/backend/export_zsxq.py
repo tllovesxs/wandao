@@ -311,10 +311,23 @@ def wait_eval(
 
 
 def wait_with_stop(args: argparse.Namespace | None, seconds: float) -> None:
-    deadline = time.time() + max(0, seconds)
-    while time.time() < deadline:
+    """Sleep responsively and keep a claimed checkpoint alive during long pauses."""
+    deadline = time.monotonic() + max(0, seconds)
+    heartbeat = getattr(args, "_checkpoint_heartbeat", None) if args else None
+    heartbeat_interval = max(
+        5.0,
+        float(getattr(args, "_checkpoint_heartbeat_interval", 30.0) or 30.0),
+    ) if args else 30.0
+    next_heartbeat = time.monotonic() + heartbeat_interval
+    while time.monotonic() < deadline:
         check_stopped(args)
-        time.sleep(min(1.0, deadline - time.time()))
+        now = time.monotonic()
+        if callable(heartbeat) and now >= next_heartbeat:
+            # Let a real lease-loss error propagate. Continuing after another
+            # run takes over a checkpoint would corrupt resume state.
+            heartbeat()
+            next_heartbeat = now + heartbeat_interval
+        time.sleep(min(1.0, deadline - now))
 
 
 def format_duration(seconds: float | int | None) -> str:
@@ -2026,7 +2039,7 @@ def resolve_toc_item(cdp: CDPClient, source: dict[str, Any], args: argparse.Name
     if source.get("topicId") or source.get("topicUid"):
         try:
             return resolve_toc_item_api(cdp, source, args)
-        except (ExportStopped, SkipDocument):
+        except (ExportStopped, SkipDocument, RateLimitPaused):
             raise
         except Exception as exc:
             if str(source.get("key") or "").startswith("group:"):
@@ -2705,7 +2718,7 @@ def resolve_toc_item_api(cdp: CDPClient, source: dict[str, Any], args: argparse.
             article_content["contentCompleteness"] = "full"
             article_content["previewArticleUrl"] = article_url
             return article_content
-        except (ExportStopped, SkipDocument):
+        except (ExportStopped, SkipDocument, RateLimitPaused):
             raise
         except Exception as exc:
             emit(args, f"知识星球文章页读取失败，保留主题摘要：{source.get('title') or topic_id} ({exc})", event="log.message", level="warn")
@@ -2832,7 +2845,7 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
                 content["topicUrl"] = content.get("topicUrl") or topic_url
                 content["sourceText"] = link.get("text") or href
                 return content
-            except (ExportStopped, SkipDocument):
+            except (ExportStopped, SkipDocument, RateLimitPaused):
                 raise
             except Exception as exc:
                 emit(
@@ -3480,6 +3493,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     "resumeKey": zsxq_group_resume_key(task_group_id, task_group_scope, output),
                 })
         checkpoint.start_task(task_metadata)
+        # 429/1059 backoff can intentionally exceed the five-minute task lease.
+        # Heartbeat from wait_with_stop keeps the existing claim valid without
+        # issuing any additional requests to Knowledge Planet.
+        args._checkpoint_heartbeat = checkpoint.heartbeat
     cdp: CDPClient | None = None
     chrome_proc: subprocess.Popen[Any] | None = None
     try:
@@ -4813,6 +4830,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             finish_checkpoint_task_safely(checkpoint, status="failed", error=str(exc))
         raise
     finally:
+        if hasattr(args, "_checkpoint_heartbeat"):
+            delattr(args, "_checkpoint_heartbeat")
         if checkpoint:
             checkpoint.close()
         if cdp:

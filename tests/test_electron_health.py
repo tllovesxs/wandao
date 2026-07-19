@@ -232,8 +232,11 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertNotIn("CSC_LINK:", workflow)
         self.assertIn("actions/attest-build-provenance", workflow)
         self.assertIn("Generate release SBOM", workflow)
-        self.assertIn("release-artifacts/SHA256SUMS", workflow)
-        self.assertIn("release-artifacts/wandao.spdx.json", workflow)
+        release_files = workflow.split("files: |", 1)[1]
+        self.assertIn("release-artifacts/*.exe", release_files)
+        self.assertIn("release-artifacts/*.zip", release_files)
+        self.assertNotIn("release-artifacts/SHA256SUMS", release_files)
+        self.assertNotIn("release-artifacts/wandao.spdx.json", release_files)
 
     def test_bootstrap_node_runtime_is_pinned_and_verified(self) -> None:
         powershell = read_text("start-wandao.ps1")

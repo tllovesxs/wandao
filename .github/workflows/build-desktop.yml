@@ -181,11 +181,7 @@ jobs:
           name: Wandao ${{ github.ref_name }}
           generate_release_notes: true
           make_latest: true
-          # Checksums and the SBOM must travel with the release assets so users
-          # can verify downloads without first locating a CI run. Provenance is
-          # additionally published through GitHub artifact attestation above.
+          # Keep the public release focused on the two supported desktop installers.
           files: |
             release-artifacts/*.exe
             release-artifacts/*.zip
-            release-artifacts/SHA256SUMS
-            release-artifacts/wandao.spdx.json

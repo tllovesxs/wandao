@@ -750,6 +750,14 @@ function activeToolLabel() {
   return active?.textContent?.trim() || TOOLS[currentTool]?.title || currentTool || '未知功能';
 }
 
+function activePluginVersionLabel() {
+  const provider = TOOLS[currentTool];
+  if (!provider?.pluginId) return '主程序内置功能';
+  return provider.pluginVersion
+    ? `${provider.pluginId} v${provider.pluginVersion}`
+    : `${provider.pluginId}（版本未知）`;
+}
+
 async function copyDeveloperReport() {
   let paths = appPaths || {};
   if (!paths.userData && window.electronAPI.getAppPath) {
@@ -768,8 +776,10 @@ async function copyDeveloperReport() {
     `生成时间：${formatUserDateTime(new Date())}`,
     `当前功能：${activeToolLabel()}`,
     `当前工具 ID：${currentTool || '-'}`,
+    `Wandao 版本：${paths.appVersion || '未知'}`,
     `系统平台：${navigator.platform || '-'}`,
     `浏览器内核：${navigator.userAgent || '-'}`,
+    `当前插件：${activePluginVersionLabel()}`,
     paths.userData ? `应用数据目录：${paths.userData}` : '',
     paths.projectRoot ? `项目目录：${paths.projectRoot}` : '',
     '',
@@ -1826,7 +1836,16 @@ async function loadProviderManifests() {
   }
   PROVIDER_REGISTRY.replaceExternal(manifests);
   refreshProviderTools();
-  appendDetailedLog('provider', 'info', `已加载 ${manifests.length} 个外部 Provider。`);
+  const plugins = [...new Map(manifests
+    .filter((provider) => provider?.pluginId)
+    .map((provider) => [provider.pluginId, provider.pluginVersion || '未知']))
+    .entries()]
+    .map(([id, version]) => `${id} v${version}`);
+  appendDetailedLog(
+    'provider',
+    'info',
+    `已加载 ${manifests.length} 个外部 Provider。插件版本：${plugins.join('，') || '无'}`
+  );
 }
 
 function renderProviderSafetyNotice(provider) {
@@ -3938,7 +3957,7 @@ function renderAppPathsInitializationState() {
 function announceStartupOnce() {
   if (startupAnnounced) return;
   startupAnnounced = true;
-  log('万能导已启动', 'success');
+  log(`万能导已启动（Wandao v${appPaths?.appVersion || '未知'}）`, 'success');
   window.setTimeout(() => checkForUpdates(true), 1000);
 }
 

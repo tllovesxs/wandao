@@ -2430,6 +2430,29 @@ def image_urls_from_rich_text(text: str) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
+def normalize_image_download_url(value: object) -> tuple[str, str]:
+    """Return a request-safe image URL and an actionable validation error.
+
+    Knowledge Planet rich text occasionally appends a full-width colon and
+    adjacent prose to an otherwise valid CDN URL.  A full-width colon is not a
+    valid URL separator, so it is safe to remove that suffix before requesting
+    the CDN.  Other malformed values are reported as resource failures rather
+    than passed into urllib, whose low-level error is not useful to users.
+    """
+    raw = str(value or "").strip()
+    if "\uff1a" in raw:
+        raw = raw.split("\uff1a", 1)[0].rstrip()
+    if any(character.isspace() or ord(character) < 32 for character in raw):
+        return "", "图片地址包含空白字符或控制字符"
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError as exc:
+        return "", f"图片地址格式无效：{exc}"
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "", "图片地址必须是完整的 http 或 https URL"
+    return raw, ""
+
+
 def topic_source(topic: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     for key in ("task", "talk", "question", "solution", "answer"):
         value = topic.get(key)
@@ -3241,9 +3264,19 @@ def localize_images(
 ) -> tuple[str, int, list[dict[str, str]]]:
     success = 0
     failures: list[dict[str, str]] = []
-    for url in sorted(set(images)):
+    seen_urls: set[str] = set()
+    for raw_url in images:
         check_stopped(args)
-        if not url.startswith(("http://", "https://")):
+        original_url = str(raw_url or "").strip()
+        url, invalid_reason = normalize_image_download_url(original_url)
+        dedup_key = url or original_url
+        if not dedup_key or dedup_key in seen_urls:
+            continue
+        seen_urls.add(dedup_key)
+        if invalid_reason:
+            failures.append({"url": original_url, "error": invalid_reason})
+            if not keep_remote and original_url:
+                markdown = markdown.replace(original_url, "")
             continue
         resource_key = zsxq_resource_key("image", url)
         if checkpoint and resource_key:
@@ -3253,12 +3286,14 @@ def localize_images(
                 record = checkpoint.resource_record(resource_key) or {}
                 local_path = record.get("local_path")
                 if local_path and Path(local_path).exists():
-                    markdown = markdown.replace(url, os.path.relpath(Path(local_path), md_path.parent).replace("\\", "/"))
+                    relative_path = os.path.relpath(Path(local_path), md_path.parent).replace("\\", "/")
+                    markdown = markdown.replace(original_url, relative_path).replace(url, relative_path)
                     continue
             if checkpoint and resource_key:
                 checkpoint.start_resource(resource_key)
             target = download_image(url, md_path.parent / "assets", timeout, args=args)
-            markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
+            relative_path = os.path.relpath(target, md_path.parent).replace("\\", "/")
+            markdown = markdown.replace(original_url, relative_path).replace(url, relative_path)
             if checkpoint and resource_key:
                 checkpoint.complete_resource(resource_key, local_path=str(target))
             success += 1

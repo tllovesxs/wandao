@@ -777,6 +777,43 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertIn("https://example.com/comment.png", content["images"])
         self.assertEqual(content["commentExportMode"], "full")
 
+    def test_localize_images_strips_full_width_rich_text_suffix_before_download(self) -> None:
+        bad_url = "https://article-images.zsxq.com/FlvsDpWcaJl9FuFC4X_nnUfuoE1H\uff1asleep"
+        clean_url = "https://article-images.zsxq.com/FlvsDpWcaJl9FuFC4X_nnUfuoE1H"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            md_path = root / "01-测试.md"
+            target = root / "assets" / "image.png"
+            with mock.patch.object(export_zsxq, "download_image", return_value=target) as download:
+                markdown, success, failures = export_zsxq.localize_images(
+                    f"![图片]({bad_url})",
+                    [bad_url],
+                    md_path,
+                    30,
+                    False,
+                )
+
+        download.assert_called_once_with(clean_url, md_path.parent / "assets", 30, args=None)
+        self.assertEqual(success, 1)
+        self.assertEqual(failures, [])
+        self.assertNotIn(bad_url, markdown)
+        self.assertIn("assets/image.png", markdown)
+
+    def test_localize_images_reports_invalid_url_without_calling_downloader(self) -> None:
+        invalid_url = "https://"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(export_zsxq, "download_image") as download:
+            _markdown, success, failures = export_zsxq.localize_images(
+                f"![图片]({invalid_url})",
+                [invalid_url],
+                Path(tmp) / "01-测试.md",
+                30,
+                False,
+            )
+
+        download.assert_not_called()
+        self.assertEqual(success, 0)
+        self.assertEqual(failures, [{"url": invalid_url, "error": "图片地址必须是完整的 http 或 https URL"}])
+
     def test_group_raw_topic_exports_without_extra_detail_or_comment_api(self) -> None:
         class FailingCdp:
             def evaluate(self, *_args, **_kwargs):

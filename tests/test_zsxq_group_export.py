@@ -430,12 +430,36 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertLessEqual(third, 15 * 60)
 
     def test_successful_protected_request_resets_only_the_rate_limit_streak(self) -> None:
-        args = argparse.Namespace(_rate_limit_events=2, _rate_limit_total_events=5)
+        args = argparse.Namespace(_rate_limit_events=2, _rate_limit_total_events=5, _rate_limit_recent_events=[1.0, 2.0])
 
         clear_rate_limit_streak(args)
 
         self.assertEqual(args._rate_limit_events, 0)
         self.assertEqual(args._rate_limit_total_events, 5)
+        self.assertEqual(args._rate_limit_recent_events, [1.0, 2.0])
+
+    def test_intermittent_rate_limits_use_one_extended_cooldown_within_the_global_window(self) -> None:
+        args = argparse.Namespace(
+            _rate_limit_events=0,
+            _rate_limit_total_events=0,
+            rate_limit_max_events=3,
+            rate_limit_retries=5,
+            rate_limit_pause=60,
+        )
+        with mock.patch.object(export_zsxq.time, "monotonic", side_effect=[0.0, 60.0, 120.0]), mock.patch.object(
+            export_zsxq, "wait_with_stop"
+        ) as wait:
+            pause_for_rate_limit(args, attempt=0, retries=5, label="topic one")
+            clear_rate_limit_streak(args)
+            pause_for_rate_limit(args, attempt=0, retries=5, label="topic two")
+            clear_rate_limit_streak(args)
+            pause_for_rate_limit(args, attempt=0, retries=5, label="topic three")
+
+        self.assertEqual(wait.call_count, 3)
+        self.assertEqual(wait.call_args_list[-1].args[1], export_zsxq.RATE_LIMIT_EXTENDED_BACKOFF_SECONDS)
+        self.assertEqual(args._rate_limit_events, 0)
+        self.assertEqual(args._rate_limit_total_events, 3)
+        self.assertEqual(args._rate_limit_recent_events, [])
 
     def test_group_api_stops_after_second_429_without_more_requests(self) -> None:
         args = argparse.Namespace(
@@ -776,6 +800,15 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertIn("评论图片 1", content["markdown"])
         self.assertIn("https://example.com/comment.png", content["images"])
         self.assertEqual(content["commentExportMode"], "full")
+
+    def test_converter_keeps_classed_code_blocks_and_their_blank_lines(self) -> None:
+        source = export_zsxq.ZSXQ_CONVERTER_JS
+
+        self.assertIn("function isCodeBlock(el)", source)
+        self.assertIn("codeblock|code-block", source)
+        self.assertIn("function fencedCodeBlock(el)", source)
+        self.assertIn("if (isCodeBlock(el)) return fencedCodeBlock(el);", source)
+        self.assertNotIn('join("\\n\\n").replace(/\\n{3,}/g, "\\n\\n")', source)
 
     def test_localize_images_strips_full_width_rich_text_suffix_before_download(self) -> None:
         bad_url = "https://article-images.zsxq.com/FlvsDpWcaJl9FuFC4X_nnUfuoE1H\uff1asleep"

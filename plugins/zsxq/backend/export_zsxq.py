@@ -82,6 +82,7 @@ MIN_REQUEST_JITTER = 1.0
 DEFAULT_COMMENT_BATCH_SIZE = 30
 DEFAULT_COMMENT_REQUEST_DELAY = 3.0
 DEFAULT_COMMENT_REQUEST_JITTER = 2.0
+MAX_FULL_COMMENT_PAGES = 200
 GROUP_CURSOR_NAME = "zsxq-group"
 EXPORT_SEQUENCE_RE = re.compile(r"^(?P<sequence>\d+)-")
 MAX_GROUP_NEWEST_REFRESH_PAGES = 250
@@ -287,6 +288,26 @@ def load_auth_state(cdp: CDPClient, auth_file: Path) -> int:
     cdp.send("Network.enable")
     cdp.send("Network.setCookies", {"cookies": cookies}, timeout=30)
     return len(cookies)
+
+
+def zsxq_cookie_header(cdp: CDPClient) -> str:
+    """Return only the active ZSXQ session cookies for protected file requests."""
+    try:
+        cdp.send("Network.enable")
+        cookies = cdp.send("Network.getAllCookies", timeout=20).get("result", {}).get("cookies", [])
+    except Exception:
+        return ""
+    pairs = [
+        f"{cookie.get('name')}={cookie.get('value')}"
+        for cookie in cookies
+        if is_zsxq_cookie(cookie) and cookie.get("name") and cookie.get("value")
+    ]
+    return "; ".join(dict.fromkeys(pairs))
+
+
+def is_zsxq_resource_url(url: str) -> bool:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return host == "zsxq.com" or host.endswith(".zsxq.com") or host == "zsxq.cn" or host.endswith(".zsxq.cn")
 
 
 def wait_eval(
@@ -537,6 +558,7 @@ ZSXQ_CONVERTER_JS = r"""
 (fallbackTitle, rootSelector) => {
   const images = [];
   const links = [];
+  const files = [];
   function clean(s) {
     return (s || "")
       .replace(/\u00a0/g, " ")
@@ -606,6 +628,23 @@ ZSXQ_CONVERTER_JS = r"""
     if (tag === "code") return "`" + inner.replace(/`/g, "\\`") + "`";
     return inner;
   }
+  function absoluteUrl(value) {
+    try { return new URL(value || "", location.href).toString(); } catch (err) { return ""; }
+  }
+  function addFile(node) {
+    if (!node || node.nodeType !== 1) return;
+    const rawUrl = node.getAttribute("data-download-url") || node.getAttribute("data-file-url")
+      || node.getAttribute("data-url") || node.getAttribute("href") || "";
+    const url = absoluteUrl(rawUrl);
+    if (!/^https?:/i.test(url)) return;
+    const name = clean(node.getAttribute("data-file-name") || node.getAttribute("download")
+      || node.getAttribute("title") || node.innerText || node.textContent || "知识星球附件");
+    const className = String(node.className || "");
+    const fileLike = /\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|7z|txt|csv|md|epub|mobi)(?:$|[?#])/i.test(url + " " + name)
+      || /file|attachment|download|附件|文件/i.test(className + " " + rawUrl + " " + name)
+      || node.hasAttribute("download") || node.hasAttribute("data-file-url") || node.hasAttribute("data-download-url");
+    if (fileLike) files.push({name: name || "知识星球附件", url});
+  }
   function table(el) {
     const rows = [...el.querySelectorAll("tr")]
       .map(tr => [...tr.children].map(td => clean(td.innerText).replace(/\|/g, "\\|").replace(/\n+/g, "<br>")))
@@ -672,10 +711,19 @@ ZSXQ_CONVERTER_JS = r"""
     seen.add(link.href);
     uniqueLinks.push(link);
   }
+  for (const node of root.querySelectorAll("a, [data-file-url], [data-download-url]")) addFile(node);
+  const uniqueFiles = [];
+  const seenFiles = new Set();
+  for (const file of files) {
+    if (!file.url || seenFiles.has(file.url)) continue;
+    seenFiles.add(file.url);
+    uniqueFiles.push(file);
+  }
   return {
     title: pageTitle,
     markdown: "# " + pageTitle + "\n\n" + markdown + "\n",
     images: [...new Set(images)],
+    files: uniqueFiles,
     zsxqLinks: uniqueLinks,
     textLen: clean(root.innerText || "").length,
   };
@@ -803,7 +851,10 @@ async () => {
     });
     const text = clean(textLines.join("\n"));
     if (!text || text.length < 1 || text.length > 5000) return null;
-    return {author, time, text};
+    const images = [...node.querySelectorAll("img")]
+      .map(image => image.getAttribute("data-src") || image.getAttribute("src") || "")
+      .filter(src => /^https?:/i.test(src));
+    return {author, time, text, images: [...new Set(images)]};
   }
 
   const comments = [];
@@ -1095,7 +1146,7 @@ def expand_current_content(cdp: CDPClient, args: argparse.Namespace | None = Non
         return {}
 
 
-def collect_current_comments(cdp: CDPClient, args: argparse.Namespace | None = None) -> list[dict[str, str]]:
+def collect_current_comments(cdp: CDPClient, args: argparse.Namespace | None = None) -> list[dict[str, Any]]:
     if not getattr(args, "include_comments", False):
         return []
     check_stopped(args)
@@ -1104,7 +1155,7 @@ def collect_current_comments(cdp: CDPClient, args: argparse.Namespace | None = N
     except Exception as exc:
         emit(args, f"评论区读取失败，已跳过：{exc}")
         return []
-    comments: list[dict[str, str]] = []
+    comments: list[dict[str, Any]] = []
     for item in result.get("comments") or []:
         text = str(item.get("text") or "").strip()
         if not text:
@@ -1114,15 +1165,24 @@ def collect_current_comments(cdp: CDPClient, args: argparse.Namespace | None = N
                 "author": str(item.get("author") or "").strip(),
                 "time": str(item.get("time") or "").strip(),
                 "text": text,
+                "images": list(dict.fromkeys(
+                    str(url) for url in item.get("images") or [] if str(url).startswith(("http://", "https://"))
+                )),
             }
         )
     return comments
 
 
-def append_comments_markdown(markdown: str, comments: list[dict[str, str]]) -> str:
+def append_comments_markdown(markdown: str, comments: list[dict[str, Any]], *, mode: str = "visible") -> str:
     if not comments:
         return markdown
-    lines = ["", "## 评论区", "", "> 以下为导出时页面可见的评论区内容。", ""]
+    descriptions = {
+        "full": "以下为完整导出的评论区内容。",
+        "partial": "以下为已读取的部分评论区内容；完整评论读取尚未完成。",
+        "visible": "以下为导出时页面可见的评论区内容。",
+    }
+    description = descriptions.get(mode, descriptions["visible"])
+    lines = ["", "## 评论区", "", f"> {description}", ""]
     for index, comment in enumerate(comments, 1):
         author = comment.get("author") or f"评论 {index}"
         time_text = comment.get("time") or ""
@@ -1132,20 +1192,35 @@ def append_comments_markdown(markdown: str, comments: list[dict[str, str]]) -> s
             line = line.strip()
             if line:
                 lines.append(f"   {line}")
+        for image_index, url in enumerate(comment.get("images") or [], 1):
+            if str(url).startswith(("http://", "https://")):
+                lines.append(f"   ![评论图片 {image_index}]({url})")
         lines.append("")
     return markdown.rstrip() + "\n\n" + "\n".join(lines).rstrip() + "\n"
 
 
 def attach_comments_to_content(
     content: dict[str, Any],
-    comments: list[dict[str, str]],
+    comments: list[dict[str, Any]],
     include_comments: bool,
+    *,
+    mode: str = "visible",
 ) -> dict[str, Any]:
+    if mode not in {"visible", "partial", "full"}:
+        mode = "visible"
     content["commentsIncluded"] = bool(include_comments)
     content["comments"] = comments if include_comments else []
     content["commentCount"] = len(comments) if include_comments else 0
+    content["commentExportMode"] = mode if include_comments else "none"
     if include_comments and comments:
-        content["markdown"] = append_comments_markdown(str(content.get("markdown") or ""), comments)
+        content["markdown"] = append_comments_markdown(str(content.get("markdown") or ""), comments, mode=mode)
+        comment_images = [
+            str(url)
+            for comment in comments
+            for url in comment.get("images") or []
+            if str(url).startswith(("http://", "https://"))
+        ]
+        content["images"] = list(dict.fromkeys([*(content.get("images") or []), *comment_images]))
     return content
 
 
@@ -1228,7 +1303,12 @@ def group_id_from_url(entry_url: str) -> str:
 
 def is_group_entry_url(entry_url: str) -> bool:
     parsed = urllib.parse.urlparse(entry_url or "")
-    return bool(group_id_from_url(entry_url)) and not parsed.path.startswith("/columns/")
+    path = parsed.path.rstrip("/")
+    # A shared Group topic URL still contains the Group ID, but it is a
+    # single-post export target rather than a request to crawl the full Group.
+    if re.search(r"/(?:topic|topics)/\d+$", path):
+        return False
+    return bool(group_id_from_url(entry_url)) and not path.startswith("/columns/")
 
 
 def group_scope_from_args(entry_url: str, args: argparse.Namespace | None = None) -> str:
@@ -2175,6 +2255,10 @@ def topic_id_from_url(url: str) -> str:
     return match.group(1) if match else ""
 
 
+def is_single_topic_entry_url(entry_url: str) -> bool:
+    return bool(topic_id_from_url(entry_url))
+
+
 def inspect_topic_api(cdp: CDPClient, topic_id: str, args: argparse.Namespace | None = None) -> dict[str, Any]:
     if not topic_id:
         return {}
@@ -2309,6 +2393,8 @@ def zsxq_rich_text_to_markdown(text: str) -> str:
         href = attrs.get("href") or attrs.get("url") or ""
         if typ in {"web", "web_url"} and href:
             return f"[{title or href}]({href})"
+        if typ in {"image", "picture"} and href:
+            return f"![{title or '图片'}]({href})"
         if typ in {"text_bold", "bold"}:
             return f"**{title}**" if title else ""
         if typ in {"text_italic", "italic"}:
@@ -2330,6 +2416,41 @@ def zsxq_rich_text_to_markdown(text: str) -> str:
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def image_urls_from_rich_text(text: str) -> list[str]:
+    urls: list[str] = []
+    for raw in re.findall(r"<e\s+([^>]+)>", text or ""):
+        attrs = {name: decode_zsxq_attr(value) for name, value in re.findall(r'(\w+)="([^"]*)"', raw)}
+        if attrs.get("type") not in {"image", "picture"}:
+            continue
+        url = attrs.get("url") or attrs.get("href") or ""
+        if url.startswith(("http://", "https://")):
+            urls.append(url)
+    return list(dict.fromkeys(urls))
+
+
+def normalize_image_download_url(value: object) -> tuple[str, str]:
+    """Return a request-safe image URL and an actionable validation error.
+
+    Knowledge Planet rich text occasionally appends a full-width colon and
+    adjacent prose to an otherwise valid CDN URL.  A full-width colon is not a
+    valid URL separator, so it is safe to remove that suffix before requesting
+    the CDN.  Other malformed values are reported as resource failures rather
+    than passed into urllib, whose low-level error is not useful to users.
+    """
+    raw = str(value or "").strip()
+    if "\uff1a" in raw:
+        raw = raw.split("\uff1a", 1)[0].rstrip()
+    if any(character.isspace() or ord(character) < 32 for character in raw):
+        return "", "图片地址包含空白字符或控制字符"
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError as exc:
+        return "", f"图片地址格式无效：{exc}"
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "", "图片地址必须是完整的 http 或 https URL"
+    return raw, ""
 
 
 def topic_source(topic: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -2427,6 +2548,22 @@ def files_from_sources(*sources: dict[str, Any]) -> list[dict[str, str]]:
     return unique
 
 
+def ensure_file_links(markdown: str, files: list[dict[str, Any]]) -> str:
+    """Expose page-discovered attachments before their URLs are rewritten locally."""
+    missing: list[dict[str, Any]] = []
+    for file_item in files or []:
+        url = str(file_item.get("url") or "").strip()
+        if url.startswith(("http://", "https://")) and url not in markdown:
+            missing.append(file_item)
+    if not missing:
+        return markdown
+    lines = [markdown.rstrip(), "", "## 附件", ""]
+    for file_item in missing:
+        name = str(file_item.get("name") or "知识星球附件").strip() or "知识星球附件"
+        lines.append(f"- [{name}]({file_item.get('url')})")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def format_zsxq_size(value: Any) -> str:
     try:
         size = int(value or 0)
@@ -2476,8 +2613,8 @@ def markdown_links(markdown: str) -> list[dict[str, str]]:
     return unique_zsxq_links(links)
 
 
-def comments_from_zsxq_items(items: list[Any]) -> list[dict[str, str]]:
-    comments: list[dict[str, str]] = []
+def comments_from_zsxq_items(items: list[Any]) -> list[dict[str, Any]]:
+    comments: list[dict[str, Any]] = []
 
     def append_item(item: Any, parent_author: str = "") -> None:
         if not isinstance(item, dict):
@@ -2491,11 +2628,16 @@ def comments_from_zsxq_items(items: list[Any]) -> list[dict[str, str]]:
         elif parent_author and author:
             author = f"{author} 回复 {parent_author}".strip()
         if text:
+            images = list(dict.fromkeys([
+                *image_urls_from_sources(item),
+                *image_urls_from_rich_text(str(item.get("text") or "")),
+            ]))
             comments.append(
                 {
                     "author": author,
                     "time": str(item.get("create_time") or ""),
                     "text": text,
+                    "images": images,
                 }
             )
         for reply in item.get("replied_comments") or []:
@@ -2506,7 +2648,7 @@ def comments_from_zsxq_items(items: list[Any]) -> list[dict[str, str]]:
     return comments
 
 
-def comments_from_topic_api(topic: dict[str, Any]) -> list[dict[str, str]]:
+def comments_from_topic_api(topic: dict[str, Any]) -> list[dict[str, Any]]:
     return comments_from_zsxq_items(topic.get("show_comments") or [])
 
 
@@ -2514,7 +2656,9 @@ def content_from_topic_api(
     topic: dict[str, Any],
     source: dict[str, Any],
     args: argparse.Namespace | None = None,
-    comments: list[dict[str, str]] | None = None,
+    comments: list[dict[str, Any]] | None = None,
+    *,
+    comment_mode: str = "visible",
 ) -> dict[str, Any]:
     source_type, primary = topic_source(topic)
     section_sources: list[tuple[str, dict[str, Any]]] = []
@@ -2607,26 +2751,67 @@ def content_from_topic_api(
         "previewArticleUrl": article_url,
     }
     if getattr(args, "include_comments", False):
-        attach_comments_to_content(content, comments if comments is not None else comments_from_topic_api(topic), True)
+        attach_comments_to_content(
+            content,
+            comments if comments is not None else comments_from_topic_api(topic),
+            True,
+            mode=comment_mode,
+        )
     return content
+
+
+def next_zsxq_begin_time(create_time: str) -> str:
+    value = str(create_time or "").strip()
+    match = re.match(r"^(?P<body>.+?T\d{2}:\d{2}:\d{2})\.(?P<millis>\d{3})(?P<tz>Z|[+-]\d{2}:?\d{2})?$", value)
+    if not match:
+        return ""
+    try:
+        moment = datetime.strptime(match.group("body"), "%Y-%m-%dT%H:%M:%S") + timedelta(milliseconds=int(match.group("millis")) + 1)
+    except ValueError:
+        return ""
+    return f"{moment.strftime('%Y-%m-%dT%H:%M:%S.%f')[:23]}{match.group('tz') or ''}"
+
+
+def comment_item_key(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("comment_id") or item.get("id") or "").strip() or "\n".join(
+        [
+            str(item.get("create_time") or ""),
+            str((item.get("owner") or {}).get("id") or (item.get("owner") or {}).get("name") or ""),
+            str(item.get("text") or ""),
+        ]
+    )
 
 
 def fetch_topic_comments_api(
     cdp: CDPClient,
     topic_id: str,
     args: argparse.Namespace | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     if not topic_id or not getattr(args, "include_comments", False):
         return []
-    expression = f"""
+    if args is not None:
+        args._last_full_comments_mode = "visible"
+    begin_time = ""
+    seen: set[str] = set()
+    raw_comments: list[dict[str, Any]] = []
+    max_pages = max(1, int(getattr(args, "full_comment_max_pages", MAX_FULL_COMMENT_PAGES) or MAX_FULL_COMMENT_PAGES))
+    retries = max(0, int(getattr(args, "rate_limit_retries", 5) if args else 5))
+
+    complete = False
+    for page_index in range(max_pages):
+        expression = f"""
     (async () => {{
       const topicId = {json.dumps(topic_id)};
+      const beginTime = {json.dumps(begin_time)};
       const makeUrl = (base) => {{
         const url = new URL(base);
         url.searchParams.set("count", "{DEFAULT_COMMENT_BATCH_SIZE}");
         url.searchParams.set("sort", "asc");
         url.searchParams.set("sort_type", "by_create_time");
-        url.searchParams.set("with_sticky", "true");
+        url.searchParams.set("with_sticky", beginTime ? "false" : "true");
+        if (beginTime) url.searchParams.set("begin_time", beginTime);
         return url.toString();
       }};
       const urls = [
@@ -2662,21 +2847,52 @@ def fetch_topic_comments_api(
       return {{ok: false, attempts}};
     }})()
     """
-    retries = max(0, int(getattr(args, "rate_limit_retries", 5) if args else 5))
-    result: dict[str, Any] = {}
-    for attempt in range(retries + 1):
-        check_stopped(args)
-        throttle_comment_request(args)
-        result = cdp.evaluate(expression, timeout=45) or {}
-        if result.get("rateLimited"):
-            pause_for_rate_limit(args, f"topic comments API {topic_id}", attempt, retries)
-            continue
-        if result.get("ok"):
-            clear_rate_limit_streak(args)
-        break
-    if not result.get("ok"):
-        return []
-    return comments_from_zsxq_items(result.get("comments") or [])
+        result: dict[str, Any] = {}
+        for attempt in range(retries + 1):
+            check_stopped(args)
+            throttle_comment_request(args)
+            result = cdp.evaluate(expression, timeout=45) or {}
+            if result.get("rateLimited"):
+                pause_for_rate_limit(args, f"topic comments API {topic_id}", attempt, retries)
+                continue
+            if result.get("ok"):
+                clear_rate_limit_streak(args)
+            break
+        if not result.get("ok"):
+            if raw_comments and args is not None:
+                args._last_full_comments_mode = "partial"
+            emit(args, "知识星球完整评论读取未完成，保留已获取的评论。", event="log.message", level="warn")
+            return comments_from_zsxq_items(raw_comments)
+        page = [item for item in result.get("comments") or [] if isinstance(item, dict)]
+        if not page:
+            break
+        added = 0
+        for item in page:
+            key = comment_item_key(item)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            raw_comments.append(item)
+            added += 1
+        last_time = str(page[-1].get("create_time") or "")
+        next_begin_time = next_zsxq_begin_time(last_time)
+        if len(page) < DEFAULT_COMMENT_BATCH_SIZE or not next_begin_time or next_begin_time == begin_time:
+            complete = len(page) < DEFAULT_COMMENT_BATCH_SIZE
+            break
+        if added == 0:
+            break
+        begin_time = next_begin_time
+        emit(
+            args,
+            f"知识星球完整评论读取：第 {page_index + 1} 页，累计 {len(raw_comments)} 条。",
+            event="task.progress",
+            stats={"commentPage": page_index + 1, "commentCount": len(raw_comments)},
+        )
+    else:
+        emit(args, f"知识星球完整评论达到安全上限 {max_pages} 页，保留已获取的评论。", event="log.message", level="warn")
+    if args is not None:
+        args._last_full_comments_mode = "full" if complete else "partial" if raw_comments else "visible"
+    return comments_from_zsxq_items(raw_comments)
 
 
 def collect_article_content(
@@ -2734,17 +2950,26 @@ def resolve_toc_item_api(cdp: CDPClient, source: dict[str, Any], args: argparse.
     if has_video and not has_article and getattr(args, "skip_video_topics", True):
         raise SkipDocument("video-topic", title=source.get("title") or topic.get("title") or topic_id, href=f"https://wx.zsxq.com/topic/{topic_id}")
     comments = None
+    comment_mode = "visible"
     if getattr(args, "include_comments", False):
         comments = comments_from_topic_api(topic)
         if getattr(args, "fetch_full_comments", False):
             ensure_zsxq_api_origin(cdp, args, str(source.get("entryUrl") or source.get("topicUrl") or "https://wx.zsxq.com/"))
-            comments = fetch_topic_comments_api(cdp, topic_id, args) or comments
-    topic_content = content_from_topic_api(topic, source, args, comments=comments)
+            fetched_comments = fetch_topic_comments_api(cdp, topic_id, args)
+            if fetched_comments:
+                comments = fetched_comments
+                comment_mode = str(getattr(args, "_last_full_comments_mode", "visible"))
+    topic_content = content_from_topic_api(topic, source, args, comments=comments, comment_mode=comment_mode)
     article_url = topic_content.get("articleUrl") or ""
     if article_url:
         try:
             article_content = collect_article_content(cdp, article_url, topic_content.get("title") or source.get("title") or "", args)
-            attach_comments_to_content(article_content, comments or [], bool(getattr(args, "include_comments", False)))
+            attach_comments_to_content(
+                article_content,
+                comments or [],
+                bool(getattr(args, "include_comments", False)),
+                mode=comment_mode,
+            )
             article_content["shortUrl"] = ""
             article_content["topicUrl"] = topic_content.get("topicUrl") or f"https://wx.zsxq.com/topic/{topic_id}"
             article_content["topicId"] = topic_id
@@ -3001,9 +3226,19 @@ def guess_file_extension(url: str, content_type: str | None) -> str:
     return "bin"
 
 
-def download_file(url: str, filename: str, dest_dir: Path, timeout: int, args: argparse.Namespace | None = None) -> Path:
+def download_file(
+    url: str,
+    filename: str,
+    dest_dir: Path,
+    timeout: int,
+    args: argparse.Namespace | None = None,
+    cookie_header: str = "",
+) -> Path:
     throttle_resource_request(args, "attachment")
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://wx.zsxq.com/"})
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://wx.zsxq.com/"}
+    if cookie_header and is_zsxq_resource_url(url):
+        headers["Cookie"] = cookie_header
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data = response.read()
         ext = guess_file_extension(url, response.headers.get("Content-Type"))
@@ -3029,9 +3264,19 @@ def localize_images(
 ) -> tuple[str, int, list[dict[str, str]]]:
     success = 0
     failures: list[dict[str, str]] = []
-    for url in sorted(set(images)):
+    seen_urls: set[str] = set()
+    for raw_url in images:
         check_stopped(args)
-        if not url.startswith(("http://", "https://")):
+        original_url = str(raw_url or "").strip()
+        url, invalid_reason = normalize_image_download_url(original_url)
+        dedup_key = url or original_url
+        if not dedup_key or dedup_key in seen_urls:
+            continue
+        seen_urls.add(dedup_key)
+        if invalid_reason:
+            failures.append({"url": original_url, "error": invalid_reason})
+            if not keep_remote and original_url:
+                markdown = markdown.replace(original_url, "")
             continue
         resource_key = zsxq_resource_key("image", url)
         if checkpoint and resource_key:
@@ -3041,12 +3286,14 @@ def localize_images(
                 record = checkpoint.resource_record(resource_key) or {}
                 local_path = record.get("local_path")
                 if local_path and Path(local_path).exists():
-                    markdown = markdown.replace(url, os.path.relpath(Path(local_path), md_path.parent).replace("\\", "/"))
+                    relative_path = os.path.relpath(Path(local_path), md_path.parent).replace("\\", "/")
+                    markdown = markdown.replace(original_url, relative_path).replace(url, relative_path)
                     continue
             if checkpoint and resource_key:
                 checkpoint.start_resource(resource_key)
             target = download_image(url, md_path.parent / "assets", timeout, args=args)
-            markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
+            relative_path = os.path.relpath(target, md_path.parent).replace("\\", "/")
+            markdown = markdown.replace(original_url, relative_path).replace(url, relative_path)
             if checkpoint and resource_key:
                 checkpoint.complete_resource(resource_key, local_path=str(target))
             success += 1
@@ -3067,6 +3314,7 @@ def localize_files(
     args: argparse.Namespace | None = None,
     checkpoint: WandaoCheckpoint | None = None,
     item_key: str = "",
+    cookie_header: str = "",
 ) -> tuple[str, int, list[dict[str, str]]]:
     success = 0
     failures: list[dict[str, str]] = []
@@ -3087,7 +3335,14 @@ def localize_files(
                     continue
             if checkpoint and resource_key:
                 checkpoint.start_resource(resource_key)
-            target = download_file(url, file_item.get("name") or "知识星球附件", md_path.parent / "assets" / "files", timeout, args=args)
+            target = download_file(
+                url,
+                file_item.get("name") or "知识星球附件",
+                md_path.parent / "assets" / "files",
+                timeout,
+                args=args,
+                cookie_header=cookie_header,
+            )
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
             if checkpoint and resource_key:
                 checkpoint.complete_resource(resource_key, local_path=str(target))
@@ -3307,6 +3562,7 @@ def append_source_meta(markdown: str, item: dict[str, Any]) -> str:
             if "commentsIncluded" in item
             else ""
         )
+        + (f"知识星球评论导出模式: {item.get('commentExportMode')}\n" if item.get("commentExportMode") else "")
         + (f"知识星球评论数: {item.get('commentCount')}\n" if "commentCount" in item else "")
     )
 
@@ -3494,8 +3750,9 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         )
     args.folder_link_threshold = max(0, int(getattr(args, "folder_link_threshold", 9) or 0))
     args.skip_video_topics = bool(getattr(args, "skip_video_topics", True))
-    args.include_comments = bool(getattr(args, "include_comments", False))
     args.fetch_full_comments = bool(getattr(args, "fetch_full_comments", False))
+    args.include_comments = bool(getattr(args, "include_comments", False) or args.fetch_full_comments)
+    args.full_comment_max_pages = max(1, int(getattr(args, "full_comment_max_pages", MAX_FULL_COMMENT_PAGES) or MAX_FULL_COMMENT_PAGES))
     args.download_files = bool(getattr(args, "download_files", False))
     args.request_delay = max(0.0, float(getattr(args, "request_delay", 1.5) or 0))
     args.request_jitter = max(0.0, float(getattr(args, "request_jitter", 0.6) or 0))
@@ -3551,6 +3808,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             navigate_with_retry(cdp, entry_url, args)
             time.sleep(2)
             entry_page_loaded = True
+        attachment_cookie_header = zsxq_cookie_header(cdp)
 
         emit(args, "Chrome page is ready. If login is required, finish login in Chrome.")
         if args.wait_login:
@@ -3628,6 +3886,15 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 "markdown": "",
             }
             links: list[dict[str, str]] = []
+        elif is_single_topic_entry_url(entry_url):
+            topic_id = topic_id_from_url(entry_url)
+            entry = resolve_link(
+                cdp,
+                {"href": entry_url, "text": f"知识星球帖子 {topic_id}"},
+                args,
+            )
+            entry["url"] = entry_url
+            links = filter_follow_zsxq_links(entry.get("zsxqLinks") or [], args)
         else:
             entry = collect_entry_links(cdp, entry_url, args.link_pattern, args)
             links = filter_follow_zsxq_links(entry.get("zsxqLinks") or [], args)
@@ -3884,6 +4151,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     doc={"title": entry.get("title") or "专栏正文", "index": 0, "path": str(overview_path)},
                 )
                 markdown = entry.get("markdown") or "# 专栏正文\n"
+                markdown = ensure_file_links(markdown, entry.get("files") or [])
                 if args.include_comments:
                     total_comments += int(entry.get("commentCount") or 0)
                 markdown += (
@@ -3894,6 +4162,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         if "commentsIncluded" in entry
                         else ""
                     )
+                    + (f"知识星球评论导出模式: {entry.get('commentExportMode')}\n" if entry.get("commentExportMode") else "")
                     + (f"知识星球评论数: {entry.get('commentCount')}\n" if "commentCount" in entry else "")
                 )
                 markdown = strip_code_toolbar_lines(markdown)
@@ -3920,6 +4189,32 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                             resource={"type": "image", "url": failure.get("url", "")},
                             error={"message": failure.get("error", "")},
                         )
+                file_count = 0
+                file_errors: list[dict[str, str]] = []
+                if args.download_files:
+                    markdown, file_count, file_errors = localize_files(
+                        markdown,
+                        entry.get("files") or [],
+                        overview_path,
+                        args.download_timeout,
+                        args,
+                        checkpoint,
+                        overview_item_key,
+                        attachment_cookie_header,
+                    )
+                    file_success += file_count
+                    if file_errors:
+                        file_failures.append({"document": "专栏正文", "path": str(overview_path), "failures": file_errors})
+                        for failure in file_errors:
+                            emit(
+                                args,
+                                f"知识星球附件下载失败：专栏正文：{failure.get('error') or failure.get('url') or ''}",
+                                event="resource.download.failed",
+                                level="error",
+                                doc={"title": "专栏正文", "path": str(overview_path)},
+                                resource={"type": "attachment", "url": failure.get("url", ""), "name": failure.get("name", "")},
+                                error={"message": failure.get("error", "")},
+                            )
                 overview_path.write_text(markdown, encoding="utf-8")
                 if checkpoint and overview_item_key:
                     # Resource failures are tracked by the resource table.
@@ -3932,14 +4227,20 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     overview_path,
                     overview_key,
                     overview_item_key,
-                    "completed_with_resource_errors" if img_errors else "completed",
+                    "completed_with_resource_errors" if img_errors or file_errors else "completed",
                 )
+                exported += 1
                 emit(
                     args,
                     f"知识星球专栏正文导出完成：{entry.get('title') or '专栏正文'}",
                     event="document.export.completed",
                     doc={"title": entry.get("title") or "专栏正文", "index": 0, "path": str(overview_path)},
-                    stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_errors)},
+                    stats={
+                        "imageSuccessInDoc": count,
+                        "imageFailuresInDoc": len(img_errors),
+                        "attachmentSuccessInDoc": file_count,
+                        "attachmentFailuresInDoc": len(file_errors),
+                    },
                 )
 
         queue_links: list[tuple[dict[str, Any], int]] = []
@@ -4558,7 +4859,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     doc={"title": title, "index": exported + skipped + len(failures) + 1, "path": str(md_path), "source": href},
                 )
                 total_comments += int(item.get("commentCount") or 0)
-                markdown = append_source_meta(raw_markdown, item)
+                markdown = ensure_file_links(append_source_meta(raw_markdown, item), item.get("files") or [])
                 markdown, count, img_errors = localize_images(
                     markdown,
                     item.get("images") or [],
@@ -4593,6 +4894,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         args,
                         checkpoint,
                         checkpoint_item_key,
+                        attachment_cookie_header,
                     )
                     file_success += file_count
                     if file_errors:
@@ -5463,6 +5765,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-comments", dest="include_comments", action="store_false", help="Do not export ZSXQ comments")
     parser.set_defaults(include_comments=False)
     parser.add_argument("--fetch-full-comments", action="store_true", help="Fetch the full comments API for each topic. Slower and easier to hit ZSXQ rate limits")
+    parser.add_argument("--full-comment-max-pages", type=int, default=MAX_FULL_COMMENT_PAGES, help="Safety limit for full comment API pagination")
     parser.add_argument("--comment-request-delay", type=float, default=DEFAULT_COMMENT_REQUEST_DELAY, help="Minimum seconds to wait before each full comments API request")
     parser.add_argument("--comment-request-jitter", type=float, default=DEFAULT_COMMENT_REQUEST_JITTER, help="Extra random seconds added to full comments API request delay")
     parser.add_argument("--download-files", action="store_true", help="Download ZSXQ post attachments and rewrite Markdown links to local files")

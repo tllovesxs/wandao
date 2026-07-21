@@ -36,6 +36,13 @@ def resource_failures(report: dict[str, Any]) -> list[dict[str, Any]]:
     for key, resource_type in (("resourceFailures", "resource"), ("imageFailures", "image"), ("attachmentFailures", "attachment")):
         for item in _list(report.get(key)):
             if isinstance(item, dict):
+                children = _list(item.get("failures"))
+                if children:
+                    context = {name: value for name, value in item.items() if name != "failures"}
+                    for child in children:
+                        if isinstance(child, dict):
+                            items.append({"type": resource_type, **context, **child})
+                    continue
                 items.append({"type": resource_type, **item})
     return items
 

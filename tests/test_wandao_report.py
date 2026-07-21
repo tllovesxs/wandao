@@ -44,6 +44,8 @@ class WandaoReportTests(unittest.TestCase):
         self.assertEqual(report["successCount"], 3)
         self.assertEqual(report["failureCount"], 0)
         self.assertEqual(report["resourceFailures"][0]["type"], "image")
+        self.assertEqual(report["resourceFailures"][0]["document"], "a")
+        self.assertEqual(report["resourceFailures"][0]["url"], "x")
         self.assertEqual(report["outcome"], "partial")
 
     def test_finalize_legacy_import_count_fields(self) -> None:

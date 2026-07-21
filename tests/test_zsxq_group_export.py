@@ -51,6 +51,8 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(group_id_from_url("https://wx.zsxq.com/digests/15288445111222"), "15288445111222")
         self.assertEqual(group_id_from_url("https://wx.zsxq.com/digests?group_id=987654321"), "987654321")
         self.assertFalse(is_group_entry_url("https://wx.zsxq.com/columns/123456789"))
+        self.assertFalse(is_group_entry_url("https://wx.zsxq.com/group/15288445111222/topic/811152482415582"))
+        self.assertTrue(export_zsxq.is_single_topic_entry_url("https://wx.zsxq.com/group/15288445111222/topic/811152482415582"))
 
     def test_browser_selection_never_falls_back_to_another_provider_page(self) -> None:
         unrelated = {
@@ -683,6 +685,135 @@ class ZsxqGroupExportTests(unittest.TestCase):
         wait.assert_called_once_with(args, 4.25)
         self.assertEqual(args._comment_request_count, 1)
 
+    def test_full_comment_api_paginates_by_begin_time_and_keeps_all_pages(self) -> None:
+        first_page = [
+            {
+                "comment_id": str(index),
+                "create_time": f"2026-07-20T10:00:00.{index:03d}+0800",
+                "owner": {"name": f"用户 {index}"},
+                "text": f"评论 {index}",
+            }
+            for index in range(30)
+        ]
+        second_page = [
+            {
+                "comment_id": str(30 + index),
+                "create_time": f"2026-07-20T10:00:00.{30 + index:03d}+0800",
+                "owner": {"name": f"用户 {30 + index}"},
+                "text": f"评论 {30 + index}",
+            }
+            for index in range(2)
+        ]
+
+        class FakeCdp:
+            def __init__(self):
+                self.expressions = []
+
+            def evaluate(self, expression, **_kwargs):
+                self.expressions.append(expression)
+                page = first_page if len(self.expressions) == 1 else second_page
+                return {"ok": True, "comments": page}
+
+        args = argparse.Namespace(
+            include_comments=True,
+            request_delay=0,
+            request_jitter=0,
+            comment_request_delay=0,
+            comment_request_jitter=0,
+            rate_limit_retries=0,
+            full_comment_max_pages=10,
+        )
+        cdp = FakeCdp()
+
+        comments = export_zsxq.fetch_topic_comments_api(cdp, "123456789", args)
+
+        self.assertEqual(len(comments), 32)
+        self.assertEqual(args._comment_request_count, 2)
+        self.assertEqual(args._last_full_comments_mode, "full")
+        self.assertIn('beginTime = "2026-07-20T10:00:00.030+0800"', cdp.expressions[1])
+
+    def test_full_comment_page_limit_marks_partial_result(self) -> None:
+        page = [
+            {"comment_id": str(index), "create_time": f"2026-07-20T10:00:00.{index:03d}+0800", "text": f"评论 {index}"}
+            for index in range(30)
+        ]
+
+        class FakeCdp:
+            def evaluate(self, *_args, **_kwargs):
+                return {"ok": True, "comments": page}
+
+        args = argparse.Namespace(
+            include_comments=True,
+            request_delay=0,
+            request_jitter=0,
+            comment_request_delay=0,
+            comment_request_jitter=0,
+            rate_limit_retries=0,
+            full_comment_max_pages=1,
+        )
+
+        comments = export_zsxq.fetch_topic_comments_api(FakeCdp(), "123456789", args)
+
+        self.assertEqual(len(comments), 30)
+        self.assertEqual(args._last_full_comments_mode, "partial")
+
+    def test_comment_images_are_written_to_markdown_and_resource_list(self) -> None:
+        raw_comment = {
+            "comment_id": "comment-1",
+            "create_time": "2026-07-20T10:00:00.000+0800",
+            "owner": {"name": "Alice"},
+            "text": '<e type="image" url="https://example.com/comment.png"/>',
+            "images": [{"original": {"url": "https://example.com/comment.png"}}],
+        }
+        comments = export_zsxq.comments_from_zsxq_items([raw_comment])
+        content = export_zsxq.attach_comments_to_content(
+            {"markdown": "# 正文\n", "images": []},
+            comments,
+            True,
+            mode="full",
+        )
+
+        self.assertIn("评论图片 1", content["markdown"])
+        self.assertIn("https://example.com/comment.png", content["images"])
+        self.assertEqual(content["commentExportMode"], "full")
+
+    def test_localize_images_strips_full_width_rich_text_suffix_before_download(self) -> None:
+        bad_url = "https://article-images.zsxq.com/FlvsDpWcaJl9FuFC4X_nnUfuoE1H\uff1asleep"
+        clean_url = "https://article-images.zsxq.com/FlvsDpWcaJl9FuFC4X_nnUfuoE1H"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            md_path = root / "01-测试.md"
+            target = root / "assets" / "image.png"
+            with mock.patch.object(export_zsxq, "download_image", return_value=target) as download:
+                markdown, success, failures = export_zsxq.localize_images(
+                    f"![图片]({bad_url})",
+                    [bad_url],
+                    md_path,
+                    30,
+                    False,
+                )
+
+        download.assert_called_once_with(clean_url, md_path.parent / "assets", 30, args=None)
+        self.assertEqual(success, 1)
+        self.assertEqual(failures, [])
+        self.assertNotIn(bad_url, markdown)
+        self.assertIn("assets/image.png", markdown)
+
+    def test_localize_images_reports_invalid_url_without_calling_downloader(self) -> None:
+        invalid_url = "https://"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(export_zsxq, "download_image") as download:
+            _markdown, success, failures = export_zsxq.localize_images(
+                f"![图片]({invalid_url})",
+                [invalid_url],
+                Path(tmp) / "01-测试.md",
+                30,
+                False,
+            )
+
+        download.assert_not_called()
+        self.assertEqual(success, 0)
+        self.assertEqual(failures, [{"url": invalid_url, "error": "图片地址必须是完整的 http 或 https URL"}])
+
     def test_group_raw_topic_exports_without_extra_detail_or_comment_api(self) -> None:
         class FailingCdp:
             def evaluate(self, *_args, **_kwargs):
@@ -839,6 +970,7 @@ class ZsxqGroupExportTests(unittest.TestCase):
             "url": "https://wx.zsxq.com/columns/15288445111222",
             "markdown": "# 测试专栏\n![图](https://example.com/cover.png)",
             "images": ["https://example.com/cover.png"],
+            "files": [{"name": "资料.pdf", "url": "https://example.com/guide.pdf"}],
             "zsxqLinks": [],
         }
         topic = {
@@ -854,6 +986,9 @@ class ZsxqGroupExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             output = root / "out"
+            attachment = output / "assets" / "files" / "attachment.pdf"
+            attachment.parent.mkdir(parents=True, exist_ok=True)
+            attachment.write_bytes(b"pdf")
             args = parse_args(
                 [
                     "--entry-url",
@@ -878,12 +1013,16 @@ class ZsxqGroupExportTests(unittest.TestCase):
                 mock.patch.object(export_zsxq, "collect_entry_links", return_value=entry),
                 mock.patch.object(export_zsxq, "resolve_toc_item", return_value=topic),
                 mock.patch.object(export_zsxq, "download_image", side_effect=RuntimeError("blocked in test")),
+                mock.patch.object(export_zsxq, "download_file", return_value=attachment),
             ):
+                args.download_files = True
                 report = export_zsxq.export_entry(args)
 
             overview = output / "01-专栏正文.md"
             self.assertTrue(overview.exists())
-            self.assertEqual(report["exportedDocs"], 1)
+            self.assertEqual(report["exportedDocs"], 2)
+            self.assertEqual(report["attachmentSuccess"], 1)
+            self.assertIn("assets/files/attachment.pdf", overview.read_text(encoding="utf-8"))
 
             checkpoint = WandaoCheckpoint.open(root / "checkpoint.sqlite", task_id="default", provider_id="zsxq", action="export")
             try:

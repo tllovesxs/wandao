@@ -83,6 +83,8 @@ DEFAULT_COMMENT_BATCH_SIZE = 30
 DEFAULT_COMMENT_REQUEST_DELAY = 3.0
 DEFAULT_COMMENT_REQUEST_JITTER = 2.0
 MAX_FULL_COMMENT_PAGES = 200
+RATE_LIMIT_WINDOW_SECONDS = 20 * 60
+RATE_LIMIT_EXTENDED_BACKOFF_SECONDS = 5 * 60
 GROUP_CURSOR_NAME = "zsxq-group"
 EXPORT_SEQUENCE_RE = re.compile(r"^(?P<sequence>\d+)-")
 MAX_GROUP_NEWEST_REFRESH_PAGES = 250
@@ -473,34 +475,73 @@ def rate_limit_pause_seconds(args: argparse.Namespace | None, event_index: int) 
 
 def pause_for_rate_limit(args: argparse.Namespace | None, label: str, attempt: int, retries: int) -> None:
     events = 0
+    window_events = 0
     max_events = 1
     if args:
         events = int(getattr(args, "_rate_limit_events", 0) or 0) + 1
         args._rate_limit_events = events
         args._rate_limit_total_events = int(getattr(args, "_rate_limit_total_events", 0) or 0) + 1
         max_events = max(1, int(getattr(args, "rate_limit_max_events", 4) or 4))
+        now = time.monotonic()
+        recent_events = [
+            float(timestamp)
+            for timestamp in (getattr(args, "_rate_limit_recent_events", []) or [])
+            if now - float(timestamp) < RATE_LIMIT_WINDOW_SECONDS
+        ]
+        recent_events.append(now)
+        args._rate_limit_recent_events = recent_events
+        window_events = len(recent_events)
     # Both HTTP 429 and ZSXQ error 1059 reach this function.  Retry only after
     # a progressively longer cool-down; the next event beyond the configured
-    # budget becomes a resumable checkpoint pause rather than endless traffic.
+    # budget triggers an extended cooling-off period instead of repeatedly
+    # changing topic IDs while the account is still being rate limited.
+    # A successful request resets only the consecutive streak.  It must not
+    # erase a burst of intermittent limits across different topic IDs.
     if events >= max_events:
         raise RateLimitPaused(
             f"知识星球连续触发 {events} 次 429/1059 风控，已安全暂停并保存断点：{label}"
         )
+    if window_events >= max_events:
+        pause = RATE_LIMIT_EXTENDED_BACKOFF_SECONDS
+        emit(
+            args,
+            f"知识星球近 {RATE_LIMIT_WINDOW_SECONDS // 60} 分钟已触发 {window_events} 次 429/1059 风控，"
+            f"执行长休眠 {format_duration(pause)} 后自动继续：{label}",
+            event="task.paused",
+            level="warn",
+            stats={
+                "rateLimitEvents": events,
+                "rateLimitWindowEvents": window_events,
+                "rateLimitExtendedBackoffSeconds": round(pause, 1),
+            },
+        )
+        wait_with_stop(args, pause)
+        # A long recovery starts a new burst window. Without this reset, a
+        # later single 429 would immediately trigger another long sleep based
+        # on stale pre-cooldown events.
+        args._rate_limit_events = 0
+        args._rate_limit_recent_events = []
+        return
     if attempt >= retries:
         raise RateLimitPaused(f"429/1059 风控重试次数已用尽，已安全暂停并保存断点：{label}")
     pause = rate_limit_pause_seconds(args, events)
     emit(
         args,
-        f"触发 429/1059 风控第 {events} 次，长休眠 {format_duration(pause)} 后重试：{label}",
+        f"触发 429/1059 风控：连续第 {events} 次，近 {RATE_LIMIT_WINDOW_SECONDS // 60} 分钟第 {window_events} 次，"
+        f"长休眠 {format_duration(pause)} 后重试：{label}",
         event="task.paused",
         level="warn",
-        stats={"rateLimitEvents": events, "rateLimitBackoffSeconds": round(pause, 1)},
+        stats={
+            "rateLimitEvents": events,
+            "rateLimitWindowEvents": window_events,
+            "rateLimitBackoffSeconds": round(pause, 1),
+        },
     )
     wait_with_stop(args, pause)
 
 
 def clear_rate_limit_streak(args: argparse.Namespace | None) -> None:
-    """A successful protected request starts a later 429/1059 at stage one."""
+    """Reset only the consecutive streak after a successful protected request."""
     if args:
         args._rate_limit_events = 0
 
@@ -604,6 +645,19 @@ ZSXQ_CONVERTER_JS = r"""
     const text = candidates.sort((a, b) => b.length - a.length)[0] || el.innerText || el.textContent || "";
     return stripCodeToolbarText(text);
   }
+  function isCodeBlock(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.tagName.toLowerCase() === "pre") return true;
+    const className = String(el.className || "");
+    return /(?:^|[\s_-])(?:ql-)?code(?:[\s_-]|$)|codeblock|code-block|syntaxhighlighter|highlight|codemirror|monaco/i.test(className);
+  }
+  function fencedCodeBlock(el) {
+    const code = codeBlockText(el);
+    const backtickRuns = code.match(/`+/g) || [];
+    const fenceLength = Math.max(3, ...backtickRuns.map(run => run.length + 1));
+    const fence = "`".repeat(fenceLength);
+    return `${fence}\n${code}\n${fence}`;
+  }
   function inline(node) {
     if (!node) return "";
     if (node.nodeType === 3) return node.nodeValue.replace(/[\u200b\u200c\u200d\ufeff]/g, "");
@@ -664,7 +718,7 @@ ZSXQ_CONVERTER_JS = r"""
     if (el.classList && (el.classList.contains("comment-container") || el.classList.contains("comment-item"))) return "";
     if (/^h[1-6]$/.test(tag)) return "#".repeat(+tag[1] + 1) + " " + clean(inline(el));
     if (tag === "p") return clean(inline(el));
-    if (tag === "pre") return "```\n" + codeBlockText(el) + "\n```";
+    if (isCodeBlock(el)) return fencedCodeBlock(el);
     if (tag === "blockquote") return clean(el.innerText).split("\n").map(x => "> " + x).join("\n");
     if (tag === "ul" || tag === "ol") {
       const items = [...el.children].flatMap(child => {
@@ -703,7 +757,9 @@ ZSXQ_CONVERTER_JS = r"""
     || fallbackTitle
     || document.title.replace(/-知识星球$/, "")
   );
-  const markdown = [...root.children].map(block).filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+  // Normal blocks already use clean(). Do not globally collapse blank lines
+  // here, because that would alter whitespace inside fenced code blocks.
+  const markdown = [...root.children].map(block).filter(Boolean).join("\n\n").trim();
   const uniqueLinks = [];
   const seen = new Set();
   for (const link of links) {
@@ -5105,6 +5161,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             "attachmentRequestCount": int(getattr(args, "_resource_attachment_request_count", 0) or 0),
             "rateLimitEvents": int(getattr(args, "_rate_limit_total_events", 0) or 0),
             "rateLimitCurrentStreak": int(getattr(args, "_rate_limit_events", 0) or 0),
+            "rateLimitWindowEvents": len(getattr(args, "_rate_limit_recent_events", []) or []),
+            "rateLimitWindowSeconds": RATE_LIMIT_WINDOW_SECONDS,
             "requestDelaySeconds": float(getattr(args, "request_delay", 0) or 0),
             "requestJitterSeconds": float(getattr(args, "request_jitter", 0) or 0),
             "resourceRequestDelaySeconds": float(getattr(args, "resource_request_delay", 0) or 0),

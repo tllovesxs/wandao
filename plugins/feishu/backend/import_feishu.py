@@ -620,6 +620,13 @@ def normalize_title_from_md(md_path: Path) -> str:
     return sanitize_filename(match.group(1)) if match else sanitize_filename(md_path.stem)
 
 
+def import_title_from_markdown(md_path: Path, use_filename_as_title: bool = False) -> str:
+    """Return the title to write to Feishu without changing Markdown content."""
+    if use_filename_as_title:
+        return sanitize_filename(md_path.stem)
+    return normalize_title_from_md(md_path)
+
+
 def build_safe_import_title(md_path: Path) -> str:
     # 飞书导入任务在部分租户下遇到中文 file_name 会异步失败且不返回错误。
     # 这里使用 ASCII 临时标题，正文中的 Markdown 一级标题仍保留原文。
@@ -839,7 +846,11 @@ def markdown_order_key(md_path: Path, source_dir: Path) -> tuple[Any, ...]:
     return tuple(key)
 
 
-def scan_markdown_source(source_dir: Path, limit: int = 0) -> dict[str, Any]:
+def scan_markdown_source(
+    source_dir: Path,
+    limit: int = 0,
+    use_filename_as_title: bool = False,
+) -> dict[str, Any]:
     source_dir = source_dir.resolve()
     if not source_dir.exists():
         raise ExportError(f"Markdown 目录不存在：{source_dir}")
@@ -851,7 +862,7 @@ def scan_markdown_source(source_dir: Path, limit: int = 0) -> dict[str, Any]:
         rel = md_path.relative_to(source_dir)
         if any(part.lower() == "assets" for part in rel.parts):
             continue
-        title = normalize_title_from_md(md_path)
+        title = import_title_from_markdown(md_path, use_filename_as_title)
         docs.append(
             {
                 "path": str(md_path),
@@ -880,7 +891,11 @@ def select_source_file(args: argparse.Namespace) -> Path:
             raise ExportError(f"测试文件必须是 Markdown：{source_file}")
         return source_file
 
-    source = scan_markdown_source(Path(args.source_dir), limit=1)
+    source = scan_markdown_source(
+        Path(args.source_dir),
+        limit=1,
+        use_filename_as_title=bool(getattr(args, "use_filename_as_title", False)),
+    )
     docs = source.get("docs") or []
     if not docs:
         raise ExportError("本地 Markdown 目录里没有找到可导入的 .md 文件")
@@ -945,7 +960,11 @@ def probe_target_wiki(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def build_import_plan(args: argparse.Namespace) -> dict[str, Any]:
-    source = scan_markdown_source(Path(args.source_dir), limit=args.limit)
+    source = scan_markdown_source(
+        Path(args.source_dir),
+        limit=args.limit,
+        use_filename_as_title=bool(getattr(args, "use_filename_as_title", False)),
+    )
     wiki = probe_target_wiki(args)
     docs = source["docs"]
     return {
@@ -1820,7 +1839,7 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
     source_root = source_root_for_file(getattr(args, "source_dir", None), md_path)
     upload_md_path = md_path
     upload_temp_dir: Path | None = None
-    title = normalize_title_from_md(md_path)
+    title = import_title_from_markdown(md_path, bool(getattr(args, "use_filename_as_title", False)))
     import_title = build_safe_import_title(md_path)
     drive_folder_token = get_config_value(args, "drive_folder_token")
     drive_folder_token_from_config = bool(drive_folder_token)
@@ -2147,7 +2166,11 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
     if not get_config_value(args, "space_id"):
         raise ExportError("无法获取目标 Wiki 的 spaceId")
 
-    docs = scan_markdown_source(Path(args.source_dir), limit=max(0, int(getattr(args, "max_import", 0) or 0))).get("docs") or []
+    docs = scan_markdown_source(
+        Path(args.source_dir),
+        limit=max(0, int(getattr(args, "max_import", 0) or 0)),
+        use_filename_as_title=bool(getattr(args, "use_filename_as_title", False)),
+    ).get("docs") or []
     imported_by_relative_path: dict[str, str] = {}
     folder_tokens: dict[str, str] = {}
     checkpoint = open_checkpoint_from_args(args, "feishu-import", "import")
@@ -2397,6 +2420,7 @@ def run_gui(initial_args: argparse.Namespace | None = None) -> int:
     max_import_var = tk.StringVar(value=str(getattr(args0, "max_import", 0) or 0))
     image_max_width_var = tk.StringVar(value=str(getattr(args0, "image_max_width", DEFAULT_IMAGE_MAX_WIDTH) or DEFAULT_IMAGE_MAX_WIDTH))
     move_to_wiki_var = tk.BooleanVar(value=True)
+    use_filename_as_title_var = tk.BooleanVar(value=bool(getattr(args0, "use_filename_as_title", False)))
     skip_rename_var = tk.BooleanVar(value=bool(getattr(args0, "skip_rename", False)))
     repair_images_var = tk.BooleanVar(value=not bool(getattr(args0, "skip_image_repair", False)))
     require_image_repair_var = tk.BooleanVar(value=bool(getattr(args0, "require_image_repair", False)))
@@ -2550,6 +2574,7 @@ def run_gui(initial_args: argparse.Namespace | None = None) -> int:
             obj_type=obj_type_var.get().strip() or "docx",
             config_file=config_file_var.get().strip() or str(default_import_config_path()),
             move_to_wiki=move_to_wiki_var.get(),
+            use_filename_as_title=use_filename_as_title_var.get(),
             skip_rename=skip_rename_var.get(),
             skip_image_repair=not repair_images_var.get(),
             require_image_repair=require_image_repair_var.get(),
@@ -2745,8 +2770,9 @@ def run_gui(initial_args: argparse.Namespace | None = None) -> int:
     row(advanced_form, "最多导入数量", max_import_var, 15)
     row(advanced_form, "图片最大宽度 px", image_max_width_var, 16)
     tk.Checkbutton(advanced_form, text="导入后移动到目标 Wiki", variable=move_to_wiki_var).grid(row=17, column=1, sticky="w", pady=5)
-    tk.Checkbutton(advanced_form, text="跳过自动重命名", variable=skip_rename_var).grid(row=18, column=1, sticky="w", pady=5)
-    tk.Checkbutton(advanced_form, text="结束后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=19, column=1, sticky="w", pady=5)
+    tk.Checkbutton(advanced_form, text="使用 Markdown 文件名作为飞书标题（保留序号）", variable=use_filename_as_title_var).grid(row=18, column=1, sticky="w", pady=5)
+    tk.Checkbutton(advanced_form, text="跳过自动重命名", variable=skip_rename_var).grid(row=19, column=1, sticky="w", pady=5)
+    tk.Checkbutton(advanced_form, text="结束后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=20, column=1, sticky="w", pady=5)
 
     actions = tk.Frame(body, padx=14, pady=4)
     actions.pack(fill="x")
@@ -2821,6 +2847,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--obj-type", default="docx", help="Wiki move obj_type for imported document, usually docx")
     parser.add_argument("--wiki-grant-perm", default="edit", help=argparse.SUPPRESS)
     parser.add_argument("--move-to-wiki", action="store_true", help="Move imported docx into the target Wiki after import")
+    parser.add_argument("--use-filename-as-title", action="store_true", help="Use each Markdown filename (without .md) as its final Feishu title")
     parser.add_argument("--skip-rename", action="store_true", help="Do not rename imported docx back to the Markdown title")
     parser.add_argument("--skip-image-repair", action="store_true", help="Do not replace imported local-image placeholders")
     parser.add_argument("--require-image-repair", action="store_true", help="Fail the import if local-image repair fails")
@@ -2860,7 +2887,11 @@ def main(argv: list[str]) -> int:
         elif args.probe:
             result = probe_target_wiki(args)
         else:
-            result = scan_markdown_source(Path(args.source_dir), limit=args.limit)
+            result = scan_markdown_source(
+                Path(args.source_dir),
+                limit=args.limit,
+                use_filename_as_title=bool(getattr(args, "use_filename_as_title", False)),
+            )
         print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0
     except ExportStopped as exc:

@@ -8,6 +8,18 @@ from wandao_core.checkpoint import WandaoCheckpoint
 
 
 class FeishuImportResumeTests(unittest.TestCase):
+    def test_filename_title_option_preserves_wandao_export_order_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            markdown = root / "01-AAAAA.md"
+            markdown.write_text("# AAAAA\n\n正文\n", encoding="utf-8")
+
+            self.assertEqual(import_feishu.import_title_from_markdown(markdown), "AAAAA")
+            self.assertEqual(import_feishu.import_title_from_markdown(markdown, True), "01-AAAAA")
+
+            scanned = import_feishu.scan_markdown_source(root, use_filename_as_title=True)
+            self.assertEqual(scanned["docs"][0]["title"], "01-AAAAA")
+
     def test_batch_import_accepts_checkpoint_resume_and_retry_args(self) -> None:
         args = import_feishu.parse_args(
             [
@@ -16,7 +28,7 @@ class FeishuImportResumeTests(unittest.TestCase):
                 "--api-import-all", "--yes",
                 "--checkpoint-file", "source/.wandao/feishu-import.sqlite",
                 "--checkpoint-task-id", "feishu-import:stable",
-                "--resume", "--retry-failed",
+                "--resume", "--retry-failed", "--use-filename-as-title",
             ]
         )
 
@@ -24,6 +36,7 @@ class FeishuImportResumeTests(unittest.TestCase):
         self.assertEqual(args.checkpoint_task_id, "feishu-import:stable")
         self.assertTrue(args.resume)
         self.assertTrue(args.retry_failed)
+        self.assertTrue(args.use_filename_as_title)
 
     def test_resume_restores_completed_parent_wiki_token_before_selecting_docs(self) -> None:
         docs = [{"relativePath": "A.md"}, {"relativePath": "A/child.md"}]

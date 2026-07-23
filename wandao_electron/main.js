@@ -1963,7 +1963,17 @@ ipcMain.handle('get-plugin-catalog', async (event, options = {}) => {
 ipcMain.handle('install-plugin', async (event, pluginId, channel = 'stable') => {
   try {
     const registry = await currentPluginRegistry(true, channel === 'experimental' ? 'experimental' : 'stable');
-    const plugin = await pluginManager().installFromRegistry(String(pluginId || ''), registry);
+    const normalizedPluginId = String(pluginId || '');
+    const plugin = await pluginManager().installFromRegistry(normalizedPluginId, registry, {
+      onProgress: ({ receivedBytes, totalBytes }) => {
+        event.sender.send('plugin-download-progress', {
+          pluginId: normalizedPluginId,
+          phase: 'downloading',
+          receivedBytes: Number(receivedBytes) || 0,
+          totalBytes: Number(totalBytes) || 0
+        });
+      }
+    });
     return { success: true, plugin };
   } catch (error) {
     return { success: false, error: error.message || String(error) };

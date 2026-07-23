@@ -57,6 +57,17 @@ function requestBuffer(url, options = {}, redirects = 0) {
       }
       const chunks = [];
       let size = 0;
+      const headerSize = Number.parseInt(String(response.headers['content-length'] || ''), 10);
+      const totalBytes = Number.isFinite(headerSize) && headerSize >= 0 ? headerSize : 0;
+      const reportProgress = (receivedBytes) => {
+        if (typeof options.onProgress !== 'function') return;
+        try {
+          options.onProgress({ receivedBytes, totalBytes });
+        } catch (_error) {
+          // Progress reporting must never interrupt a verified plugin download.
+        }
+      };
+      reportProgress(0);
       response.on('data', (chunk) => {
         size += chunk.length;
         if (size > (options.maxBytes || MAX_DOWNLOAD_BYTES)) {
@@ -64,6 +75,7 @@ function requestBuffer(url, options = {}, redirects = 0) {
           return;
         }
         chunks.push(chunk);
+        reportProgress(size);
       });
       response.on('end', () => resolve(Buffer.concat(chunks)));
     });
@@ -152,11 +164,14 @@ class PluginManager {
     return registry;
   }
 
-  async installFromRegistry(pluginId, registry = null) {
+  async installFromRegistry(pluginId, registry = null, options = {}) {
     const index = registry || await this.fetchRegistry();
     const entry = index.plugins.find((item) => item.id === pluginId);
     if (!entry) throw new Error(`插件注册表中没有 ${pluginId}`);
-    const buffer = await requestBuffer(entry.packageUrl, { allowLocalHttp: this.allowLocalHttp });
+    const buffer = await requestBuffer(entry.packageUrl, {
+      allowLocalHttp: this.allowLocalHttp,
+      onProgress: options.onProgress
+    });
     if (sha256Hex(buffer) !== entry.sha256) throw new Error('插件下载文件的 SHA-256 与注册表不一致');
     return this.installBuffer(buffer, { registryEntry: entry });
   }

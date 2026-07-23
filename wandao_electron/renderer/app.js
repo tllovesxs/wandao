@@ -16,6 +16,8 @@ const NOTICE_CENTER_MANIFEST_URL = `${GITHUB_RAW_BASE}docs/tutorial-announcement
 const DEFAULT_BROWSER_DOWNLOAD_URL = 'https://www.google.com/chrome/';
 let pluginCatalogState = { status: 'idle', plugins: [], query: '', error: '', offline: false, experimentalError: '', updatedAt: '' };
 let pluginCatalogRequestId = 0;
+const pluginOperationState = new Map();
+let pluginBulkUpdateRunning = false;
 let customPluginMessageCleanup = null;
 const FALLBACK_NOTICE_CENTER = {
   version: 1,
@@ -2922,10 +2924,58 @@ function pluginGridHtml() {
   return `<div class="plugin-empty">${pluginCatalogState.query ? '没有匹配的插件。可尝试平台名称、功能或发布者。' : '暂时没有可显示的插件。你仍可安装经过签名的本地插件包。'}</div>`;
 }
 
+function formatPluginBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1024) return `${value} B`;
+  const units = ['KiB', 'MiB', 'GiB'];
+  let size = value / 1024;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
+}
+
+function pluginProgressDetails(operation) {
+  if (!operation) return null;
+  if (operation.phase === 'verifying') return { text: '下载完成，正在校验签名和完整性…', percent: 100, indeterminate: false };
+  if (operation.phase === 'preparing') return { text: '正在连接插件库…', percent: 0, indeterminate: true };
+  const receivedBytes = Math.max(0, Number(operation.receivedBytes) || 0);
+  const totalBytes = Math.max(0, Number(operation.totalBytes) || 0);
+  if (totalBytes > 0) {
+    const percent = Math.min(100, Math.round(receivedBytes / totalBytes * 100));
+    return { text: `正在下载 ${formatPluginBytes(receivedBytes)} / ${formatPluginBytes(totalBytes)}（${percent}%）`, percent, indeterminate: false };
+  }
+  return { text: `正在下载 ${formatPluginBytes(receivedBytes)}`, percent: 0, indeterminate: true };
+}
+
+function pluginProgressHtml(pluginId) {
+  const details = pluginProgressDetails(pluginOperationState.get(pluginId));
+  if (!details) return '';
+  return `<div class="plugin-download-progress" data-plugin-progress="${escapeHtml(pluginId)}" role="status" aria-live="polite">
+    <div class="plugin-download-progress-track"><span class="${details.indeterminate ? 'is-indeterminate' : ''}" style="width:${details.indeterminate ? 100 : details.percent}%"></span></div>
+    <span>${escapeHtml(details.text)}</span>
+  </div>`;
+}
+
+function refreshPluginProgressUi(pluginId) {
+  document.querySelectorAll(`[data-plugin-progress="${pluginId}"]`).forEach((element) => {
+    element.outerHTML = pluginProgressHtml(pluginId);
+  });
+}
+
+function pluginUpdateCandidates() {
+  return pluginCatalogState.plugins.filter((plugin) => plugin.updateAvailable && plugin.compatibility?.compatible !== false);
+}
+
 function renderPluginCard(plugin) {
   const permissionTags = pluginPermissionTags(plugin);
   const compatible = plugin.compatibility?.compatible !== false;
-  const primary = plugin.bundled && !plugin.installed && !plugin.updateAvailable
+  const operationRunning = pluginOperationState.has(plugin.id);
+  const primary = operationRunning
+    ? `<button class="btn-primary" type="button" disabled>${plugin.installed ? '正在更新…' : '正在安装…'}</button>`
+    : plugin.bundled && !plugin.installed && !plugin.updateAvailable
     ? '<span class="plugin-status">已随主程序提供</span>'
     : plugin.bundled && !plugin.installed
       ? `<button class="btn-primary" data-plugin-action="install" data-plugin-id="${escapeHtml(plugin.id)}" type="button" ${compatible ? '' : 'disabled'}>安装更新</button>`
@@ -2948,6 +2998,7 @@ function renderPluginCard(plugin) {
         ${permissionTags.map((item) => `<span>${escapeHtml(item)}</span>`).join('') || '<span>无需额外权限</span>'}
       </div>
       <div class="plugin-status ${compatible ? '' : 'incompatible'}">${escapeHtml(pluginStatusText(plugin))}</div>
+      ${pluginProgressHtml(plugin.id)}
       <div class="plugin-card-actions">
         ${primary}
         ${plugin.installed && (plugin.previousVersions || []).length ? `<button class="btn-text" data-plugin-action="rollback" data-plugin-id="${escapeHtml(plugin.id)}" type="button">回滚</button>` : ''}
@@ -2981,6 +3032,21 @@ async function refreshProvidersAfterPluginChange() {
   renderProviderNavigation();
 }
 
+async function installPluginFromCatalog(plugin) {
+  pluginOperationState.set(plugin.id, { phase: 'preparing', receivedBytes: 0, totalBytes: 0 });
+  if (currentTool === 'plugin-center') renderPluginCenterPage();
+  try {
+    const result = await window.electronAPI.installPlugin(plugin.id, plugin.channel || 'stable');
+    if (!result?.success) throw new Error(result?.error || '插件操作失败');
+    pluginOperationState.set(plugin.id, { phase: 'verifying', receivedBytes: 0, totalBytes: 0 });
+    if (currentTool === 'plugin-center') refreshPluginProgressUi(plugin.id);
+    return result;
+  } finally {
+    pluginOperationState.delete(plugin.id);
+    if (currentTool === 'plugin-center') renderPluginCenterPage();
+  }
+}
+
 async function runPluginCenterAction(action, pluginId, button) {
   button.disabled = true;
   try {
@@ -2990,7 +3056,7 @@ async function runPluginCenterAction(action, pluginId, button) {
       const permissions = pluginPermissionTags(plugin || {});
       const detail = permissions.length ? `\n\n将授予：${permissions.join('、')}` : '';
       if (!confirm(`${plugin?.installed ? '更新' : '安装'}插件“${plugin?.name || pluginId}”？${detail}`)) return;
-      result = await window.electronAPI.installPlugin(pluginId, plugin?.channel || 'stable');
+      result = await installPluginFromCatalog(plugin);
     } else if (action === 'toggle') {
       result = await window.electronAPI.setPluginEnabled(pluginId, button.dataset.enabled === 'true');
     } else if (action === 'rollback') {
@@ -3012,6 +3078,37 @@ async function runPluginCenterAction(action, pluginId, button) {
   }
 }
 
+async function runPluginCenterUpdateAll(button) {
+  const candidates = pluginUpdateCandidates();
+  if (!candidates.length) return;
+  if (!confirm(`更新全部 ${candidates.length} 个可更新插件？将逐个下载、校验并安装，已安装的插件数据不会删除。`)) return;
+  pluginBulkUpdateRunning = true;
+  button.disabled = true;
+  if (currentTool === 'plugin-center') renderPluginCenterPage();
+  const failed = [];
+  try {
+    for (const plugin of candidates) {
+      try {
+        await installPluginFromCatalog(plugin);
+        log(`插件已更新：${plugin.name || plugin.id}`, 'success');
+      } catch (error) {
+        failed.push(`${plugin.name || plugin.id}：${formatError(error)}`);
+        log(`插件更新失败：${plugin.name || plugin.id}：${formatError(error)}`, 'error');
+      }
+    }
+    await refreshProvidersAfterPluginChange();
+    await loadPluginCatalog(true);
+    if (failed.length) {
+      alert(`已完成批量更新，但 ${failed.length} 个插件失败：\n${failed.join('\n')}`);
+    } else {
+      log(`已完成 ${candidates.length} 个插件的更新`, 'success');
+    }
+  } finally {
+    pluginBulkUpdateRunning = false;
+    if (currentTool === 'plugin-center') renderPluginCenterPage();
+  }
+}
+
 function bindPluginCenterActions(root) {
   root.querySelector('[data-plugin-refresh]')?.addEventListener('click', () => loadPluginCatalog(true));
   root.querySelector('[data-plugin-local-install]')?.addEventListener('click', async (event) => {
@@ -3028,6 +3125,7 @@ function bindPluginCenterActions(root) {
       event.currentTarget.disabled = false;
     }
   });
+  root.querySelector('[data-plugin-update-all]')?.addEventListener('click', (event) => runPluginCenterUpdateAll(event.currentTarget));
   root.querySelector('[data-plugin-search]')?.addEventListener('input', (event) => {
     pluginCatalogState = { ...pluginCatalogState, query: event.currentTarget.value };
     const grid = root.querySelector('[data-plugin-grid]');
@@ -3065,6 +3163,8 @@ function renderPluginCenterPage() {
   const experimental = pluginCatalogState.experimentalError
     ? `<div class="info-box plugin-offline"><strong>实验插件库暂时无法读取</strong><p>稳定插件不受影响。${escapeHtml(pluginCatalogState.experimentalError)}</p></div>`
     : '<div class="info-box plugin-experimental-notice"><strong>实验性插件已标注</strong><p>它们会正常显示和搜索，但可能功能不完整或存在兼容性限制。</p></div>';
+  const updateCount = pluginUpdateCandidates().length;
+  const updateAllDisabled = !updateCount || pluginCatalogState.status === 'loading' || pluginCatalogState.offline || pluginBulkUpdateRunning;
   contentArea.innerHTML = `
     <section class="view-panel plugin-center-hero">
       <div class="view-panel-header">
@@ -3075,6 +3175,7 @@ function renderPluginCenterPage() {
         </div>
         <div class="plugin-toolbar">
           <button class="btn-secondary" data-plugin-local-install type="button">安装本地插件</button>
+          <button class="btn-secondary" data-plugin-update-all type="button" ${updateAllDisabled ? 'disabled' : ''}>${pluginBulkUpdateRunning ? '正在更新全部…' : `一键更新全部${updateCount ? `（${updateCount}）` : ''}`}</button>
           <button class="btn-primary" data-plugin-refresh type="button">刷新插件库</button>
         </div>
       </div>
@@ -5913,6 +6014,19 @@ function initializePythonProcessStateSync() {
   return pythonProcessStateReady;
 }
 
+function initializePluginDownloadProgress() {
+  window.electronAPI.onPluginDownloadProgress?.((progress) => {
+    const pluginId = String(progress?.pluginId || '');
+    if (!pluginId || !pluginOperationState.has(pluginId)) return;
+    pluginOperationState.set(pluginId, {
+      phase: progress?.phase === 'downloading' ? 'downloading' : 'preparing',
+      receivedBytes: Number(progress?.receivedBytes) || 0,
+      totalBytes: Number(progress?.totalBytes) || 0
+    });
+    if (currentTool === 'plugin-center') refreshPluginProgressUi(pluginId);
+  });
+}
+
 function isAllowedWhileRunningControl(control) {
   return Boolean(control?.matches?.(
     '[id$="-stop"], [id$="-login-done"], ' +
@@ -6291,6 +6405,10 @@ function loadFeishuImportTool() {
               <span>导入后移动到目标 Wiki</span>
             </label>
             <label class="checkbox-label">
+              <input type="checkbox" id="feishu-import-use-filename-as-title">
+              <span>使用 Markdown 文件名作为飞书标题（保留 01- 等序号）</span>
+            </label>
+            <label class="checkbox-label">
               <input type="checkbox" id="feishu-import-skip-rename">
               <span>跳过自动重命名</span>
             </label>
@@ -6352,6 +6470,7 @@ function buildFeishuImportArgs() {
 
   if (document.getElementById('feishu-import-move-to-wiki').checked) args.push('--move-to-wiki');
   if (sourceDir) args.push('--checkpoint-file', `${sourceDir.replace(/[\\/]+$/, '')}/.wandao/feishu-import.sqlite`, '--resume', '--checkpoint-task-id', 'feishu-import');
+  if (document.getElementById('feishu-import-use-filename-as-title').checked) args.push('--use-filename-as-title');
   if (document.getElementById('feishu-import-skip-rename').checked) args.push('--skip-rename');
   if (!document.getElementById('feishu-import-repair-images').checked) args.push('--skip-image-repair');
   if (document.getElementById('feishu-import-require-image-repair').checked) args.push('--require-image-repair');
@@ -6540,6 +6659,7 @@ document.addEventListener('DOMContentLoaded', () => {
   applyTheme(loadTheme());
   initializeFormDraftPersistence();
   initializePythonProcessStateSync();
+  initializePluginDownloadProgress();
   renderProviderNavigation();
   document.addEventListener('click', (event) => {
     if (!isRunning) return;

@@ -144,6 +144,7 @@ test('signed registry installs a plugin over the network', async () => {
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify(registry));
     } else if (request.url === '/demo.wandao-plugin') {
+      response.setHeader('content-length', String(pkg.length));
       response.end(pkg);
     } else {
       response.statusCode = 404;
@@ -172,8 +173,11 @@ test('signed registry installs a plugin over the network', async () => {
       allowLocalHttp: true
     });
     const index = await manager.fetchRegistry();
-    await manager.installFromRegistry('demo', index);
+    const progress = [];
+    await manager.installFromRegistry('demo', index, { onProgress: (entry) => progress.push(entry) });
     assert.equal(manager.describeInstalled('demo').currentVersion, '1.0.0');
+    assert.deepEqual(progress[0], { receivedBytes: 0, totalBytes: pkg.length });
+    assert.deepEqual(progress.at(-1), { receivedBytes: pkg.length, totalBytes: pkg.length });
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(root, { recursive: true, force: true });

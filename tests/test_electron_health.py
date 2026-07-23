@@ -336,6 +336,27 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("runProviderCommand(provider.script, args, {", command)
         self.assertIn("providerId: 'feishu-import'", command)
 
+    def test_feishu_import_exposes_filename_title_option_from_its_dedicated_page(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        builder_start = app_js.index("function buildFeishuImportArgs")
+        builder_end = app_js.index("function feishuActionAttentionMessage", builder_start)
+        builder = app_js[builder_start:builder_end]
+
+        self.assertIn('id="feishu-import-use-filename-as-title"', app_js)
+        self.assertIn("--use-filename-as-title", builder)
+
+    def test_plugin_center_supports_bulk_updates_and_download_progress(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        main_js = read_text("wandao_electron/main.js")
+        preload_js = read_text("wandao_electron/preload.js")
+
+        self.assertIn("data-plugin-update-all", app_js)
+        self.assertIn("runPluginCenterUpdateAll", app_js)
+        self.assertIn("plugin-download-progress", app_js)
+        self.assertIn("onPluginDownloadProgress", app_js)
+        self.assertIn("plugin-download-progress", main_js)
+        self.assertIn("onPluginDownloadProgress", preload_js)
+
     def test_plugin_runtime_migrates_known_legacy_state_without_exposing_the_data_root(self) -> None:
         main_js = read_text("wandao_electron/main.js")
         migration_js = read_text("wandao_electron/plugin_state_migration.js")

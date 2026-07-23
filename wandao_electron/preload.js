@@ -59,5 +59,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (event, data) => callback(data);
     ipcRenderer.on('python-process-state', listener);
     return () => ipcRenderer.removeListener('python-process-state', listener);
+  },
+  onPluginDownloadProgress: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('plugin-download-progress', listener);
+    return () => ipcRenderer.removeListener('plugin-download-progress', listener);
   }
 });

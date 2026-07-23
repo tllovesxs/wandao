@@ -2922,6 +2922,38 @@ button,
   margin-top: auto;
 }
 
+.plugin-download-progress {
+  display: grid;
+  gap: var(--s-2);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.plugin-download-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--surface-sunk);
+}
+
+.plugin-download-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  transition: width 160ms ease;
+}
+
+.plugin-download-progress-track span.is-indeterminate {
+  width: 42% !important;
+  animation: plugin-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes plugin-progress-slide {
+  0%, 100% { transform: translateX(-100%); }
+  50% { transform: translateX(140%); }
+}
+
 .plugin-status.incompatible,
 .danger-text {
   color: var(--danger);

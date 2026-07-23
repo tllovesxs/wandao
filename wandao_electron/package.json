@@ -36,7 +36,7 @@
     "url": "https://github.com/tllovesxs/wandao.git"
   },
   "devDependencies": {
-    "electron": "^39.8.5",
+    "electron": "^43.2.0",
     "electron-builder": "^26.15.3"
   },
   "build": {

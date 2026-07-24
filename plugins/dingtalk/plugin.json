@@ -4,7 +4,7 @@
   "id": "dingtalk",
   "name": "钉钉文档",
   "description": "导出本人有权限访问的钉钉文档目录为本地 Markdown，保留目录层级与可下载图片。",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "Wandao Official",
   "homepage": "https://docs.dingtalk.com/",
   "license": "AGPL-3.0-only",

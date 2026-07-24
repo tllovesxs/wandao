@@ -217,11 +217,14 @@ class DingTalkExportTests(unittest.TestCase):
             dingtalk.read_limited_response(FakeResponse(), max_bytes=5)
 
     def test_document_requests_have_a_bounded_browser_timeout(self) -> None:
-        self.assertIn("version === 4", dingtalk.DINGTALK_HELPER_JS)
-        self.assertIn("version: 4", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("version === 5", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("version: 5", dingtalk.DINGTALK_HELPER_JS)
         self.assertIn("fetchWithTimeout", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("fetchJsonWithTimeout", dingtalk.DINGTALK_HELPER_JS)
         self.assertIn("readArrayBufferWithTimeout", dingtalk.DINGTALK_HELPER_JS)
         self.assertIn("AbortController", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("payload = await response.json()", dingtalk.DINGTALK_HELPER_JS)
+        self.assertIn("clearTimeout(timer)", dingtalk.DINGTALK_HELPER_JS)
         self.assertIn("}, 45000)", dingtalk.DINGTALK_HELPER_JS)
         self.assertIn("}, 15000)", dingtalk.DINGTALK_HELPER_JS)
         self.assertEqual(dingtalk.ASSET_DOWNLOAD_WORKERS, 6)

@@ -283,7 +283,7 @@ DINGTALK_HELPER_JS = r"""
   // Bump this protocol whenever the helper behavior changes.  The plugin
   // browser stays alive between actions, so keeping the old helper version
   // would silently bypass a newly installed timeout or safety fix.
-  if (window.__wandaoDingTalk && window.__wandaoDingTalk.version === 4) return true;
+  if (window.__wandaoDingTalk && window.__wandaoDingTalk.version === 5) return true;
   const base = location.origin;
   const fetchWithTimeout = async (url, options = {}, timeoutMs = 45000) => {
     const controller = new AbortController();
@@ -308,23 +308,48 @@ DINGTALK_HELPER_JS = r"""
       if (timer) clearTimeout(timer);
     }
   };
+  const fetchJsonWithTimeout = async (url, options = {}, timeoutMs = 45000) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+      let payload = {};
+      try {
+        // Keep the timeout active while the response body is still streaming.
+        // A DingTalk API can send headers successfully but then never finish
+        // the JSON body; timing out only fetch() would leave this Promise stuck.
+        payload = await response.json();
+      } catch (error) {
+        if (error && error.name === 'AbortError') throw error;
+      }
+      return { response, payload };
+    } catch (error) {
+      if (error && error.name === 'AbortError') throw new Error(`请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const requestJson = async (path, options = {}, timeoutMs = 45000) => {
-    const tokenResponse = await fetchWithTimeout('/portal/api/v1/token/getAccessToken', { method: 'POST', credentials: 'include' }, 30000);
-    const tokenPayload = await tokenResponse.json().catch(() => ({}));
+    const { payload: tokenPayload } = await fetchJsonWithTimeout(
+      '/portal/api/v1/token/getAccessToken', { method: 'POST', credentials: 'include' }, 30000
+    );
     const token = tokenPayload && tokenPayload.data && tokenPayload.data.accessToken;
     if (!token) throw new Error('钉钉登录已失效，请重新登录并保存会话。');
     const headers = Object.assign({}, options.headers || {}, { 'A-Token': token });
     let corpId = (document.cookie.match(/(?:^|;\s*)portal_corp_id=([^;]+)/) || [])[1] || '';
     if (!corpId) {
-      const userResponse = await fetchWithTimeout('/api/users/getUserInfo', { method: 'POST', credentials: 'include', headers }, 30000);
-      const userPayload = await userResponse.json().catch(() => ({}));
+      const { payload: userPayload } = await fetchJsonWithTimeout(
+        '/api/users/getUserInfo', { method: 'POST', credentials: 'include', headers }, 30000
+      );
       const orgs = (userPayload.data && (userPayload.data.orgs || userPayload.data.orgDTOList)) || [];
       const main = orgs.find((item) => item && item.isMainOrg) || orgs[0] || {};
       corpId = main.corpId || main.id || '';
     }
     if (corpId) headers['corp-id'] = decodeURIComponent(corpId);
-    const response = await fetchWithTimeout(base + path, Object.assign({ credentials: 'include' }, options, { headers }), timeoutMs);
-    const payload = await response.json().catch(() => ({}));
+    const { response, payload } = await fetchJsonWithTimeout(
+      base + path, Object.assign({ credentials: 'include' }, options, { headers }), timeoutMs
+    );
     if (!response.ok || !payload.isSuccess) {
       const message = (payload && (payload.message || payload.errorMessage || payload.errorCode)) || `HTTP ${response.status}`;
       throw new Error(String(message));
@@ -332,7 +357,7 @@ DINGTALK_HELPER_JS = r"""
     return payload.data || {};
   };
   const api = {
-    version: 4,
+    version: 5,
     profile: async () => {
       const data = await requestJson('/api/users/getUserInfo', { method: 'POST' });
       const user = data.user || {};

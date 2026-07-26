@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import py_compile
+import re
 import subprocess
 import sys
 import unittest
@@ -44,6 +45,49 @@ NODE_CHECK_FILES = [
     "scripts/plugin_release_policy.js",
     "wandao_electron/scripts/prepare_python_runtime.py",
 ]
+
+# tests_js 走目录级发现，不再维护手写清单：新增的 *.test.js 自动纳入门禁。
+NODE_TEST_DIR = "tests_js"
+
+# 两个历史测试会把本文件当纯文本读，断言里写死了 `"tests_js/<name>.test.js"`
+# 字面量，用来确认自己确实被门禁跑到（tests_js/import_write_guidance.test.js:62、
+# tests_js/toc_rendering.test.js:146）。目录级发现已经天然覆盖全部
+# tests_js/*.test.js，这里保留字面量只是为了让那两条断言继续成立，
+# 它不是测试清单的来源。下面 run_node_checks() 里的一致性检查保证它不会悄悄失效。
+# 后续把那两条断言改成「检查目录级发现」之后，这个常量就可以删掉。
+SELF_REGISTERING_TEST_FILES = [
+    "tests_js/import_write_guidance.test.js",
+    "tests_js/toc_rendering.test.js",
+]
+ELECTRON_DIST_RELATIVE = "wandao_electron/node_modules/electron/dist"
+
+
+def _requires_electron_binary(path: Path) -> bool:
+    """True when a test spawns the real Electron binary out of node_modules."""
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    compact = re.sub(r"['\"\s,]+", "/", source)
+    return "node_modules/electron/dist" in compact
+
+
+def iter_node_test_files() -> tuple[list[Path], list[Path]]:
+    """Discover every tests_js/*.test.js.
+
+    Returns (runnable, skipped). Tests that drive the real Electron binary are
+    skipped when wandao_electron/node_modules/electron is absent, otherwise the
+    gate would go red purely because an optional dev dependency is not installed.
+    """
+    electron_installed = (REPO_ROOT / ELECTRON_DIST_RELATIVE).is_dir()
+    runnable: list[Path] = []
+    skipped: list[Path] = []
+    for path in sorted((REPO_ROOT / NODE_TEST_DIR).glob("*.test.js")):
+        if not electron_installed and _requires_electron_binary(path):
+            skipped.append(path)
+        else:
+            runnable.append(path)
+    return runnable, skipped
 
 
 def iter_python_files() -> list[Path]:
@@ -95,30 +139,20 @@ def run_node_checks() -> None:
         subprocess.run(["node", "--check", str(path)], cwd=REPO_ROOT, check=True)
         checked += 1
     subprocess.run(["node", "scripts/validate_plugins.js"], cwd=REPO_ROOT, check=True)
+    tests, skipped_tests = iter_node_test_files()
+    if not tests:
+        raise SystemExit(f"{NODE_TEST_DIR} 下没有发现任何 *.test.js")
+    discovered = {path.relative_to(REPO_ROOT).as_posix() for path in tests}
+    unwired = [name for name in SELF_REGISTERING_TEST_FILES if name not in discovered]
+    if unwired:
+        raise SystemExit("目录级发现没有覆盖到自注册测试：" + ", ".join(unwired))
+    for path in skipped_tests:
+        print(
+            f"Skipping {path.relative_to(REPO_ROOT).as_posix()}: "
+            f"{ELECTRON_DIST_RELATIVE} is not installed."
+        )
     subprocess.run(
-        [
-            "node", "--test",
-            "tests_js/plugin_manager.test.js",
-            "tests_js/process_result.test.js",
-            "tests_js/command_security.test.js",
-            "tests_js/provider_script_routing.test.js",
-            "tests_js/plugin_release_policy.test.js",
-            "tests_js/plugin_state_migration.test.js",
-            "tests_js/provider_legacy_compat.test.js",
-            "tests_js/time_format.test.js",
-            "tests_js/form_drafts.test.js",
-            "tests_js/recent_inputs.test.js",
-            "tests_js/manifest_form_validation.test.js",
-            "tests_js/import_write_guidance.test.js",
-            "tests_js/task_accessibility.test.js",
-            "tests_js/task_report.test.js",
-            "tests_js/task_history.test.js",
-            "tests_js/task_history_persistence.test.js",
-            "tests_js/task_resume.test.js",
-            "tests_js/provider_toc_contract.test.js",
-            "tests_js/toc_tree.test.js",
-            "tests_js/toc_rendering.test.js",
-        ],
+        ["node", "--test", *[path.relative_to(REPO_ROOT).as_posix() for path in tests]],
         cwd=REPO_ROOT,
         check=True,
     )
@@ -189,7 +223,7 @@ def run_node_checks() -> None:
         cwd=REPO_ROOT,
         check=True,
     )
-    print(f"Node syntax check passed ({checked} files).")
+    print(f"Node syntax check passed ({checked} files, {len(tests)} test files).")
 
 
 def run_diff_check() -> None:

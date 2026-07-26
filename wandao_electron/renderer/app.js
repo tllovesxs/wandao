@@ -381,7 +381,7 @@ const ERROR_RULES = [
   {
     category: '目标平台 API 权限不足',
     pattern: /(scope|required scope|scopes required|OpenAPI|API 权限|应用身份权限|drive:|docx:|docs:|wiki:|tenant_access_token|app ticket|99991672|权限申请)/i,
-    title: '目标平台 API 权限不足',
+    title: '当前应用还没有拿到这个接口的授权',
     suggestion: '请按页面提示开通所需 API 权限，并在平台开放后台发布应用新版本后重试。'
   },
   {
@@ -399,7 +399,7 @@ const ERROR_RULES = [
   {
     category: '请求过快或平台限流',
     pattern: /(rate limit|Too Many Requests|HTTP 429|请求过快|请求频率|频率过高|限流|rateLimited|too frequent)/i,
-    title: '请求过快或平台限流',
+    title: '短时间内请求太多，被平台临时拦截',
     suggestion: '请调大请求延迟和随机浮动，等待一段时间后再继续，必要时使用增量模式补齐缺失内容。'
   },
   {
@@ -411,7 +411,7 @@ const ERROR_RULES = [
   {
     category: '页面结构变化',
     pattern: /(selector|querySelector|Cannot read properties|页面结构|目录条目|找不到元素|未找到按钮|无法定位|DOM|XPath|element not found)/i,
-    title: '页面结构可能变化',
+    title: '自动化没有在页面上找到预期的元素',
     suggestion: '平台页面可能改版，自动化没有找到对应按钮或正文区域。请复制错误报告给开发者适配。'
   },
   {
@@ -1827,14 +1827,14 @@ async function loadProviderManifests() {
   if (!window.electronAPI.getProviderManifests || !PROVIDER_REGISTRY?.replaceExternal) return;
   const result = await window.electronAPI.getProviderManifests();
   if (!result?.success) {
-    log(`加载社区 provider 失败：${result?.error || '未知错误'}`, 'error');
+    log(`加载社区平台插件失败：${result?.error || '未知错误'}`, 'error');
     return;
   }
   const manifests = Array.isArray(result.providers) ? result.providers : [];
   const manifestErrors = Array.isArray(result.errors) ? result.errors : [];
   manifestErrors.forEach((message) => appendDetailedLog('provider', 'error', message));
   if (manifestErrors.length) {
-    appendUserLog(`有 ${manifestErrors.length} 个本地 Provider 配置无效，已安全忽略。详情请查看详细日志。`, 'warn');
+    appendUserLog(`有 ${manifestErrors.length} 个本地平台配置无效，已安全忽略。详情请查看详细日志。`, 'warn');
   }
   PROVIDER_REGISTRY.replaceExternal(manifests);
   refreshProviderTools();
@@ -1857,7 +1857,7 @@ function renderProviderSafetyNotice(provider) {
   return `
     <div class="info-box provider-safety-notice">
       <strong>${escapeHtml(title)}</strong>
-      <p>这个 Provider 来自${escapeHtml(source)}，执行动作时会在本机运行脚本。请确认来源可信，不要运行陌生人提供的未知脚本。</p>
+      <p>这个平台插件来自${escapeHtml(source)}，执行动作时会在本机运行脚本。请确认来源可信，不要运行陌生人提供的未知脚本。</p>
     </div>
   `;
 }
@@ -3354,7 +3354,7 @@ function renderRequirements(provider) {
   return `
     <div class="requirements-card">
       <strong>运行依赖</strong>
-      <p>这个 provider 声明了额外依赖。正式执行前请确认本机环境已满足；万能导不会自动安装社区插件依赖。</p>
+      <p>这个平台插件声明了额外依赖。正式执行前请确认本机环境已满足；万能导不会自动安装社区插件依赖。</p>
       <ul>${list.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
     </div>
   `;
@@ -3372,7 +3372,7 @@ async function hydrateGuideImages(container, providerId) {
     const imagePath = image.dataset.guideImage || '';
     try {
       const result = await window.electronAPI.readProviderGuideImage(providerId, imagePath);
-      if (!result?.success || !result.dataUrl) throw new Error(result?.error || '????????');
+      if (!result?.success || !result.dataUrl) throw new Error(result?.error || '教程图片读取失败');
       image.src = result.dataUrl;
       image.removeAttribute('data-guide-image');
     } catch (error) {
@@ -3411,7 +3411,7 @@ function renderGuideProvider(provider) {
     provider.capabilities?.tree ? '支持目录结构' : '',
     provider.capabilities?.batch ? '支持批量' : ''
   ].filter(Boolean);
-  const guide = provider.guideMarkdown || '# 暂无教程\n\n这个 provider 还没有提供 README.md。';
+  const guide = provider.guideMarkdown || '# 暂无教程\n\n这个平台还没有提供教程文档。';
   contentArea.innerHTML = `
     <div class="guide-panel">
       <section class="provider-overview-card">
@@ -3810,7 +3810,7 @@ function initializeManifestProviderHandlers(provider, actions, fields) {
       }
       const script = action.script || provider.script;
       if (!script) {
-        alert('这个动作没有配置脚本，可能只是教程型 provider。');
+        alert('这个动作没有配置脚本，可能只是纯教程型平台。');
         return;
       }
       let args;
@@ -3831,7 +3831,7 @@ function initializeManifestProviderHandlers(provider, actions, fields) {
         loginDoneButton.disabled = false;
         loginDoneButton.textContent = '我已完成登录，保存凭证';
       }
-      startProgress(action.progressTitle || action.label || provider.title, action.progressDetail || '正在执行 provider 动作...');
+      startProgress(action.progressTitle || action.label || provider.title, action.progressDetail || '正在执行平台动作...');
       log(`开始：${action.label || provider.title}`, 'info');
       try {
         const result = await runProviderCommand(script, args, {
@@ -4141,7 +4141,7 @@ function switchTool(toolId) {
 
   const config = TOOLS[currentTool];
   if (!config) {
-    log(`未找到平台 provider：${currentTool}`, 'error');
+    log(`未找到这个平台：${currentTool}`, 'error');
     switchTool(DEFAULT_VIEW_ID);
     return;
   }
@@ -4555,7 +4555,7 @@ async function saveImaConfig(prefix) {
   log(`开始：${title}`, 'info');
   try {
     const provider = TOOLS[prefix];
-    if (!provider?.script) throw new Error(`ima Provider 未提供脚本：${prefix}`);
+    if (!provider?.script) throw new Error(`ima 平台未提供脚本：${prefix}`);
     const result = await runProviderCommand(provider.script, args, {
       providerId: prefix,
       title,
@@ -4692,7 +4692,7 @@ async function runImaImportCommand(args, title, detail = '正在处理 ima 知�
   log(`开始：${title}`, 'info');
   try {
     const provider = TOOLS['ima-import'];
-    if (!provider?.script) throw new Error('ima 导入 Provider 未提供脚本');
+    if (!provider?.script) throw new Error('ima 导入未提供脚本');
     const result = await runProviderCommand(provider.script, args, {
       providerId: 'ima-import',
       title,
@@ -4998,7 +4998,7 @@ async function runYuqueImportCommand(args, title, detail = '正在处理语雀�
   log(`开始：${title}`, 'info');
   try {
     const provider = TOOLS['yuque-import'];
-    if (!provider?.script) throw new Error('语雀导入 Provider 未提供脚本');
+    if (!provider?.script) throw new Error('语雀导入未提供脚本');
     const result = await runProviderCommand(provider.script, args, {
       providerId: 'yuque-import',
       title,
@@ -5161,7 +5161,7 @@ async function handleYinxiangImportLogin() {
   log('开始：登录并同步印象笔记凭证', 'info');
   try {
     const exportProvider = TOOLS.yinxiang;
-    if (!exportProvider?.script) throw new Error('印象笔记导出 Provider 未提供凭证初始化脚本');
+    if (!exportProvider?.script) throw new Error('印象笔记导出未提供凭证初始化脚本');
     const result = await runProviderCommand(exportProvider.script, args, {
       providerId: 'yinxiang-import',
       title: '登录并同步印象笔记凭证',
@@ -5192,7 +5192,7 @@ async function runYinxiangImportCommand(args, title, detail = '正在处理印�
   log(`开始：${title}`, 'info');
   try {
     const provider = TOOLS['yinxiang-import'];
-    if (!provider?.script) throw new Error('印象笔记导入 Provider 未提供脚本');
+    if (!provider?.script) throw new Error('印象笔记导入未提供脚本');
     const result = await runProviderCommand(provider.script, args, {
       providerId: 'yinxiang-import',
       title,
@@ -6495,7 +6495,7 @@ async function runFeishuImportCommand(args, taskName) {
   log(`开始：${taskName}`, 'info');
   try {
     const provider = TOOLS['feishu-import'];
-    if (!provider?.script) throw new Error('飞书导入 Provider 未提供脚本');
+    if (!provider?.script) throw new Error('飞书导入未提供脚本');
     const result = await runProviderCommand(provider.script, args, {
       providerId: 'feishu-import',
       title: taskName,

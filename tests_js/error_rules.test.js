@@ -123,3 +123,68 @@ test('B1 图片下载超时仍然是“图片或附件下载失败”，登录/�
   assert.equal(categoryOf('HTTP 429 Too Many Requests'), '请求过快或平台限流');
   assert.equal(categoryOf('Access denied: HTTP 403'), '没有访问权限');
 });
+
+test('B2 平台 404 / 远端内容不存在不再被当成本地路径问题', () => {
+  const samples = [
+    'GET https://open.feishu.cn/open-apis/wiki/v2/spaces/x 失败：HTTP 404 Not Found',
+    '{"code":404,"msg":"not found"}',
+    'WPSApiError: status=404',
+    '选择的 OneNote 页面不存在或目录已变化，请重新读取目录：a, b',
+    '目标帖子不存在、已删除，或接口返回的帖子 ID 不可用。',
+    '语雀返回：文档已删除',
+    'invalid node_token',
+    '无效的知识库链接，请重新复制'
+  ];
+  for (const sample of samples) {
+    assert.equal(categoryOf(sample), '远端内容不存在', sample.slice(0, 60));
+    assert.notEqual(categoryOf(sample), '本地文件路径问题', sample.slice(0, 60));
+  }
+});
+
+test('B2 “远端内容不存在”提示的是链接/权限方向，不再让用户去查输入输出目录', () => {
+  const rule = classifyError('HTTP 404 Not Found');
+  assert.doesNotMatch(rule.suggestion, /输入目录|输出目录|脚本文件/);
+  assert.match(rule.suggestion, /链接|浏览器/);
+});
+
+// 反向断言：收紧后原本命中“本地文件路径问题”的真实报错必须继续命中。
+test('B2 真正的本地路径错误仍然落到“本地文件路径问题”', () => {
+  const samples = [
+    "FileNotFoundError: [Errno 2] No such file or directory: 'D:\\\\notes\\\\a.md'",
+    "ENOENT: no such file or directory, open 'C:\\\\tmp\\\\a.md'",
+    "python: can't open file 'export_yuque.py': [Errno 2] No such file or directory",
+    'Markdown 目录不存在：D:\\notes',
+    '测试 Markdown 文件不存在：D:\\notes\\a.md',
+    'ValueError: Markdown 来源目录不存在或不是目录：D:\\notes',
+    '系统找不到指定的文件。',
+    '无法找到内置插件：feishu',
+    '无法找到插件脚本：export_feishu.py',
+    'Vault directory not found: /vault/notes',
+    'ValueError: File not found: 20240101',
+    'Source file not found',
+    "PermissionError: [Errno 13] EACCES: permission denied, open 'out.md'",
+    'EISDIR: illegal operation on a directory'
+  ];
+  for (const sample of samples) {
+    assert.equal(categoryOf(sample), '本地文件路径问题', sample.slice(0, 60));
+  }
+});
+
+// 收紧裸 not found 之后，这些本来就被第一条规则错误吞掉的报错回到各自的规则。
+test('B2 裸 not found 不再把浏览器/页面结构问题吞成本地路径问题', () => {
+  assert.equal(
+    categoryOf('Chrome/Edge executable was not found. Install Chrome/Edge, add it to PATH'),
+    '浏览器自动化启动失败'
+  );
+  assert.equal(categoryOf('element not found: .toc-item'), '页面结构变化');
+});
+
+test('B2 “远端内容不存在”排在图片规则之后，图片自身 404 仍归图片规则', () => {
+  const rules = ERROR_RULES.map((rule) => rule.category);
+  assert.ok(rules.indexOf('远端内容不存在') > rules.indexOf('图片或附件下载失败'));
+  assert.ok(rules.indexOf('远端内容不存在') < rules.indexOf('没有访问权限'));
+  assert.equal(
+    categoryOf('图片下载失败：https://cdn.nlark.com/yuque/0/2024/png/a.png：HTTP 404'),
+    '图片或附件下载失败'
+  );
+});

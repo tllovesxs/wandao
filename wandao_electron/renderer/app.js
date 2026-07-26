@@ -350,7 +350,9 @@ function refreshProviderTools() {
 const ERROR_RULES = [
   {
     category: '本地文件路径问题',
-    pattern: /(ENOENT|no such file|can't open file|系统找不到|路径不存在|目录不存在|文件不存在|无法找到|not found|EACCES|EPERM)/i,
+    // 裸 not found / 无法找到 会把平台 404 和"Chrome executable was not found"
+    // 一起吞进来，排查方向完全反了，这里收紧成明确指向本地文件系统的写法。
+    pattern: /(ENOENT|EACCES|EPERM|EISDIR|ENOTDIR|no such file(?: or directory)?|no such directory|can't open file|file not found|path not found|directory not found|系统找不到|路径不存在|目录不存在|文件不存在|无法找到[^。\n]{0,6}(?:插件|脚本|文件|目录|路径))/i,
     title: '本地文件或目录有问题',
     suggestion: '请检查输入目录、输出目录或脚本文件是否存在，路径里不要包含已经被移动或删除的文件。'
   },
@@ -365,6 +367,12 @@ const ERROR_RULES = [
     pattern: /(图片下载失败|附件下载失败|download.*image|image.*download|tcs-devops\.aliyuncs\.com|cdn\.nlark\.com|图片.*HTTP 40[134]|HTTP 40[134].*图片|imageFailure|imageFailures)/i,
     title: '图片或附件处理失败',
     suggestion: '正文可能已导出，但这些图片没有成功本地化。请检查网络、重新登录后重试，或确认原文图片在浏览器中可以打开。'
+  },
+  {
+    category: '远端内容不存在',
+    pattern: /(\b404\b|(?:页面|内容|文档|笔记|帖子|主题|资源)不存在|文档已删除|已被删除|invalid[^。\n]{0,16}node_token|node_token[^。\n]{0,16}(?:invalid|不存在)|无效的[^。\n]{0,8}链接)/i,
+    title: '目标平台上找不到这个内容',
+    suggestion: '链接可能填错、内容已被删除或迁移，也可能当前账号看不到它。请在浏览器打开同一个链接确认后重试。'
   },
   {
     category: '未登录或登录失效',

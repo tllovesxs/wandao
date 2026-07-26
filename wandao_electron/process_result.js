@@ -10,13 +10,16 @@ function parseLastJson(stdout) {
   try {
     return JSON.parse(trimmed);
   } catch (_error) {
+    // 回退扫描只认第 0 列的 `{` / `[`：结果 JSON 无论 pretty-print 还是 compact，
+    // 顶层括号一定顶格；缩进行都是嵌套片段，逐行 slice+join+parse 会让整体退化成
+    // O(n^2)（一万条报告实测阻塞主进程 23 秒）。
     for (let index = lines.length - 1; index >= 0; index -= 1) {
-      const line = lines[index].trimStart();
-      if (!line.startsWith('{') && !line.startsWith('[')) continue;
+      const firstChar = lines[index].charCodeAt(0);
+      if (firstChar !== 0x7b && firstChar !== 0x5b) continue; // '{' / '['
       try {
         return JSON.parse(lines.slice(index).join('\n').trim());
       } catch (_ignored) {
-        // Pretty-printed JSON may start above this line; keep scanning.
+        // Another top-level JSON may start above this line; keep scanning.
       }
     }
     return null;

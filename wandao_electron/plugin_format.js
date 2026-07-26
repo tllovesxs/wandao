@@ -6,6 +6,8 @@ const MAX_PLUGIN_FILES = 2000;
 const MAX_PLUGIN_BYTES = 256 * 1024 * 1024;
 const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const WINDOWS_RESERVED_SEGMENT = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+const WINDOWS_UNSAFE_CHARS = /[\u0000-\u001f:<>"|?*]/;
 const ALLOWED_PERMISSIONS = new Set([
   'browser-automation',
   'credentials',
@@ -107,6 +109,11 @@ function assertSafeRelativePath(filePath, label = '文件路径') {
   const parts = value.split('/');
   if (parts.some((part) => !part || part === '.' || part === '..')) {
     throw new Error(`${label}不能包含空目录、. 或 ..：${value}`);
+  }
+  if (parts.some((part) => WINDOWS_UNSAFE_CHARS.test(part)
+    || WINDOWS_RESERVED_SEGMENT.test(part)
+    || /[. ]$/.test(part))) {
+    throw new Error(`${label}包含 Windows 非法路径段：${value}`);
   }
   return value;
 }

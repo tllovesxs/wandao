@@ -188,3 +188,72 @@ test('B2 “远端内容不存在”排在图片规则之后，图片自身 404 
     '图片或附件下载失败'
   );
 });
+
+// B3：main.js 的 outputWithOmissionNotice() 会在超长输出最前面拼
+// "[前部 N 个字符已省略，以下为输出尾部]"，真正的 "XxxError: 原因" 永远在末尾，
+// 所以摘要必须从尾部抓最后一条异常行，不能 slice(0, 220)。
+const OMITTED_PREFIX = '[前部 8213 个字符已省略，以下为输出尾部]';
+
+test('B3 原始摘要抓的是末尾的异常行，不是被省略提示挤掉的开头 220 字', () => {
+  const raw = [
+    `${OMITTED_PREFIX} 正在导出 0123456789${'0123456789'.repeat(30)}`,
+    'Traceback (most recent call last):',
+    '  File "export_yuque.py", line 1200, in main',
+    '    export_docs(args)',
+    '  File "export_yuque.py", line 980, in export_docs',
+    '    raise ValueError(detail)',
+    'ValueError: 具体原因'
+  ].join('\n');
+  const output = formatUserError(raw);
+  assert.match(output, /原始摘要：/);
+  assert.match(output, /ValueError: 具体原因/);
+  assert.doesNotMatch(output, /\[前部 8213 个字符已省略/);
+  assert.doesNotMatch(output, /Traceback \(most recent call last\)/);
+});
+
+test('B3 单行省略提示写法（无“以下为输出尾部”后缀）同样被剥掉', () => {
+  const raw = '[前部 8213 个字符已省略] ... Traceback ... \nValueError: 具体原因';
+  const output = formatUserError(raw);
+  assert.match(output, /原始摘要：ValueError: 具体原因/);
+  assert.doesNotMatch(output, /前部 8213 个字符已省略/);
+});
+
+test('B3 取的是最后一次异常行，前面的异常被后面的覆盖', () => {
+  const raw = [
+    'ConnectionError: 第一次尝试失败',
+    '正在重试...',
+    'RuntimeError: 最后一次真正的原因'
+  ].join('\n');
+  assert.match(formatUserError(raw), /原始摘要：RuntimeError: 最后一次真正的原因/);
+  assert.doesNotMatch(formatUserError(raw), /第一次尝试失败/);
+});
+
+test('B3 异常行后面的补充说明会被一起带上，并在 220 字处截断', () => {
+  const raw = `ValueError: ${'原'.repeat(400)}`;
+  const summary = formatUserError(raw).split('原始摘要：')[1];
+  assert.ok(summary.startsWith('ValueError: '));
+  assert.ok(summary.length <= 224, `summary too long: ${summary.length}`);
+  assert.ok(summary.endsWith('...'));
+});
+
+test('B3 没有异常行时退回到尾部若干行，仍然不是开头 220 字', () => {
+  const raw = `${OMITTED_PREFIX}\n${'开头噪音 '.repeat(80)}\n任务在第 3 步失败：目标目录不可写`;
+  const summary = formatUserError(raw).split('原始摘要：')[1];
+  assert.match(summary, /任务在第 3 步失败：目标目录不可写/);
+  assert.doesNotMatch(summary, /前部 8213 个字符已省略/);
+});
+
+test('B3 短消息与空消息的行为不变', () => {
+  assert.match(formatUserError('HTTP 429 Too Many Requests'), /原始摘要：HTTP 429 Too Many Requests$/);
+  const empty = formatUserError('');
+  assert.doesNotMatch(empty, /原始摘要/);
+  assert.match(empty, /^未知错误：/);
+});
+
+test('B3 compactLogSummary 仍被其它调用点保留，没有被顺手删掉', () => {
+  assert.match(appSource, /function compactLogSummary\(message, maxLength = 220\)/);
+  assert.match(appSource, /compactLogSummary\(text, 180\)/);
+  const formatUserErrorSource = sourceBetween('function formatUserError(message) {', '\nfunction log(message, type = ');
+  assert.doesNotMatch(formatUserErrorSource, /compactLogSummary/);
+  assert.match(formatUserErrorSource, /extractErrorSummary\(raw\)/);
+});

@@ -724,10 +724,26 @@ function classifyError(message) {
   };
 }
 
+// main.js 的 outputWithOmissionNotice() 会在超长输出最前面拼
+// "[前部 N 个字符已省略，以下为输出尾部]"，真正的 "XxxError: 原因" 永远在末尾，
+// 因此摘要必须从尾部抓最后一条异常行，不能 slice(0, 220) 取开头。
+function extractErrorSummary(raw, maxLength = 220) {
+  const text = String(raw || '').replace(/^\[前部 \d+ 个字符已省略[^\]]*\]\r?\n?/, '');
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const exceptionLine = /^[\w.]*(?:Error|Exception|Failure)\s*:\s*\S/;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (!exceptionLine.test(lines[i])) continue;
+    const tail = lines.slice(i).join(' ').replace(/\s+/g, ' ').trim();
+    return tail.length > maxLength ? `${tail.slice(0, maxLength)}...` : tail;
+  }
+  const last = lines.slice(-3).join(' ').replace(/\s+/g, ' ').trim();
+  return last.length > maxLength ? `...${last.slice(-maxLength)}` : last;
+}
+
 function formatUserError(message) {
   const raw = normalizeLogMessage(message);
   const rule = classifyError(raw);
-  const summary = compactLogSummary(raw);
+  const summary = extractErrorSummary(raw);
   const suffix = summary ? `\n原始摘要：${summary}` : '';
   return `${rule.category}：${rule.title}。${rule.suggestion}${suffix}`;
 }

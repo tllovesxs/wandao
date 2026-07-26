@@ -412,7 +412,10 @@ const ERROR_RULES = [
   },
   {
     category: '目标平台 API 权限不足',
-    pattern: /(scope|required scope|scopes required|OpenAPI|API 权限|应用身份权限|drive:|docx:|docs:|wiki:|tenant_access_token|app ticket|99991672|权限申请)/i,
+    // 裸 scope 会命中 argparse 的 --group-scope/--follow-link-scope，裸 docs:/drive:
+    // 会命中日志里的 "docs: 12"，所以 scope 必须与 required/missing 同现，飞书 scope
+    // 收紧成"域:资源[:动作]"（与 extractFeishuScopes 的口径一致）。
+    pattern: /(required scopes?|scopes? required|missing scopes?|应用身份权限|API 权限|权限申请|tenant_access_token|app ticket|99991672|\b(?:drive|docx|docs|wiki|sheets|base):[a-z_][a-z0-9_.]*(?::[a-z0-9_.]+)?)/i,
     title: '当前应用还没有拿到这个接口的授权',
     suggestion: '请按页面提示开通所需 API 权限，并在平台开放后台发布应用新版本后重试。'
   },

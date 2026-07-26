@@ -257,3 +257,58 @@ test('B3 compactLogSummary 仍被其它调用点保留，没有被顺手删掉',
   assert.doesNotMatch(formatUserErrorSource, /compactLogSummary/);
   assert.match(formatUserErrorSource, /extractErrorSummary\(raw\)/);
 });
+
+// B4：裸 scope / docs: / drive: 会命中 argparse 的 usage 行和普通日志计数，
+// 把用户支到飞书开放平台白折腾。
+const ZSXQ_USAGE = [
+  'usage: export_zsxq.py [-h] [--group-scope {auto,all,digests,by_owner}]',
+  '                      [--follow-link-scope {none,articles,all}] [--out OUT]',
+  "export_zsxq.py: error: argument --group-scope: invalid choice: 'foo'"
+].join('\n');
+
+test('B4 argparse 的 usage / --*-scope 参数行不再命中 API 权限规则', () => {
+  assert.notEqual(categoryOf(ZSXQ_USAGE), '目标平台 API 权限不足');
+  assert.notEqual(categoryOf('unrecognized arguments: --follow-link-scope articles'), '目标平台 API 权限不足');
+  assert.notEqual(categoryOf('导出统计 docs: 12, notes: 4 —— 本次任务失败'), '目标平台 API 权限不足');
+  assert.notEqual(categoryOf('drive: 3 wiki: 8'), '目标平台 API 权限不足');
+});
+
+test('B4 明确说“不是 scope 问题”的父节点权限报错回到“没有访问权限”', () => {
+  const text = '检测到目标 Wiki 父节点没有给当前飞书应用写入权限。这不是开放平台 scope 问题，请点击“授权目标 Wiki 文档应用”。';
+  assert.equal(categoryOf(text), '没有访问权限');
+});
+
+// 反向断言：真正的开放平台权限报错必须继续命中。
+test('B4 真正的 API 权限报错仍然落到“目标平台 API 权限不足”', () => {
+  const samples = [
+    [
+      '创建导入任务 HTTP 403：飞书应用缺少开放平台权限。',
+      '飞书返回：no permission',
+      '缺失权限：drive:drive, drive:file:upload, docs:permission.member:create, docx:document:write_only, wiki:wiki',
+      '权限申请链接：https://open.feishu.cn/app/cli_x/auth?q=drive:drive'
+    ].join('\n'),
+    '上传文件 HTTP 403：飞书拒绝上传文件。建议权限：drive:file:upload, drive:drive',
+    '{"code":99991672,"msg":"no permission"}',
+    'missing required scopes: docx:document',
+    'required scope: sheets:spreadsheet:write_only',
+    'scopes required: base:app:update',
+    'tenant_access_token 获取失败',
+    '缺少 app ticket，无法获取应用凭证',
+    '应用身份权限不足',
+    '需要开通 API 权限后重试',
+    '权限申请链接：https://open.feishu.cn/app/cli_x/auth'
+  ];
+  for (const sample of samples) {
+    assert.equal(categoryOf(sample), '目标平台 API 权限不足', sample.slice(0, 60));
+  }
+});
+
+test('B4 飞书 scope 按“域:资源[:动作]”识别，与 extractFeishuScopes 口径一致', () => {
+  const rule = ERROR_RULES.find((item) => item.category === '目标平台 API 权限不足');
+  for (const scope of ['drive:drive', 'drive:file:upload', 'docs:permission.member:create', 'docs:document:import', 'docx:document', 'docx:document:write_only', 'wiki:wiki']) {
+    assert.ok(rule.pattern.test(`缺失权限：${scope}`), scope);
+  }
+  for (const noise of ['--follow-link-scope', '--group-scope', 'docs: 12', 'drive: 0', 'wiki: 8', 'scope=all']) {
+    assert.ok(!rule.pattern.test(noise), noise);
+  }
+});

@@ -379,6 +379,30 @@ const ERROR_RULES = [
     suggestion: '请到“设置 > 自动化浏览器”检测并选择 Chrome、Edge 或 Chromium；如果浏览器已打开但仍失败，请关闭后重试。'
   },
   {
+    category: '网络连接失败',
+    pattern: /(ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE|connection refused|connection reset|Connection aborted|远程主机强迫关闭)/i,
+    title: '无法连接到目标平台',
+    suggestion: '请检查本机网络、VPN 或代理是否正常，确认能在浏览器打开目标站点后重试。'
+  },
+  {
+    category: '网络超时',
+    pattern: /(ETIMEDOUT|ESOCKETTIMEDOUT|Read timed out|ReadTimeout|ConnectTimeout|timed out|Timeout \d+ms exceeded|TimeoutError|请求超时)/i,
+    title: '请求超时',
+    suggestion: '目标平台响应过慢或网络不稳定。请稍后重试；如果是导入任务，可在高级选项里调大“接口超时秒”和“图片上传超时秒”。'
+  },
+  {
+    category: 'DNS 解析失败',
+    pattern: /(ENOTFOUND|EAI_AGAIN|getaddrinfo|Name or service not known|NameResolutionError|域名解析)/i,
+    title: '域名解析失败',
+    suggestion: '本机 DNS 无法解析目标域名。请检查网络连接、更换 DNS，或确认链接里的域名拼写正确。'
+  },
+  {
+    category: 'HTTPS 证书或代理问题',
+    pattern: /(SSLError|SSLCertVerificationError|CERTIFICATE_VERIFY_FAILED|UNABLE_TO_VERIFY_LEAF_SIGNATURE|self signed certificate|ProxyError|ERR_PROXY|TunnelError|HTTP 407|Proxy Authentication Required)/i,
+    title: 'HTTPS 证书或代理校验失败',
+    suggestion: '通常是公司网络代理或安全软件在中间拦截。请暂时关闭代理/抓包工具，或把目标域名加入直连白名单后重试。'
+  },
+  {
     category: '目标平台 API 权限不足',
     pattern: /(scope|required scope|scopes required|OpenAPI|API 权限|应用身份权限|drive:|docx:|docs:|wiki:|tenant_access_token|app ticket|99991672|权限申请)/i,
     title: '当前应用还没有拿到这个接口的授权',

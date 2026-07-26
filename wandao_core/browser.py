@@ -23,6 +23,7 @@ from wandao_core.logging import WandaoLogger, print_text, structured_logs_enable
 
 DEFAULT_PORT = 9222
 FORBIDDEN_FILENAME_CHARS = r'<>:"/\\|?*'
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
 
 class ExportError(RuntimeError):
     pass
@@ -58,7 +59,10 @@ def sanitize_filename(value: str, fallback: str = "未命名", max_len: int = 90
 
     cleaned = "".join("-" if char in FORBIDDEN_FILENAME_CHARS or ord(char) < 32 else char for char in value)
     cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(". ")
-    return (cleaned or fallback)[:max_len]
+    cleaned = (cleaned or fallback)[:max_len].rstrip(". ") or fallback
+    if cleaned.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES:
+        cleaned = "_" + cleaned
+    return cleaned
 
 
 def pad(number: int) -> str:

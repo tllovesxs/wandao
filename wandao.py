@@ -85,6 +85,8 @@ def run_provider(provider_id: str, args: list[str], providers: dict[str, dict[st
         return 2
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH", "")]))
+    env["PYTHONUTF8"] = "1"
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     return subprocess.call([sys.executable, str(script), *args], cwd=str(ROOT), env=env)
 
 

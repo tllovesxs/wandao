@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -83,6 +84,12 @@ public static class WandaoOneNoteBridge
     {
         try
         {
+            // Redirected stdout defaults to the OEM code page (e.g. GBK on
+            // Chinese Windows); Python reads this pipe as UTF-8.  Setting the
+            // console encoding also resets Console.Error to the same encoding.
+            // UTF8Encoding(false) keeps the BOM out of the redirected stream.
+            Console.OutputEncoding = new UTF8Encoding(false);
+
             if (args.Length < 2)
             {
                 Console.Error.WriteLine("usage: WandaoOneNoteBridge hierarchy <xmlPath> | publish-list <listPath>");
@@ -398,6 +405,18 @@ def run_bridge(args: list[str], helper_dir: Path | None = None, stream: bool = F
         encoding="utf-8",
         errors="replace",
     )
+    # stderr must be drained concurrently: if the bridge writes more than the
+    # pipe buffer (~64KB) to stderr while we are still reading stdout, the child
+    # blocks on the stderr write and never closes stdout, deadlocking both sides.
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        if proc.stderr is not None:
+            stderr_chunks.append(proc.stderr.read() or "")
+
+    stderr_reader = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_reader.start()
+
     stdout_lines: list[str] = []
     assert proc.stdout is not None
     for line in proc.stdout:
@@ -409,8 +428,9 @@ def run_bridge(args: list[str], helper_dir: Path | None = None, stream: bool = F
                 emit(f"OneNote 正在导出页面 MHT：{parts[1]}")
         elif line:
             emit(line)
-    stderr = proc.stderr.read() if proc.stderr else ""
     code = proc.wait()
+    stderr_reader.join(timeout=5)
+    stderr = "".join(stderr_chunks)
     if code != 0:
         raise ExportError(stderr or "\n".join(stdout_lines) or f"OneNote bridge exited with {code}")
     return "\n".join(stdout_lines)

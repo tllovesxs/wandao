@@ -122,7 +122,13 @@ function validatePluginManifest(manifest) {
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error('plugin.json 必须是对象');
   const allowedKeys = new Set(['$schema', 'schemaVersion', 'id', 'name', 'description', 'version', 'publisher', 'homepage', 'license', 'core', 'platforms', 'entrypoints', 'permissions']);
   const unknownKeys = Object.keys(manifest).filter((key) => !allowedKeys.has(key));
-  if (unknownKeys.length) throw new Error(`plugin.json 包含未知字段：${unknownKeys.join(', ')}`);
+  if (unknownKeys.length) {
+    // tolerant reader：v1 内新增的可选字段只告警并忽略，不再当作破坏性变更拒绝。
+    // 仅对「完全不认识的顶层键」宽松，下面已知字段与权限声明的校验保持严格。
+    const report = validatePluginManifest.onUnknownKey
+      || ((keys) => console.warn(`plugin.json 忽略未知字段：${keys.join(', ')}`));
+    report(unknownKeys);
+  }
   if (manifest.schemaVersion !== 1) throw new Error('只支持 plugin schemaVersion=1');
   if (!PLUGIN_ID_PATTERN.test(String(manifest.id || ''))) throw new Error(`插件 ID 不合法：${manifest.id || '(空)'}`);
   if (!VERSION_PATTERN.test(String(manifest.version || ''))) throw new Error(`插件版本不合法：${manifest.version || '(空)'}`);

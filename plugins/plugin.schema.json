@@ -3,7 +3,7 @@
   "$id": "https://github.com/tllovesxs/wandao/plugins/plugin.schema.json",
   "title": "Wandao Plugin Manifest v1",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": ["schemaVersion", "id", "name", "description", "version", "publisher", "core", "entrypoints", "permissions"],
   "properties": {
     "$schema": { "type": "string" },

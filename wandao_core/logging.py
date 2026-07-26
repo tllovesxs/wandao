@@ -16,6 +16,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 LOG_PREFIX = "@@WANDAO_LOG@@"
 SENSITIVE_KEYS = re.compile(r"(cookie|token|secret|password|authorization|signature|access[_-]?key|api[_-]?key)", re.I)
 SIGNATURE_QUERY_RE = re.compile(r"([?&](?:Signature|signature|token|access_token|Authorization)=)[^&\s)]+")

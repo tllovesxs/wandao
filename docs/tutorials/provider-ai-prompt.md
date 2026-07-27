@@ -16,7 +16,7 @@
 1. docs/在线插件开发与发布.md
 2. docs/共创流程.md
 3. docs/Provider接入说明.md
-4. CONTRIBUTING.md
+4. .github/CONTRIBUTING.md
 5. plugins/wiz/plugin.json 和 plugins/wiz/providers/wiz/provider.json
 
 我要接入的平台是：
@@ -39,7 +39,7 @@
 8. README.md 必须写清楚使用步骤、登录方式、权限要求、已知限制、测试结果和常见失败原因。
 9. 不要提交 Cookie、Token、账号密码、App Secret、私人知识库内容或未脱敏日志。
 10. 如果参考第三方项目，请在 README.md 或 PR 说明中写清楚来源和许可证。
-11. 完成后运行 node scripts/validate_plugins.js、node --test tests_js/plugin_manager.test.js 和 python scripts/quality_check.py。
+11. 完成后运行 node scripts/validate_plugins.js、node --test tests/js/plugin_manager.test.js 和 python scripts/quality_check.py。
 
 请先分析这个平台适合做标准 UI 插件、复杂流程插件还是教程型插件，然后给出实现方案。确认方案后，再创建或修改对应文件。
 ```
@@ -57,7 +57,7 @@
 3. plugins/feishu/plugin.json
 4. plugins/feishu/providers/feishu-export/provider.json
 5. plugins/feishu/providers/feishu-import/provider.json
-6. CONTRIBUTING.md
+6. .github/CONTRIBUTING.md
 
 平台信息：
 - 平台名称：（填写平台名）
@@ -119,7 +119,7 @@
 9. 是否保留目录结构、图片、附件；如果没有，是否已经说明。
 10. 是否包含 Cookie、Token、账号密码、App Secret、私人数据或未脱敏日志。
 11. 是否参考第三方项目，是否说明来源和许可证。
-12. 是否已运行 node scripts/validate_plugins.js、node --test tests_js/plugin_manager.test.js 和 python scripts/quality_check.py。
+12. 是否已运行 node scripts/validate_plugins.js、node --test tests/js/plugin_manager.test.js 和 python scripts/quality_check.py。
 ```
 
 ## 给贡献者的小建议

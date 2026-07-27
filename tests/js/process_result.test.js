@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseProcessResult } = require('../wandao_electron/process_result');
+const { parseProcessResult } = require('../../wandao_electron/process_result');
 
 test('TaskResult v1 is accepted', () => {
   const result = parseProcessResult('log line\n{"kind":"wandao.result","schemaVersion":1,"totalDocs":2}\n');

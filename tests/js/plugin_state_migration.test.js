@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { migrateLegacyPluginState } = require('../wandao_electron/plugin_state_migration');
+const { migrateLegacyPluginState } = require('../../wandao_electron/plugin_state_migration');
 
 function withTemporaryRoots(run) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wandao-plugin-state-'));

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const repoRoot = path.resolve(__dirname, '..');
+const repoRoot = path.resolve(__dirname, '..', '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'app.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'index.html'), 'utf8');
 const qualityCheckSource = fs.readFileSync(path.join(repoRoot, 'scripts', 'quality_check.py'), 'utf8');
@@ -58,5 +58,5 @@ test('IMA blocks target-knowledge-base actions until a usable selection exists a
   assert.match(runner, /finally \{\s*updateImaImportKnowledgeBaseState\(\);/);
   assert.doesNotMatch(runner, /setRunning\(/);
   assert.match(appSource, /#content-area button, #content-area input, #content-area select/);
-  assert.match(qualityCheckSource, /"tests_js\/import_write_guidance\.test\.js"/);
+  assert.match(qualityCheckSource, /"tests\/js\/import_write_guidance\.test\.js"/);
 });

@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const recent = require('../wandao_electron/renderer/recent_inputs');
+const recent = require('../../wandao_electron/renderer/recent_inputs');
 
 function memoryStorage(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -239,7 +239,7 @@ test('committing a URL reveals recent history without starting a task', () => {
 });
 
 test('official reusable inputs opt in explicitly and credential fields never do', () => {
-  const root = path.join(__dirname, '..');
+  const root = path.join(__dirname, '..', '..');
   const manifests = fs.readdirSync(path.join(root, 'plugins'), { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .flatMap((entry) => {
@@ -274,7 +274,7 @@ test('official reusable inputs opt in explicitly and credential fields never do'
 });
 
 test('dedicated pages use the shared history contract and detailed import confirmations', () => {
-  const root = path.join(__dirname, '..');
+  const root = path.join(__dirname, '..', '..');
   const html = fs.readFileSync(path.join(root, 'wandao_electron', 'renderer', 'index.html'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'wandao_electron', 'renderer', 'app.js'), 'utf8');
   assert.match(html, /<script src="recent_inputs\.js"><\/script>/);

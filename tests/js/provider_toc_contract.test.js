@@ -6,9 +6,9 @@ const {
   normalizeProviderTocNodes,
   selectionArgs,
   valueAtPath
-} = require('../wandao_electron/renderer/toc_tree.js');
+} = require('../../wandao_electron/renderer/toc_tree.js');
 
-const REPO_ROOT = path.resolve(__dirname, '..');
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));

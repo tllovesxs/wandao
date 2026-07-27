@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const test = require('node:test');
-const { resolveLegacyTemplateConfig } = require('../wandao_electron/provider_legacy_compat');
+const { resolveLegacyTemplateConfig } = require('../../wandao_electron/provider_legacy_compat');
 
 test('maps Plugin v1 URL and output fields for legacy templates', () => {
   assert.deepEqual(resolveLegacyTemplateConfig({ fields: [
@@ -30,7 +30,7 @@ test('preserves explicit legacy settings and recognizes no-URL providers', () =>
 });
 
 test('every bundled provider with an old HTML template resolves legacy parameters', () => {
-  const repoRoot = path.resolve(__dirname, '..');
+  const repoRoot = path.resolve(__dirname, '..', '..');
   const html = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'index.html'), 'utf8');
   const pluginsRoot = path.join(repoRoot, 'plugins');
   for (const pluginId of fs.readdirSync(pluginsRoot)) {
@@ -56,7 +56,7 @@ test('every bundled provider with an old HTML template resolves legacy parameter
 });
 
 test('knowledge-star legacy templates explicitly declare their required entry URL', () => {
-  const repoRoot = path.resolve(__dirname, '..');
+  const repoRoot = path.resolve(__dirname, '..', '..');
   for (const providerId of ['zsxq-column', 'zsxq-group']) {
     const manifestPath = path.join(repoRoot, 'plugins', 'zsxq', 'providers', providerId, 'provider.json');
     const provider = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -70,12 +70,12 @@ test('knowledge-star legacy templates explicitly declare their required entry UR
   }
 });
 test('main process applies compatibility after validating Provider v1 fields', () => {
-  const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'wandao_electron', 'main.js'), 'utf8');
+  const mainSource = fs.readFileSync(path.resolve(__dirname, '..', '..', 'wandao_electron', 'main.js'), 'utf8');
   assert.match(mainSource, /Object\.assign\(provider, resolveLegacyTemplateConfig\(raw\)\)/);
 });
 
 test('main process applies compatibility before returning the Provider', () => {
-  const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'wandao_electron', 'main.js'), 'utf8');
+  const mainSource = fs.readFileSync(path.resolve(__dirname, '..', '..', 'wandao_electron', 'main.js'), 'utf8');
   const compatibilityIndex = mainSource.indexOf('Object.assign(provider, resolveLegacyTemplateConfig(raw));');
   const returnIndex = mainSource.indexOf('return provider;', compatibilityIndex);
   assert.ok(compatibilityIndex >= 0, 'Provider compatibility projection must exist');

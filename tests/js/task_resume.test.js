@@ -8,7 +8,7 @@ const {
   providerCheckpointArgs,
   providerCheckpointFile,
   shouldRetryFailureItems
-} = require('../wandao_electron/renderer/task_resume');
+} = require('../../wandao_electron/renderer/task_resume');
 
 test('manifest providers can derive checkpoint paths from a shared base field', () => {
   const provider = {
@@ -23,7 +23,7 @@ test('manifest providers can derive checkpoint paths from a shared base field', 
 });
 
 test('FlowUs import manifest uses a non-TOC target action and shared checkpoint contract', () => {
-  const provider = require('../plugins/xiliu/providers/xiliu-import/provider.json');
+  const provider = require('../../plugins/xiliu/providers/xiliu-import/provider.json');
   const targets = provider.actions.find((action) => action.id === 'targets');
   const sourceDir = provider.fields.find((field) => field.name === 'source_dir');
   const parentId = provider.fields.find((field) => field.name === 'parent_id');
@@ -186,7 +186,7 @@ test('resource warnings are not converted into retry-failed document commands', 
 });
 
 test('resource diagnostics are not duplicated after reports are finalized', () => {
-  const report = require('../wandao_electron/renderer/task_report');
+  const report = require('../../wandao_electron/renderer/task_report');
   const resource = {
     type: 'image',
     document: '示例文档',

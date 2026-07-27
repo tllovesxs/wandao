@@ -38,7 +38,7 @@
   &nbsp;·&nbsp;
   <a href="docs/使用教程.md">📖 使用教程</a>
   &nbsp;·&nbsp;
-  <a href="prompts/项目学习导师提示词.md">🧠 AI 辅助学习</a>
+  <a href="docs/prompts/项目学习导师提示词.md">🧠 AI 辅助学习</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/tllovesxs/wandao/issues">🐛 反馈问题</a>
   &nbsp;·&nbsp;
@@ -210,7 +210,7 @@ macOS 安装包建议通过 GitHub Actions 或 macOS 设备构建。更完整的
 
 登录凭证和任务数据保存在本机。请勿在 Issue、PR、截图或日志中公开 Cookie、账号密码、Token、API Key、App Secret 等敏感信息。
 
-更多说明见 [合规说明](docs/合规说明.md)、[安全策略](SECURITY.md) 和 [本地数据存储策略](docs/本地数据存储策略.md)。
+更多说明见 [合规说明](docs/合规说明.md)、[安全策略](.github/SECURITY.md) 和 [本地数据存储策略](docs/本地数据存储策略.md)。
 
 ## 🤝 参与共创
 
@@ -218,7 +218,7 @@ macOS 安装包建议通过 GitHub Actions 或 macOS 设备构建。更完整的
 
 | 入口 | 用途 |
 | --- | --- |
-| [贡献指南](CONTRIBUTING.md) | 提交代码前需要了解的基本规则 |
+| [贡献指南](.github/CONTRIBUTING.md) | 提交代码前需要了解的基本规则 |
 | [共创流程](docs/共创流程.md) | 认领 Issue、准备验收材料和提交 PR |
 | [插件开发与发布](docs/在线插件开发与发布.md) | 新平台插件结构、校验与发布方式 |
 | [GitHub Issues](https://github.com/tllovesxs/wandao/issues) | 反馈 Bug、提出建议或认领功能 |

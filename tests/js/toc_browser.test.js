@@ -3,8 +3,8 @@ const test = require('node:test');
 const {
   expandableNodeIds,
   visibleTocRows
-} = require('../wandao_electron/renderer/toc_browser');
-const { normalizeProviderTocNodes } = require('../wandao_electron/renderer/toc_tree');
+} = require('../../wandao_electron/renderer/toc_browser');
+const { normalizeProviderTocNodes } = require('../../wandao_electron/renderer/toc_tree');
 
 const tree = [
   { nodeId: 'folder', title: '产品文档', parentNodeId: '' },
@@ -49,7 +49,7 @@ test('large expanded directories are rendered in bounded batches', () => {
 });
 
 test('deep Yuque hierarchies preserve every ancestor, depth, and searchable document path', () => {
-  const provider = require('../plugins/yuque/providers/yuque/provider.json');
+  const provider = require('../../plugins/yuque/providers/yuque/provider.json');
   const nodes = normalizeProviderTocNodes(provider, { toc: [
     { type: 'TITLE', title: '知识库', uuid: 'level-0', parent_uuid: '', doc_id: '' },
     { type: 'TITLE', title: '产品', uuid: 'level-1', parent_uuid: 'level-0', doc_id: '' },

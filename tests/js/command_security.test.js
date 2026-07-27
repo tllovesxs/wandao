@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extractSensitiveArguments } = require('../wandao_electron/command_security');
+const { extractSensitiveArguments } = require('../../wandao_electron/command_security');
 
 test('secrets are removed from process arguments and moved to ephemeral env', () => {
   const result = extractSensitiveArguments([

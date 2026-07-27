@@ -4,7 +4,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 
-const repoRoot = path.resolve(__dirname, '..');
+const repoRoot = path.resolve(__dirname, '..', '..');
 const appPath = path.join(repoRoot, 'wandao_electron', 'renderer', 'app.js');
 const cssPath = path.join(repoRoot, 'wandao_electron', 'renderer', 'styles.css');
 const appSource = fs.readFileSync(appPath, 'utf8');

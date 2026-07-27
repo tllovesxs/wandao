@@ -5,7 +5,7 @@ const {
   normalizeStandardTocNodes,
   tocNodeMaps,
   selectionArgs
-} = require('../wandao_electron/renderer/toc_tree.js');
+} = require('../../wandao_electron/renderer/toc_tree.js');
 
 test('restores Aliyun parent_id hierarchy when a legacy manifest still points at ordered', () => {
   const provider = { id: 'aliyun', toc: { itemsPath: 'ordered', idKey: 'id', exportIdKey: 'id', titleKey: 'title', parentIdKey: 'parentId' } };
@@ -44,7 +44,7 @@ test('keeps provider-specific parent fields for Feishu and Yuque', () => {
 });
 
 test('maps Yuque toc DOC nodes to doc_id selection arguments', () => {
-  const provider = require('../plugins/yuque/providers/yuque/provider.json');
+  const provider = require('../../plugins/yuque/providers/yuque/provider.json');
   const nodes = normalizeStandardTocNodes(provider, { toc: [
     { type: 'TITLE', title: 'Folder', uuid: 'folder', parent_uuid: '', doc_id: '' },
     { type: 'DOC', title: 'Doc', uuid: 'tree-doc', parent_uuid: 'folder', doc_id: 277273010 }
@@ -60,13 +60,13 @@ test('maps Yuque toc DOC nodes to doc_id selection arguments', () => {
 });
 
 test('does not emit a dangling selection argument for empty export IDs', () => {
-  const provider = require('../plugins/yuque/providers/yuque/provider.json');
+  const provider = require('../../plugins/yuque/providers/yuque/provider.json');
 
   assert.deepEqual(selectionArgs(provider, ['', null, undefined, '277273010']), ['--doc-id', '277273010']);
 });
 
 test('maps Aliyun nodes and parent_id to document selection arguments', () => {
-  const provider = require('../plugins/aliyun_thoughts/providers/aliyun/provider.json');
+  const provider = require('../../plugins/aliyun_thoughts/providers/aliyun/provider.json');
   const nodes = normalizeStandardTocNodes(provider, { nodes: [
     { id: 'folder', title: 'Folder', type: 'folder', parent_id: '' },
     { id: 'doc', title: 'Doc', type: 'document', parent_id: 'folder' }
@@ -81,7 +81,7 @@ test('maps Aliyun nodes and parent_id to document selection arguments', () => {
 });
 
 test('maps Feishu ordered nodes with explicit document selectability', () => {
-  const provider = require('../plugins/feishu/providers/feishu-export/provider.json');
+  const provider = require('../../plugins/feishu/providers/feishu-export/provider.json');
   const nodes = normalizeStandardTocNodes(provider, { ordered: [
     { wiki_token: 'folder', title: 'Folder', parent_wiki_token: '', selectable: false },
     { wiki_token: 'non-url', title: 'No URL', parent_wiki_token: 'folder', selectable: false },
@@ -98,17 +98,17 @@ test('maps Feishu ordered nodes with explicit document selectability', () => {
 test('maps the standard Plugin v1 nodes contracts for ima, OneNote, and Youdao', () => {
   const fixtures = [
     {
-      provider: require('../plugins/ima/providers/ima-export/provider.json'),
+      provider: require('../../plugins/ima/providers/ima-export/provider.json'),
       root: { nodeId: 'ima-kb:demo', exportId: '', title: 'Knowledge base', parentNodeId: '', selectable: false },
       doc: { nodeId: 'ima-media:demo:doc', exportId: 'ima-export-id', title: 'Document', parentNodeId: 'ima-kb:demo', selectable: true }
     },
     {
-      provider: require('../plugins/onenote/providers/onenote/provider.json'),
+      provider: require('../../plugins/onenote/providers/onenote/provider.json'),
       root: { nodeId: 'onenote-notebook:demo', exportId: '', title: 'Notebook', parentNodeId: '', selectable: false },
       doc: { nodeId: 'onenote-page:demo', exportId: 'onenote-page-id', title: 'Page', parentNodeId: 'onenote-notebook:demo', selectable: true }
     },
     {
-      provider: require('../plugins/youdao/providers/youdao/provider.json'),
+      provider: require('../../plugins/youdao/providers/youdao/provider.json'),
       root: { nodeId: 'youdao-folder:demo', exportId: '', title: 'Folder', parentNodeId: '', selectable: false, type: 'folder' },
       doc: { nodeId: 'youdao-doc:demo', exportId: 'youdao-doc-id', title: 'Note', parentNodeId: 'youdao-folder:demo', selectable: true, type: 'document' }
     }
@@ -134,7 +134,7 @@ test('maps the standard Plugin v1 nodes contracts for ima, OneNote, and Youdao',
 });
 
 test('maps Yinxiang notebook scan results through its explicit adapter', () => {
-  const provider = require('../plugins/yinxiang/providers/yinxiang/provider.json');
+  const provider = require('../../plugins/yinxiang/providers/yinxiang/provider.json');
   assert.equal(provider.toc.adapter, 'yinxiang-notebooks');
   assert.equal(provider.toc.itemsPath, 'notebooks');
   assert.equal(provider.toc.selectionArg, '--doc-id');
@@ -158,7 +158,7 @@ test('maps Yinxiang notebook scan results through its explicit adapter', () => {
 });
 
 test('maps ZSXQ column groups through its explicit adapter', () => {
-  const provider = require('../plugins/zsxq/providers/zsxq-column/provider.json');
+  const provider = require('../../plugins/zsxq/providers/zsxq-column/provider.json');
   assert.equal(provider.toc.adapter, 'zsxq-column-groups');
   assert.equal(provider.toc.itemsPath, 'groups');
   assert.equal(provider.toc.selectionArg, '--toc-key');

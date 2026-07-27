@@ -108,7 +108,7 @@ plugins/<plugin-id>/backend/actions.py
 
 ```powershell
 node scripts\validate_plugins.js
-node --test tests_js/plugin_manager.test.js
+node --test tests/js/plugin_manager.test.js
 python scripts\quality_check.py
 ```
 

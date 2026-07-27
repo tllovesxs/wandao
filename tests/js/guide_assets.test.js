@@ -1,10 +1,10 @@
-﻿const assert = require('node:assert/strict');
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { readGuideImageDataUrl } = require('../wandao_electron/guide_assets');
+const { readGuideImageDataUrl } = require('../../wandao_electron/guide_assets');
 
 function withFixture(run) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wandao-guide-assets-'));

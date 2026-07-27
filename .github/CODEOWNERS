@@ -5,7 +5,7 @@
 /.github/workflows/ @tllovesxs
 /.github/dependabot.yml @tllovesxs
 /.gitignore @tllovesxs
-/SECURITY.md @tllovesxs
+/.github/SECURITY.md @tllovesxs
 
 /plugins/ @tllovesxs
 /providers/ @tllovesxs
@@ -13,7 +13,7 @@
 /wandao_core/ @tllovesxs
 /scripts/ @tllovesxs
 /tests/ @tllovesxs
-/tests_js/ @tllovesxs
+/tests/js/ @tllovesxs
 
 /*.py @tllovesxs
 /pyproject.toml @tllovesxs

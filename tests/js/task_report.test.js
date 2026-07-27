@@ -1,4 +1,4 @@
-﻿const assert = require('node:assert/strict');
+const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   collectFailureDiagnostics,
@@ -9,7 +9,7 @@ const {
   taskFailureCount,
   taskResourceFailureCount,
   taskStatusText
-} = require('../wandao_electron/renderer/task_report');
+} = require('../../wandao_electron/renderer/task_report');
 
 const resourceFailureReport = {
   exportedDocs: 1,

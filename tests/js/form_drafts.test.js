@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const drafts = require('../wandao_electron/renderer/form_drafts');
+const drafts = require('../../wandao_electron/renderer/form_drafts');
 
 function memoryStorage() {
   const values = new Map();

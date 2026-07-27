@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { formatLocalDateTime, isTimestamp } = require('../wandao_electron/renderer/time_format');
+const { formatLocalDateTime, isTimestamp } = require('../../wandao_electron/renderer/time_format');
 
 test('formats UTC timestamps in the selected user time zone', () => {
   assert.equal(

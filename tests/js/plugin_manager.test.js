@@ -5,7 +5,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { PluginManager } = require('../wandao_electron/plugin_manager');
+const { PluginManager } = require('../../wandao_electron/plugin_manager');
 const {
   canonicalStringify,
   createPluginEnvelope,
@@ -13,7 +13,7 @@ const {
   signEnvelope,
   verifyPluginEnvelope,
   verifyRegistryEnvelope
-} = require('../wandao_electron/plugin_format');
+} = require('../../wandao_electron/plugin_format');
 
 function fixture() {
   const pair = crypto.generateKeyPairSync('ed25519');

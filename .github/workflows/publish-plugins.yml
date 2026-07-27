@@ -9,8 +9,8 @@ on:
       - "scripts/validate_plugins.js"
       - "scripts/check_plugin_versions.js"
       - "scripts/plugin_release_policy.js"
-      - "tests_js/plugin_manager.test.js"
-      - "tests_js/plugin_release_policy.test.js"
+      - "tests/js/plugin_manager.test.js"
+      - "tests/js/plugin_release_policy.test.js"
       - "wandao_electron/assets/plugin-trust.json"
       - ".github/workflows/publish-plugins.yml"
   push:
@@ -22,8 +22,8 @@ on:
       - "scripts/validate_plugins.js"
       - "scripts/check_plugin_versions.js"
       - "scripts/plugin_release_policy.js"
-      - "tests_js/plugin_manager.test.js"
-      - "tests_js/plugin_release_policy.test.js"
+      - "tests/js/plugin_manager.test.js"
+      - "tests/js/plugin_release_policy.test.js"
       - "wandao_electron/assets/plugin-trust.json"
       - ".github/workflows/publish-plugins.yml"
   workflow_dispatch:
@@ -48,7 +48,7 @@ jobs:
       - name: Validate manifests and lifecycle
         run: |
           node scripts/validate_plugins.js
-          node --test tests_js/plugin_manager.test.js tests_js/plugin_release_policy.test.js
+          node --test tests/js/plugin_manager.test.js tests/js/plugin_release_policy.test.js
           python -m py_compile wandao_browser.py plugins/*/backend/*.py
       - name: Enforce one plugin and a newer version
         if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'plugin-batch')

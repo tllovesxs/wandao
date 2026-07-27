@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { channelFor, readPolicy, validatePolicy } = require('../scripts/plugin_release_policy');
+const { channelFor, readPolicy, validatePolicy } = require('../../scripts/plugin_release_policy');
 
 test('release policy keeps new plugins experimental by default', () => {
   const policy = validatePolicy(readPolicy());

@@ -1,9 +1,9 @@
-﻿const fs = require('node:fs');
+const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const repoRoot = path.resolve(__dirname, '..');
+const repoRoot = path.resolve(__dirname, '..', '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'app.js'), 'utf8');
 const mainSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'main.js'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'preload.js'), 'utf8');

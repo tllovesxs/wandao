@@ -1,6 +1,6 @@
-﻿const test = require('node:test');
+const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createScanStdoutRelay } = require('../wandao_electron/scan_stdout_relay');
+const { createScanStdoutRelay } = require('../../wandao_electron/scan_stdout_relay');
 
 test('forwards scan progress but suppresses the terminal pretty JSON result', () => {
   const forwarded = [];

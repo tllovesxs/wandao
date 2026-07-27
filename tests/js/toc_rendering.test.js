@@ -4,7 +4,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 
-const repoRoot = path.resolve(__dirname, '..');
+const repoRoot = path.resolve(__dirname, '..', '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'app.js'), 'utf8');
 const cssSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'styles.css'), 'utf8');
 const qualityCheckSource = fs.readFileSync(path.join(repoRoot, 'scripts', 'quality_check.py'), 'utf8');
@@ -143,5 +143,5 @@ test('TOC stylesheet applies valid indentation and non-interactive hierarchy gui
 });
 
 test('quality checks run the shared TOC rendering regression', () => {
-  assert.match(qualityCheckSource, /"tests_js\/toc_rendering\.test\.js"/);
+  assert.match(qualityCheckSource, /"tests\/js\/toc_rendering\.test\.js"/);
 });

@@ -4,7 +4,7 @@ const {
   filterAndSortTasks,
   matchesTask,
   selectVisibleTasks
-} = require('../wandao_electron/renderer/task_history');
+} = require('../../wandao_electron/renderer/task_history');
 
 const tasks = [
   {

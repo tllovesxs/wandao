@@ -177,7 +177,7 @@ python scripts\quality_check.py
 
 ```powershell
 node scripts\validate_plugins.js
-node --test tests_js/plugin_manager.test.js
+node --test tests/js/plugin_manager.test.js
 ```
 
 只维护旧 `providers/` 文件型 Provider 或公告索引时，可以单独运行：
@@ -199,7 +199,7 @@ python scripts\validate_providers.py
 - 插件不能导入其他平台的业务脚本；公共逻辑应进入稳定 SDK。
 - PR 预览包使用临时密钥，只用于流水线验证；只有合并后流水线生成的正式签名包能被普通用户安装。
 - 新插件默认发布为 `experimental`；修改 `plugins/release-policy.json` 或申请 `stable` 必须由维护者审核，且不会作为普通插件 PR 的前置条件。
-- 已运行 `node scripts\validate_plugins.js` 和 `node --test tests_js/plugin_manager.test.js`，或说明无法运行原因。
+- 已运行 `node scripts\validate_plugins.js` 和 `node --test tests/js/plugin_manager.test.js`，或说明无法运行原因。
 
 ## Provider v1 兼容 PR 检查
 

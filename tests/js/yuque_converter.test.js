@@ -1,11 +1,11 @@
-﻿const assert = require('node:assert/strict');
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
-const repoRoot = path.resolve(__dirname, '..');
+const repoRoot = path.resolve(__dirname, '..', '..');
 const converterPath = path.join(repoRoot, 'plugins', 'yuque', 'backend', 'export_yuque.py');
 const electronPath = path.join(repoRoot, 'wandao_electron', 'node_modules', 'electron', 'dist', 'electron.exe');
 

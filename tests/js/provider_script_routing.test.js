@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const test = require('node:test');
-const { resolveProviderScript } = require('../wandao_electron/provider_script_routing');
+const { resolveProviderScript } = require('../../wandao_electron/provider_script_routing');
 
 test('uses an explicit provider default script', () => {
   assert.equal(
@@ -29,7 +29,7 @@ test('does not choose an ambiguous action script', () => {
 });
 
 test('all bundled action providers expose one legacy-compatible backend script', () => {
-  const pluginsRoot = path.resolve(__dirname, '..', 'plugins');
+  const pluginsRoot = path.resolve(__dirname, '..', '..', 'plugins');
   for (const pluginId of fs.readdirSync(pluginsRoot)) {
     const providersRoot = path.join(pluginsRoot, pluginId, 'providers');
     if (!fs.existsSync(providersRoot)) continue;
@@ -48,6 +48,6 @@ test('all bundled action providers expose one legacy-compatible backend script',
 });
 
 test('main process routes legacy templates through validated action scripts', () => {
-  const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'wandao_electron', 'main.js'), 'utf8');
+  const mainSource = fs.readFileSync(path.resolve(__dirname, '..', '..', 'wandao_electron', 'main.js'), 'utf8');
   assert.match(mainSource, /provider\.script = resolveProviderScript\(defaultScript, provider\.actions\)/);
 });

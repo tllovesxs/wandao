@@ -58,5 +58,6 @@ test('IMA blocks target-knowledge-base actions until a usable selection exists a
   assert.match(runner, /finally \{\s*updateImaImportKnowledgeBaseState\(\);/);
   assert.doesNotMatch(runner, /setRunning\(/);
   assert.match(appSource, /#content-area button, #content-area input, #content-area select/);
-  assert.match(qualityCheckSource, /"tests_js\/import_write_guidance\.test\.js"/);
+  assert.match(qualityCheckSource, /NODE_TEST_DIR\s*=\s*"tests_js"/);
+  assert.match(qualityCheckSource, /glob\("\*\.test\.js"\)/);
 });

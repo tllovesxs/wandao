@@ -67,6 +67,8 @@ crawl4ai-cache/
 # Local AI/editor agent settings
 # 本机 Claude 个人配置（settings.local.json），提交会污染他人环境
 .claude/
+# Claude/Codex 本地审查交付物（bundle、patch、临时报告），正式记录归档到 docs/reviews/
+/.improve/
 
 # Local worktrees and root-level build artifacts
 # git worktree 挂载点，纯本地工作区

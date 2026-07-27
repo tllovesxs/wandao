@@ -1,6 +1,6 @@
 name: Bug 反馈
 description: 反馈导出、导入、界面、安装或打包问题
-title: "[Bug] "
+title: "[Bug] 用一句话描述问题，例如：语雀导出到一半停止"
 labels: ["bug", "status:needs-triage"]
 body:
   - type: markdown

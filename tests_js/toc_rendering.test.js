@@ -143,5 +143,6 @@ test('TOC stylesheet applies valid indentation and non-interactive hierarchy gui
 });
 
 test('quality checks run the shared TOC rendering regression', () => {
-  assert.match(qualityCheckSource, /"tests_js\/toc_rendering\.test\.js"/);
+  assert.match(qualityCheckSource, /NODE_TEST_DIR\s*=\s*"tests_js"/);
+  assert.match(qualityCheckSource, /glob\("\*\.test\.js"\)/);
 });

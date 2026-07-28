@@ -107,19 +107,24 @@
         "to": "python-runtime"
       }
     ],
+    "compression": "maximum",
     "win": {
       "target": [
         "nsis"
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "artifactName": "Wandao-${version}-win-${arch}-setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Wandao",
-      "runAfterFinish": true
+      "shortcutName": "万能导 Wandao",
+      "runAfterFinish": true,
+      "artifactName": "Wandao-${version}-win-${arch}-setup.${ext}",
+      "uninstallDisplayName": "万能导 Wandao ${version}"
     },
     "mac": {
       "target": [

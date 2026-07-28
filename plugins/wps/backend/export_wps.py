@@ -307,7 +307,7 @@ def verify_cloud_session(cdp: CDPClient) -> bool:
                 const response = await fetch(target.toString(), {{method:'GET', credentials:'include', redirect:'follow', cache:'no-store', headers:{{'Accept':'application/json'}}}});
                 const contentType = response.headers.get('content-type') || '';
                 let payload = null;
-                if (/application\/json/i.test(contentType)) {{
+                if (/application\\/json/i.test(contentType)) {{
                   try {{ payload = await response.json(); }} catch (_) {{}}
                 }}
                 return {{status: response.status, contentType, payload}};

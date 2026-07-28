@@ -1,0 +1,37 @@
+# 行尾归一化配置。
+#
+# 没有这个文件时，Windows 检出会得到 CRLF、Linux 得到 LF，同一个提交在两边
+# `git status` 看到的结果完全不同（实测从 Linux 侧看是 275 个文件"被改"）。
+# 下面的规则把仓库里存储的文本一律固定为 LF，只有 Windows 专用脚本例外。
+#
+# 注意：新增/修改本文件后，需要在仓库根跑一次
+#     git add --renormalize .
+# 让已入库文件按新规则重新归一化，否则历史文件的行尾不会自动变。
+
+# 默认：自动识别文本/二进制，文本一律以 LF 入库和检出
+* text=auto eol=lf
+
+# 源码与配置：显式固定 LF
+*.py    text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+
+# Shell 脚本：必须 LF，否则 sh/bash 会报 $'\r': command not found
+*.sh    text eol=lf
+
+# Windows 脚本：必须 CRLF，否则 cmd.exe / PowerShell 可能解析异常
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+
+# 二进制：不做任何行尾转换，也不参与文本 diff
+*.png            binary
+*.jpg            binary
+*.ico            binary
+*.zip            binary
+*.exe            binary
+*.wandao-plugin  binary

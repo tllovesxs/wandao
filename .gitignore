@@ -57,3 +57,23 @@ wandao_electron/out/
 browser_import_docx_result*.png
 openplatform-*.png
 wiki-*.png
+
+# Local scratch output and caches
+# out/ 是测试与 web-crawl 的产物落盘目录（tests 跑一次就会生成）
+out/
+# crawl4ai 运行期抓取缓存
+crawl4ai-cache/
+
+# Local AI/editor agent settings
+# 本机 Claude 个人配置（settings.local.json），提交会污染他人环境
+.claude/
+# Claude/Codex 本地审查交付物（bundle、patch、临时报告），正式记录归档到 docs/reviews/
+/.improve/
+
+# Local worktrees and root-level build artifacts
+# git worktree 挂载点，纯本地工作区
+.worktrees/
+# 仓库根的打包输出（wandao_electron/dist-*/ 已单独覆盖）
+/dist-*/
+# 仓库根的发布产物（wandao_electron/release-*/ 已单独覆盖）
+/release-*/

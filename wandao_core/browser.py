@@ -23,6 +23,7 @@ from wandao_core.logging import WandaoLogger, print_text, structured_logs_enable
 
 DEFAULT_PORT = 9222
 FORBIDDEN_FILENAME_CHARS = r'<>:"/\\|?*'
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
 
 class ExportError(RuntimeError):
     pass
@@ -58,7 +59,10 @@ def sanitize_filename(value: str, fallback: str = "未命名", max_len: int = 90
 
     cleaned = "".join("-" if char in FORBIDDEN_FILENAME_CHARS or ord(char) < 32 else char for char in value)
     cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(". ")
-    return (cleaned or fallback)[:max_len]
+    cleaned = (cleaned or fallback)[:max_len].rstrip(". ") or fallback
+    if cleaned.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES:
+        cleaned = "_" + cleaned
+    return cleaned
 
 
 def pad(number: int) -> str:
@@ -152,7 +156,7 @@ class CDPClient:
         self._send_text(payload)
         deadline = time.time() + timeout
         while time.time() < deadline:
-            message = self._recv_json(timeout=max(0.5, deadline - time.time()))
+            message = self._recv_checked(method, max(0.5, deadline - time.time()))
             if message.get("id") == msg_id:
                 if "error" in message:
                     raise ExportError(f"CDP {method} failed: {message['error']}")
@@ -176,7 +180,7 @@ class CDPClient:
                 return self.pending_events.pop(index)
         deadline = time.time() + timeout
         while time.time() < deadline:
-            message = self._recv_json(timeout=max(0.5, deadline - time.time()))
+            message = self._recv_checked(f"event {method}", max(0.5, deadline - time.time()))
             if matches(message):
                 return message
             if message.get("method"):
@@ -213,6 +217,12 @@ class CDPClient:
         mask = os.urandom(4)
         masked = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
         self.sock.sendall(bytes(header) + mask + masked)
+
+    def _recv_checked(self, label: str, timeout: float) -> dict[str, Any]:
+        try:
+            return self._recv_json(timeout=timeout)
+        except OSError as exc:  # socket.timeout 在 3.10+ 即 TimeoutError，同属 OSError
+            raise ExportError(f"CDP {label} 通信超时或中断：{exc}") from exc
 
     def _recv_json(self, timeout: float) -> dict[str, Any]:
         assert self.sock is not None

@@ -104,7 +104,8 @@ class XiliuImportCheckpointBehaviorTests(unittest.TestCase):
             self.assertEqual(created[2][0], created[1][2])
 
             items = {row["item_key"]: row for row in checkpoint_rows(checkpoint, "items")}
-            doc = items["xiliu:import:A\B\doc.md"] if "xiliu:import:A\B\doc.md" in items else items["xiliu:import:A/B/doc.md"]
+            windows_key = r"xiliu:import:A\B\doc.md"
+            doc = items[windows_key] if windows_key in items else items["xiliu:import:A/B/doc.md"]
             metadata = json.loads(doc["metadata_json"])
             self.assertEqual(doc["status"], "completed")
             self.assertEqual(doc["target_id"], created[2][2])

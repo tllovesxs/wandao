@@ -299,9 +299,9 @@ class WandaoCheckpoint:
                 """
                 UPDATE tasks
                 SET lease_heartbeat = ?, lease_expires_at = ?, updated_at = ?
-                WHERE task_id = ? AND lease_id = ? AND lease_expires_at > ?
+                WHERE task_id = ? AND lease_id = ?
                 """,
-                (now, expires_at, now_iso(), self.task_id, self.run_id, now),
+                (now, expires_at, now_iso(), self.task_id, self.run_id),
             )
         if result.rowcount != 1:
             self._lease_claimed = False

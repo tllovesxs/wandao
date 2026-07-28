@@ -38,7 +38,7 @@ jobs:
           python-version: "3.11"
       - name: Audit npm lockfile
         working-directory: wandao_electron
-        run: npm audit --package-lock-only --registry=https://registry.npmjs.org --audit-level=high
+        run: node scripts/npm_audit_policy.js
       - name: Audit Python dependencies
         run: |
           python -m pip install --disable-pip-version-check pip-audit

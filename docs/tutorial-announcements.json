@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-10",
+  "updatedAt": "2026-07-28",
   "repository": "https://github.com/tllovesxs/wandao",
   "items": [
     {
@@ -20,12 +20,13 @@
     },
     {
       "id": "project-learning-ai-prompt",
-      "type": "tutorial",
+      "type": "announcement",
       "title": "AI 辅助学习：项目学习导师提示词",
       "summary": "把导出的教学文档和源码放在一起，让 AI 像项目学习导师一样带你理解业务流程、核心代码和技术取舍。",
-      "date": "2026-07-08",
+      "date": "2026-07-28",
+      "badge": "AI 学习",
       "tags": [
-        "教程",
+        "公告",
         "AI",
         "项目学习",
         "提示词"

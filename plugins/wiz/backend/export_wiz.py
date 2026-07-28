@@ -1125,7 +1125,7 @@ def run_login(args: argparse.Namespace) -> dict[str, Any]:
     try:
         cdp.navigate(WIZ_APP_URL)
         emit(args, "请在浏览器中完成为知笔记登录，并等待左侧目录加载完成。")
-        input("Press Enter after WizNote is logged in and visible...")
+        input()
         return save_auth_state(args, cdp)
     finally:
         cdp.close()

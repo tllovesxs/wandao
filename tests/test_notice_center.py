@@ -14,7 +14,8 @@ class NoticeCenterTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in items], ["provider-co-creation-invite", "project-learning-ai-prompt"])
         self.assertTrue(items[0]["pinned"])
         self.assertEqual(items[0]["type"], "announcement")
-        self.assertEqual(items[1]["type"], "tutorial")
+        self.assertEqual(items[1]["type"], "announcement")
+        self.assertEqual(items[1]["badge"], "AI 学习")
 
     def test_notice_document_loading_guards_against_stale_requests(self) -> None:
         app_js = (REPO_ROOT / "wandao_electron" / "renderer" / "app.js").read_text(encoding="utf-8")

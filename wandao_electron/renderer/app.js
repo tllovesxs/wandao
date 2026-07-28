@@ -21,7 +21,7 @@ let pluginBulkUpdateRunning = false;
 let customPluginMessageCleanup = null;
 const FALLBACK_NOTICE_CENTER = {
   version: 1,
-  updatedAt: '2026-07-08',
+  updatedAt: '2026-07-28',
   repository: GITHUB_REPO_URL,
   items: [
     {
@@ -38,12 +38,13 @@ const FALLBACK_NOTICE_CENTER = {
     },
     {
       id: 'project-learning-ai-prompt',
-      type: 'tutorial',
+      type: 'announcement',
       pinned: false,
       title: 'AI 辅助学习：项目学习导师提示词',
       summary: '把导出的教学文档和源码放在一起，让 AI 像项目学习导师一样带你理解业务流程、核心代码和技术取舍。',
-      date: '2026-07-08',
-      tags: ['教程', 'AI', '项目学习', '提示词'],
+      date: '2026-07-28',
+      badge: 'AI 学习',
+      tags: ['公告', 'AI', '项目学习', '提示词'],
       path: 'prompts/项目学习导师提示词.md',
       body: '# AI 辅助学习：项目学习导师提示词\n\n把万能导导出的教学文档和源码项目放在一起，再把项目学习导师提示词发给 AI，可以让 AI 结合真实代码和课程资料讲解项目。\n\n## 使用方式\n\n1. 用万能导导出你有权限访问的教学文档。\n2. 把 Markdown 文档放到源码项目旁边。\n3. 用 AI 编程工具打开整个项目目录。\n4. 复制 `prompts/项目学习导师提示词.md` 的内容给 AI。\n5. 按章节、功能或技术点继续提问。'
     }
@@ -798,6 +799,34 @@ function maskSensitiveValue(value) {
   return typeof value === 'string' ? maskSensitiveText(value) : value;
 }
 
+function maskDiagnosticArgs(args) {
+  const maskArgs = window.WandaoTaskReport?.maskArgs;
+  const masked = typeof maskArgs === 'function'
+    ? maskArgs(Array.isArray(args) ? args : [])
+    : (Array.isArray(args) ? args : []);
+  return maskSensitiveValue(masked);
+}
+
+function stringifyDiagnosticData(value) {
+  if (value === undefined || value === null) return '';
+  try {
+    return JSON.stringify(maskSensitiveValue(value));
+  } catch (error) {
+    return JSON.stringify({
+      serializationError: formatError(error),
+      valueType: typeof value
+    });
+  }
+}
+
+function formatDeveloperDetailEntry(entry) {
+  const event = entry.event ? ` [${entry.event}]` : '';
+  const provider = entry.provider ? ` [provider:${entry.provider}]` : '';
+  const data = stringifyDiagnosticData(entry.data);
+  const suffix = data ? ` | data=${data}` : '';
+  return `[${formatUserDateTime(entry.time)}] [${entry.source}] [${entry.type}]${event}${provider} ${entry.message}${suffix}`;
+}
+
 function activeToolLabel() {
   const active = document.querySelector('.nav-item.active');
   return active?.textContent?.trim() || TOOLS[currentTool]?.title || currentTool || '未知功能';
@@ -822,7 +851,7 @@ async function copyDeveloperReport() {
   }
 
   const userLines = userLogEntries.map((entry) => `[${formatUserDateTime(entry.time)}] [${entry.type}] ${entry.message}`);
-  const detailLines = detailLogEntries.map((entry) => `[${formatUserDateTime(entry.time)}] [${entry.source}] [${entry.type}] ${entry.message}`);
+  const detailLines = detailLogEntries.map(formatDeveloperDetailEntry);
   const report = [
     '# 万能导错误报告',
     '',
@@ -1496,11 +1525,29 @@ async function runTrackedPythonCommand(script, args, context = {}, options = {})
     }
   }
   const jobId = context.jobId || makeTaskId();
+  const runtimeStartedAt = Date.now();
   const commandArgs = Array.isArray(args) ? [...args] : [];
   if (commandArgs.includes('--checkpoint-file') && !commandArgs.includes('--checkpoint-task-id')) {
     commandArgs.push('--checkpoint-task-id', jobId);
   }
   const task = startHistoryTask(script, commandArgs, { ...context, jobId });
+  const providerId = context.providerId || currentTool;
+  const runtimeContext = {
+    taskId: task?.id || '',
+    runId: task?.runId || '',
+    jobId: task?.jobId || jobId,
+    parentRunId: task?.parentRunId || context.parentRunId || '',
+    providerId,
+    pluginVersion: TOOLS[providerId]?.pluginVersion || '',
+    action: context.action || '',
+    script,
+    args: maskDiagnosticArgs(commandArgs)
+  };
+  appendDetailedLog('runtime', 'info', `启动任务：${context.title || script}`, {
+    event: 'runtime.command.started',
+    provider: providerId,
+    data: runtimeContext
+  });
   try {
     const result = await window.electronAPI.runPythonCommand(script, commandArgs, {
       ...options,
@@ -1508,12 +1555,35 @@ async function runTrackedPythonCommand(script, args, context = {}, options = {})
       runId: task?.runId || '',
       jobId: task?.jobId || jobId,
       parentRunId: task?.parentRunId || '',
-      providerId: context.providerId || currentTool
+      providerId
     });
     recordPythonResultDiagnostics(script, result);
+    appendDetailedLog('runtime', result?.success ? 'success' : (isStoppedResult(result) ? 'warn' : 'error'), `任务进程结束：${context.title || script}`, {
+      event: 'runtime.command.finished',
+      provider: providerId,
+      data: {
+        ...runtimeContext,
+        elapsedMs: Date.now() - runtimeStartedAt,
+        success: Boolean(result?.success),
+        stopped: isStoppedResult(result),
+        code: result?.code ?? 0,
+        legacyResult: Boolean(result?.legacyResult),
+        error: result?.error ? compactDiagnostic(result.error, 1600) : ''
+      }
+    });
     await finishHistoryTask(task, result);
     return result;
   } catch (error) {
+    appendDetailedLog('runtime', 'error', `任务调用异常：${context.title || script}`, {
+      event: 'runtime.command.exception',
+      provider: providerId,
+      data: {
+        ...runtimeContext,
+        elapsedMs: Date.now() - runtimeStartedAt,
+        error: formatError(error),
+        stack: error?.stack || ''
+      }
+    });
     await finishHistoryTask(task, null, error);
     throw error;
   }
@@ -4454,6 +4524,35 @@ function formatError(error) {
   return error.error || error.message || JSON.stringify(error);
 }
 
+let rendererDiagnosticsInitialized = false;
+
+function initializeRendererDiagnostics() {
+  if (rendererDiagnosticsInitialized) return;
+  rendererDiagnosticsInitialized = true;
+  window.addEventListener('error', (event) => {
+    appendDetailedLog('renderer', 'error', '前端发生未处理异常', {
+      event: 'renderer.unhandled-error',
+      data: {
+        message: event.message || formatError(event.error),
+        source: event.filename || '',
+        line: event.lineno || 0,
+        column: event.colno || 0,
+        stack: event.error?.stack || ''
+      }
+    });
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    appendDetailedLog('renderer', 'error', '前端 Promise 发生未处理异常', {
+      event: 'renderer.unhandled-rejection',
+      data: {
+        message: formatError(reason),
+        stack: reason?.stack || ''
+      }
+    });
+  });
+}
+
 function compactDiagnostic(value, maxLength = 420) {
   const text = normalizeLogMessage(value)
     .replace(/\s+/g, ' ')
@@ -6367,6 +6466,63 @@ async function saveFeishuImportConfigFromForm() {
   }
 }
 
+async function applyProbedFeishuTarget(data) {
+  const spaceId = String(data?.spaceId || '').trim();
+  const parentWikiToken = String(data?.targetWikiToken || '').trim();
+  if (!spaceId || !parentWikiToken) {
+    const message = '探测结果不完整：未同时返回 Space ID 和目标 Wiki Token，未替换现有目标配置。';
+    log(message, 'error');
+    alert(message);
+    return { updated: false, saved: false };
+  }
+
+  const spaceInput = document.getElementById('feishu-import-space-id');
+  const parentInput = document.getElementById('feishu-import-parent-token');
+  if (!spaceInput || !parentInput) {
+    const message = '飞书导入目标字段不可用，无法应用本次探测结果。';
+    log(message, 'error');
+    alert(message);
+    return { updated: false, saved: false };
+  }
+
+  spaceInput.value = spaceId;
+  parentInput.value = parentWikiToken;
+
+  const appId = document.getElementById('feishu-import-app-id')?.value.trim()
+    || feishuImportConfig.app_id
+    || '';
+  const appSecret = document.getElementById('feishu-import-app-secret')?.value.trim()
+    || feishuImportConfig.app_secret
+    || '';
+  const nextConfig = {
+    ...feishuImportConfig,
+    ...(appId ? { app_id: appId } : {}),
+    ...(appSecret ? { app_secret: appSecret } : {}),
+    space_id: spaceId,
+    parent_wiki_token: parentWikiToken,
+    obj_type: feishuImportConfig.obj_type || 'docx'
+  };
+  const configPath = feishuImportConfigPath();
+  if (!configPath) {
+    const message = '已将目标 Wiki 刷新到当前界面，但未能保存到本机配置：无法获取配置目录。';
+    log(message, 'warn');
+    alert(message);
+    return { updated: true, saved: false, spaceId, parentWikiToken };
+  }
+
+  const writeResult = await window.electronAPI.writeFile(configPath, JSON.stringify(nextConfig, null, 2));
+  if (!writeResult?.success) {
+    const message = `已将目标 Wiki 刷新到当前界面，但未能保存到本机配置：${writeResult?.error || '未知错误'}`;
+    log(message, 'warn');
+    alert(message);
+    return { updated: true, saved: false, spaceId, parentWikiToken };
+  }
+
+  feishuImportConfig = nextConfig;
+  log('已将目标 Wiki 更新为最新探测结果并保存到本机配置。', 'success');
+  return { updated: true, saved: true, spaceId, parentWikiToken };
+}
+
 // Load Feishu Import Tool (reuse existing import code)
 function loadFeishuImportTool() {
   const contentArea = document.getElementById('content-area');
@@ -6666,12 +6822,7 @@ function initializeFeishuImportHandlers() {
     if (!requireFeishuWikiUrl()) return;
     const data = await runFeishuImportCommand([...buildFeishuImportArgs(), '--probe'], '探测目标 Wiki');
     if (data) {
-      if (data.spaceId && !document.getElementById('feishu-import-space-id').value.trim()) {
-        document.getElementById('feishu-import-space-id').value = data.spaceId;
-      }
-      if (data.targetWikiToken && !document.getElementById('feishu-import-parent-token').value.trim()) {
-        document.getElementById('feishu-import-parent-token').value = data.targetWikiToken;
-      }
+      await applyProbedFeishuTarget(data);
     }
   });
   document.getElementById('feishu-import-plan').addEventListener('click', async () => {
@@ -6707,6 +6858,7 @@ function initializeFeishuImportHandlers() {
 
 // Initialize the shell immediately; slower provider discovery continues in the background.
 document.addEventListener('DOMContentLoaded', () => {
+  initializeRendererDiagnostics();
   applyTheme(loadTheme());
   initializeFormDraftPersistence();
   initializePythonProcessStateSync();

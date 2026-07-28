@@ -4,7 +4,7 @@
   "id": "wps",
   "name": "WPS 文档",
   "description": "导出 WPS 智能文档及其他可下载的云文档；优先保存原始文件，部分智能文档降级为 Markdown，不读取设备文档。",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "community",
   "homepage": "https://docs.wps.cn/welcome",
   "license": "AGPL-3.0-only",

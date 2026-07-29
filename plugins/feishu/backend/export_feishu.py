@@ -2359,7 +2359,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.gui:
-        print("旧版 Python GUI 已废弃，请使用 Electron 桌面端：start-wandao.cmd 或 ./start-wandao.sh", file=sys.stderr)
+        print("旧版 Python GUI 已废弃，请使用 Wandao 桌面端：start-wandao.cmd 或 ./start-wandao.sh", file=sys.stderr)
         return 2
     if not args.wiki_url:
         raise ExportError("--wiki-url is required")

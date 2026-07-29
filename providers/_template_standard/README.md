@@ -77,7 +77,7 @@ progress 3/10 exported=3 skipped=0 failures=0
 ```text
 请参考 docs/插件开发指南.md 和 providers/_template_standard，把某某平台接入成万能导文件型 provider。
 要求：
-1. 不修改 Electron 主程序，优先使用 provider.json 的标准 UI。
+1. 不修改 Tauri 2 宿主，优先使用 provider.json 的标准 UI。
 2. provider 放在 providers/平台ID/ 下。
 3. 支持 README.md 使用教程、provider.json 能力声明、actions.py 脚本。
 4. 脚本最后输出 JSON，进度输出 progress x/y。

@@ -726,7 +726,7 @@ def main(argv: list[str]) -> int:
             args.source_file = args.source_file.expanduser().resolve()
 
         if args.gui:
-            print("旧版 Python GUI 已废弃，请使用 Electron 桌面端：start-wandao.cmd 或 ./start-wandao.sh", file=sys.stderr)
+            print("旧版 Python GUI 已废弃，请使用 Wandao 桌面端：start-wandao.cmd 或 ./start-wandao.sh", file=sys.stderr)
             return 2
         if args.scan_source:
             emit_json(scan_source(args))

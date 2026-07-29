@@ -47,7 +47,13 @@ test('all bundled action providers expose one legacy-compatible backend script',
   }
 });
 
-test('main process routes legacy templates through validated action scripts', () => {
-  const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'wandao_electron', 'main.js'), 'utf8');
-  assert.match(mainSource, /provider\.script = resolveProviderScript\(defaultScript, provider\.actions\)/);
+test('Tauri routes legacy templates through one validated action script', () => {
+  const providerSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'wandao_electron', 'src-tauri', 'src', 'providers.rs'),
+    'utf8'
+  );
+  assert.match(providerSource, /let scripts: HashSet<String> = normalized_actions/);
+  assert.match(providerSource, /if scripts\.len\(\) == 1/);
+  assert.match(providerSource, /object\.insert\("script"\.into\(\), json!\(resolved_default\)\)/);
+  assert.match(providerSource, /if !is_inside\(&plugin\.plugin_root, &resolved\)/);
 });

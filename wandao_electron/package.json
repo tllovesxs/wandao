@@ -1,21 +1,28 @@
 {
   "name": "wandao",
-  "version": "1.3.10",
+  "version": "1.4.0",
   "description": "Wandao multi-platform document conversion tool",
-  "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --dev",
-    "check": "node --check main.js && node --check guide_assets.js && node --check plugin_state_migration.js && node --check provider_script_routing.js && node --check provider_legacy_compat.js && node --check preload.js && node --check renderer/app.js && node --check renderer/providers.js && node --check renderer/provider_runtime.js && node --check renderer/task_report.js && node --check renderer/task_history.js && node --check renderer/form_drafts.js && node --check renderer/recent_inputs.js && node --check renderer/structured_logs.js && node --check renderer/time_format.js && node --check renderer/task_resume.js && node --check renderer/toc_tree.js && node --check renderer/toc_browser.js && node --check scripts/npm_install_cn.js && node --check scripts/npm_audit_policy.js",
+    "start": "tauri dev",
+    "dev": "tauri dev",
+    "tauri": "tauri",
+    "check": "node --check guide_assets.js && node --check plugin_state_migration.js && node --check provider_script_routing.js && node --check provider_legacy_compat.js && node --check renderer/tauri_bridge.js && node --check renderer/app.js && node --check renderer/providers.js && node --check renderer/provider_runtime.js && node --check renderer/task_report.js && node --check renderer/task_history.js && node --check renderer/form_drafts.js && node --check renderer/recent_inputs.js && node --check renderer/structured_logs.js && node --check renderer/time_format.js && node --check renderer/task_resume.js && node --check renderer/toc_tree.js && node --check renderer/toc_browser.js && node --check scripts/npm_install_cn.js && node --check scripts/npm_audit_policy.js",
     "install:cn": "node scripts/npm_install_cn.js",
     "prepare:python": "python scripts/prepare_python_runtime.py --target auto",
     "prepare:python:win": "python scripts/prepare_python_runtime.py --target win-x64",
     "prepare:python:mac:x64": "python scripts/prepare_python_runtime.py --target mac-x64",
     "prepare:python:mac:arm64": "python scripts/prepare_python_runtime.py --target mac-arm64",
-    "build:win": "npm run prepare:python:win && electron-builder --win --publish never",
-    "build:mac": "npm run prepare:python && electron-builder --mac --publish never",
-    "build:mac:x64": "npm run prepare:python:mac:x64 && electron-builder --mac --x64 --publish never",
-    "build:mac:arm64": "npm run prepare:python:mac:arm64 && electron-builder --mac --arm64 --publish never",
+    "build:win": "npm run build:win:unsigned",
+    "build:win:unsigned": "npm run prepare:python:win && tauri build --no-sign --bundles nsis",
+    "build:win:release": "npm run prepare:python:win && tauri build --ci --bundles nsis",
+    "build:mac": "npm run build:mac:unsigned",
+    "build:mac:unsigned": "npm run prepare:python && tauri build --no-sign --bundles app",
+    "build:mac:x64": "npm run build:mac:x64:unsigned",
+    "build:mac:x64:unsigned": "npm run prepare:python:mac:x64 && tauri build --no-sign --target x86_64-apple-darwin --bundles app",
+    "build:mac:x64:release": "npm run prepare:python:mac:x64 && tauri build --ci --target x86_64-apple-darwin --bundles app",
+    "build:mac:arm64": "npm run build:mac:arm64:unsigned",
+    "build:mac:arm64:unsigned": "npm run prepare:python:mac:arm64 && tauri build --no-sign --target aarch64-apple-darwin --bundles app",
+    "build:mac:arm64:release": "npm run prepare:python:mac:arm64 && tauri build --ci --target aarch64-apple-darwin --bundles app",
     "build:all": "npm run build:win"
   },
   "keywords": [
@@ -36,105 +43,8 @@
     "url": "https://github.com/tllovesxs/wandao.git"
   },
   "devDependencies": {
-    "electron": "^39.8.5",
-    "electron-builder": "^26.15.7"
-  },
-  "build": {
-    "appId": "com.wandao.app",
-    "productName": "Wandao",
-    "electronDist": "node_modules/electron/dist",
-    "electronLanguages": [
-      "zh-CN",
-      "zh-TW",
-      "en-US"
-    ],
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "tllovesxs",
-        "repo": "wandao"
-      }
-    ],
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "main.js",
-      "preload.js",
-      "guide_assets.js",
-      "plugin_format.js",
-      "plugin_manager.js",
-      "process_result.js",
-      "scan_stdout_relay.js",
-      "command_security.js",
-      "plugin_state_migration.js",
-      "assets/**/*",
-      "provider_script_routing.js",
-      "provider_legacy_compat.js",
-      "renderer/**/*",
-      "!node_modules/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "..",
-        "to": "python",
-        "filter": [
-          "*.py",
-          "wandao_core/**/*",
-          "requirements.txt"
-        ]
-      },
-      {
-        "from": "../plugins",
-        "to": "plugins",
-        "filter": [
-          "**/*",
-          "!**/__pycache__/**",
-          "!**/*.pyc"
-        ]
-      },
-      {
-        "from": "../providers",
-        "to": "providers",
-        "filter": [
-          "**/*",
-          "!**/__pycache__/**",
-          "!**/*.pyc"
-        ]
-      },
-      {
-        "from": "runtime/python-runtime",
-        "to": "python-runtime"
-      }
-    ],
-    "compression": "maximum",
-    "win": {
-      "target": [
-        "nsis"
-      ],
-      "icon": "assets/icon.ico",
-      "artifactName": "Wandao-${version}-win-${arch}-setup.${ext}"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "万能导 Wandao",
-      "runAfterFinish": true,
-      "artifactName": "Wandao-${version}-win-${arch}-setup.${ext}",
-      "uninstallDisplayName": "万能导 Wandao ${version}"
-    },
-    "mac": {
-      "target": [
-        "zip"
-      ],
-      "icon": "assets/icon.icns",
-      "category": "public.app-category.utilities",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false
-    }
+    "@tauri-apps/cli": "2.11.4",
+    "linkedom": "0.18.13"
   },
   "type": "commonjs"
 }

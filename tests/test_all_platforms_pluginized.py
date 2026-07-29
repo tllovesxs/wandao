@@ -81,11 +81,12 @@ class AllPlatformsPluginizedTests(unittest.TestCase):
 
     def test_desktop_core_contains_no_platform_registry_or_script_allowlist(self) -> None:
         providers_js = (REPO_ROOT / "wandao_electron/renderer/providers.js").read_text(encoding="utf-8")
-        main_js = (REPO_ROOT / "wandao_electron/main.js").read_text(encoding="utf-8")
-        self.assertNotIn("ALLOWED_SCRIPTS", main_js)
+        providers_rs = (REPO_ROOT / "wandao_electron/src-tauri/src/providers.rs").read_text(encoding="utf-8")
+        plugins_rs = (REPO_ROOT / "wandao_electron/src-tauri/src/plugins.rs").read_text(encoding="utf-8")
+        self.assertNotIn("ALLOWED_SCRIPTS", providers_rs)
         self.assertNotIn("id: 'zsxq-group'", providers_js)
         self.assertNotIn("id: 'yuque'", providers_js)
-        self.assertIn("bundledPluginEntriesWithErrors", main_js)
+        self.assertIn("provider_entries_with_errors", plugins_rs)
 
     def test_root_platform_modules_are_compatibility_only(self) -> None:
         entrypoints = [

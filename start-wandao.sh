@@ -7,14 +7,17 @@ for arg in "$@"; do
   case "$arg" in
     --install-only) INSTALL_ONLY=1 ;;
     --force-install) FORCE_INSTALL=1 ;;
+    *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ELECTRON_DIR="$ROOT_DIR/wandao_electron"
+APP_DIR="$ROOT_DIR/wandao_electron"
 RUNTIME_DIR="$ROOT_DIR/.dev-runtime"
 NODE_DIR="$RUNTIME_DIR/node"
 NODE_VERSION="v22.12.0"
+RUST_VERSION="1.88.0"
+RUST_TOOLCHAIN="1.88.0"
 
 step() {
   printf '\n==> %s\n' "$1"
@@ -55,8 +58,8 @@ node_package_name() {
   case "$os:$arch" in
     Darwin:arm64) printf "node-%s-darwin-arm64.tar.gz" "$NODE_VERSION" ;;
     Darwin:x86_64) printf "node-%s-darwin-x64.tar.gz" "$NODE_VERSION" ;;
-    Linux:aarch64|Linux:arm64) printf "node-%s-linux-arm64.tar.gz" "$NODE_VERSION" ;;
-    Linux:x86_64) printf "node-%s-linux-x64.tar.gz" "$NODE_VERSION" ;;
+    Linux:aarch64|Linux:arm64) printf "node-%s-linux-arm64.tar.xz" "$NODE_VERSION" ;;
+    Linux:x86_64) printf "node-%s-linux-x64.tar.xz" "$NODE_VERSION" ;;
     *) printf "UNSUPPORTED" ;;
   esac
 }
@@ -86,6 +89,10 @@ verify_sha256() {
 
 install_local_node() {
   step "Node.js/npm not found. Downloading local portable Node.js"
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required to download the pinned Node.js runtime. Install curl and retry." >&2
+    exit 1
+  fi
   mkdir -p "$RUNTIME_DIR"
 
   local package_name
@@ -141,9 +148,12 @@ ensure_node_and_npm() {
   step "Checking Node.js/npm"
   add_local_node_to_path
   if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-    ok "Node.js found: $(node --version)"
-    ok "npm found: $(npm --version)"
-    return
+    if node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 12) ? 0 : 1)'; then
+      ok "Node.js found: $(node --version)"
+      ok "npm found: $(npm --version)"
+      return
+    fi
+    echo "Installed Node.js is older than 22.12.0. Switching to the pinned local runtime." >&2
   fi
 
   install_local_node
@@ -153,11 +163,82 @@ ensure_node_and_npm() {
   fi
 }
 
+ensure_rust_toolchain() {
+  step "Checking Rust $RUST_VERSION toolchain"
+  local rustc_output cargo_output
+  if command -v rustup >/dev/null 2>&1; then
+    if ! rustc_output="$(rustup run "$RUST_TOOLCHAIN" rustc --version 2>&1)" || [[ "$rustc_output" != "rustc $RUST_VERSION "* ]]; then
+      echo "Rust $RUST_VERSION is required but the '$RUST_TOOLCHAIN' toolchain is unavailable." >&2
+      echo "Run 'rustup toolchain install $RUST_TOOLCHAIN' and retry." >&2
+      exit 1
+    fi
+    if ! cargo_output="$(rustup run "$RUST_TOOLCHAIN" cargo --version 2>&1)"; then
+      echo "Cargo for Rust $RUST_VERSION is unavailable. Run 'rustup toolchain install $RUST_TOOLCHAIN' and retry." >&2
+      exit 1
+    fi
+    export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
+    ok "$rustc_output"
+    ok "$cargo_output"
+    return
+  fi
+
+  if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+    echo "Rust $RUST_VERSION and Cargo are required for Tauri development. Install rustup from https://rustup.rs/ and retry." >&2
+    exit 1
+  fi
+  rustc_output="$(rustc --version)"
+  if [[ "$rustc_output" != "rustc $RUST_VERSION "* ]]; then
+    echo "Rust $RUST_VERSION is required, but '$rustc_output' is active. Install or activate Rust $RUST_VERSION and retry." >&2
+    exit 1
+  fi
+  ok "$rustc_output"
+  ok "$(cargo --version)"
+}
+
+ensure_platform_prerequisites() {
+  step "Checking Tauri platform prerequisites"
+  case "$(uname -s)" in
+    Darwin)
+      if ! command -v xcode-select >/dev/null 2>&1 || ! xcode-select -p >/dev/null 2>&1 || ! xcrun --find clang >/dev/null 2>&1; then
+        echo "Xcode Command Line Tools are required for Tauri on macOS. Run 'xcode-select --install' and retry." >&2
+        exit 1
+      fi
+      ok "Xcode Command Line Tools found"
+      ;;
+    Linux)
+      local missing=()
+      command -v cc >/dev/null 2>&1 || missing+=("C/C++ build tools")
+      command -v curl >/dev/null 2>&1 || missing+=("curl")
+      command -v wget >/dev/null 2>&1 || missing+=("wget")
+      command -v file >/dev/null 2>&1 || missing+=("file")
+      if ! command -v pkg-config >/dev/null 2>&1; then
+        missing+=("pkg-config")
+      else
+        pkg-config --exists webkit2gtk-4.1 || missing+=("webkit2gtk-4.1 development files")
+        pkg-config --exists gtk+-3.0 || missing+=("GTK 3 development files")
+        pkg-config --exists openssl || missing+=("OpenSSL development files")
+        pkg-config --exists librsvg-2.0 || missing+=("librsvg development files")
+        pkg-config --exists xdo || missing+=("libxdo development files")
+      fi
+      if [[ "${#missing[@]}" -gt 0 ]]; then
+        printf 'Missing Linux Tauri prerequisites: %s\n' "$(IFS=', '; printf '%s' "${missing[*]}")" >&2
+        echo "Install the matching development packages for your distribution (for Debian/Ubuntu: build-essential, libwebkit2gtk-4.1-dev, libgtk-3-dev, libssl-dev, librsvg2-dev, libxdo-dev, pkg-config, curl, wget, and file)." >&2
+        exit 1
+      fi
+      ok "Linux compiler and WebKit/GTK development packages found"
+      ;;
+    *)
+      echo "Unsupported platform: $(uname -s). Wandao Tauri development supports macOS and Linux through this launcher." >&2
+      exit 1
+      ;;
+  esac
+}
+
 select_npm_install_mode() {
   step "Checking npm network" >&2
   local official_ms mirror_ms
-  official_ms="$(test_url_ms "https://registry.npmjs.org/electron")"
-  mirror_ms="$(test_url_ms "https://registry.npmmirror.com/electron")"
+  official_ms="$(test_url_ms "https://registry.npmjs.org/@tauri-apps%2fcli")"
+  mirror_ms="$(test_url_ms "https://registry.npmmirror.com/@tauri-apps%2fcli")"
 
   if [[ "$official_ms" -lt 999999 && "$mirror_ms" -lt 999999 ]]; then
     if [[ "$official_ms" -le $((mirror_ms * 13 / 10)) ]]; then
@@ -186,41 +267,98 @@ select_npm_install_mode() {
   printf "cn"
 }
 
+tauri_lock_version() {
+  node -e '
+    const fs = require("fs");
+    const lock = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const entry = lock.packages && lock.packages["node_modules/@tauri-apps/cli"];
+    if (!entry || typeof entry.version !== "string" || !entry.version) process.exit(1);
+    process.stdout.write(entry.version);
+  ' "$1"
+}
+
+tauri_manifest_version() {
+  node -e '
+    const fs = require("fs");
+    const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const version = manifest.devDependencies && manifest.devDependencies["@tauri-apps/cli"];
+    if (typeof version !== "string" || !version) process.exit(1);
+    process.stdout.write(version);
+  ' "$1"
+}
+
+tauri_dependencies_ready() {
+  local app_manifest="$APP_DIR/package.json"
+  local project_lock="$APP_DIR/package-lock.json"
+  local installed_lock="$APP_DIR/node_modules/.package-lock.json"
+  local tauri_package="$APP_DIR/node_modules/@tauri-apps/cli/package.json"
+  local tauri_script="$APP_DIR/node_modules/@tauri-apps/cli/tauri.js"
+  local tauri_shim="$APP_DIR/node_modules/.bin/tauri"
+  [[ -f "$app_manifest" && -f "$project_lock" && -f "$installed_lock" && -f "$tauri_package" && -f "$tauri_script" && -x "$tauri_shim" ]] || return 1
+
+  local declared_version locked_version installed_lock_version installed_version
+  declared_version="$(tauri_manifest_version "$app_manifest" 2>/dev/null)" || return 1
+  locked_version="$(tauri_lock_version "$project_lock" 2>/dev/null)" || return 1
+  installed_lock_version="$(tauri_lock_version "$installed_lock" 2>/dev/null)" || return 1
+  installed_version="$(node -e '
+    const manifest = require(process.argv[1]);
+    if (typeof manifest.version !== "string" || !manifest.version) process.exit(1);
+    process.stdout.write(manifest.version);
+  ' "$tauri_package" 2>/dev/null)" || return 1
+  [[ "$declared_version" == "$locked_version" && "$locked_version" == "$installed_lock_version" && "$locked_version" == "$installed_version" ]] || return 1
+  node "$tauri_script" --version >/dev/null 2>&1
+}
+
 install_dependencies() {
-  local mode="$1"
-  if [[ "$FORCE_INSTALL" -eq 0 && -d "$ELECTRON_DIR/node_modules/electron" && -d "$ELECTRON_DIR/node_modules/electron-builder" ]]; then
-    ok "Desktop dependencies already exist. Skipping npm install"
+  local declared_version locked_version
+  declared_version="$(tauri_manifest_version "$APP_DIR/package.json" 2>/dev/null)" || true
+  locked_version="$(tauri_lock_version "$APP_DIR/package-lock.json" 2>/dev/null)" || true
+  if [[ -z "$declared_version" || -z "$locked_version" || "$declared_version" != "$locked_version" ]]; then
+    echo "package.json and package-lock.json must declare the same pinned @tauri-apps/cli version. Refusing an unlocked desktop dependency install." >&2
+    exit 1
+  fi
+  if [[ "$FORCE_INSTALL" -eq 0 ]] && tauri_dependencies_ready; then
+    ok "Tauri CLI matches package-lock.json. Skipping npm install"
     return
   fi
 
-  step "Installing desktop dependencies"
-  pushd "$ELECTRON_DIR" >/dev/null
+  local mode
+  mode="$(select_npm_install_mode)"
+  local registry
   if [[ "$mode" == "cn" ]]; then
-    npm run install:cn
+    registry="https://registry.npmmirror.com/"
   else
-    npm install --no-audit --no-fund
+    registry="https://registry.npmjs.org/"
   fi
+  step "Installing Tauri desktop dependencies"
+  pushd "$APP_DIR" >/dev/null
+  npm ci --registry="$registry" --replace-registry-host=always --no-audit --no-fund
   popd >/dev/null
+  if ! tauri_dependencies_ready; then
+    echo "npm completed, but @tauri-apps/cli does not match package-lock.json or cannot run on this platform." >&2
+    exit 1
+  fi
 }
 
 start_wandao() {
-  step "Starting Wandao"
-  pushd "$ELECTRON_DIR" >/dev/null
-  npm start
+  step "Starting Wandao with Tauri"
+  pushd "$APP_DIR" >/dev/null
+  npm run dev
   popd >/dev/null
 }
 
-if [[ ! -d "$ELECTRON_DIR" ]]; then
+if [[ ! -d "$APP_DIR" ]]; then
   echo "wandao_electron folder not found. Please run this script from the Wandao project root."
   exit 1
 fi
 
 ensure_node_and_npm
-INSTALL_MODE="$(select_npm_install_mode)"
-install_dependencies "$INSTALL_MODE"
+ensure_rust_toolchain
+ensure_platform_prerequisites
+install_dependencies
 
 if [[ "$INSTALL_ONLY" -eq 1 ]]; then
-  ok "Dependency check completed. Desktop app was not started."
+  ok "Node.js, Tauri CLI, Rust, and platform prerequisite checks completed. Desktop app was not started."
   exit 0
 fi
 

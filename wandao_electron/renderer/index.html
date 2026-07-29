@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'">
   <title>万能导 Wandao</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -13,7 +13,7 @@
   <div class="app-container">
     <header class="app-header">
       <div class="brand">
-        <img class="brand-logo" src="../assets/icon.png" alt="万能导 Wandao Logo">
+        <img class="brand-logo" src="assets/icon.png" alt="万能导 Wandao Logo">
         <div class="brand-copy">
           <h1>万能导 Wandao</h1>
           <p class="subtitle">让知识没有壁垒，多平台文档互转</p>
@@ -748,6 +748,7 @@
     </div>
   </template>
 
+  <script src="tauri_bridge.js"></script>
   <script src="providers.js"></script>
   <script src="provider_runtime.js"></script>
   <script src="structured_logs.js"></script>

@@ -173,7 +173,7 @@ npm start
 python scripts\quality_check.py
 ```
 
-这会检查在线插件、Provider 配置、Python 语法、单元测试和 Electron JS 语法。只改在线插件时，也可以单独运行：
+这会检查在线插件、Provider 配置、Python 语法、单元测试、桌面前端 JS 和 Tauri/Rust 代码。涉及 `wandao_electron/src-tauri/` 时请使用 Rust 1.88.0。只改在线插件时，也可以单独运行：
 
 ```powershell
 node scripts\validate_plugins.js

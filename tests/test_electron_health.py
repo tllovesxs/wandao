@@ -11,42 +11,69 @@ def read_text(rel_path: str) -> str:
     return (REPO_ROOT / rel_path).read_text(encoding="utf-8")
 
 
-class ElectronHealthTests(unittest.TestCase):
-    def test_browser_window_keeps_safe_renderer_defaults(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+class TauriHealthTests(unittest.TestCase):
+    def test_tauri_window_keeps_safe_renderer_defaults(self) -> None:
+        tauri_config = json.loads(read_text("wandao_electron/src-tauri/tauri.conf.json"))
         index_html = read_text("wandao_electron/renderer/index.html")
+        security = tauri_config["app"]["security"]
 
-        self.assertRegex(main_js, r"nodeIntegration\s*:\s*false")
-        self.assertRegex(main_js, r"contextIsolation\s*:\s*true")
-        self.assertRegex(main_js, r"sandbox\s*:\s*true")
-        self.assertRegex(main_js, r"preload\s*:\s*path\.join\(__dirname,\s*['\"]preload\.js['\"]\)")
-        self.assertIn("setWindowOpenHandler", main_js)
-        self.assertIn("will-navigate", main_js)
-        self.assertIn("setPermissionRequestHandler", main_js)
+        self.assertEqual(tauri_config["$schema"], "https://schema.tauri.app/config/2")
+        self.assertTrue(tauri_config["app"]["withGlobalTauri"])
+        self.assertTrue(security["freezePrototype"])
+        self.assertIn("default-src 'self'", security["csp"])
+        self.assertIn("object-src 'none'", security["csp"])
+        self.assertIn("base-uri 'none'", security["csp"])
+        self.assertIn("form-action 'none'", security["csp"])
+        self.assertNotIn("'unsafe-eval'", security["csp"])
+        self.assertEqual(security["csp"].count("http://"), 1)
+        self.assertIn("http://ipc.localhost", security["csp"])
         self.assertIn("Content-Security-Policy", index_html)
-        self.assertNotRegex(main_js, r"webSecurity\s*:\s*false")
-        self.assertNotRegex(main_js, r"allowRunningInsecureContent\s*:\s*true")
+        self.assertIn('<script src="tauri_bridge.js"></script>', index_html)
 
-    def test_preload_channels_are_handled_by_main_process(self) -> None:
-        preload_js = read_text("wandao_electron/preload.js")
-        main_js = read_text("wandao_electron/main.js")
+    def test_bridge_commands_are_registered_by_tauri(self) -> None:
+        bridge_js = read_text("wandao_electron/renderer/tauri_bridge.js")
+        lib_rs = read_text("wandao_electron/src-tauri/src/lib.rs")
 
-        preload_channels = set(re.findall(r"ipcRenderer\.invoke\(['\"]([^'\"]+)['\"]", preload_js))
-        main_channels = set(re.findall(r"ipcMain\.handle\(['\"]([^'\"]+)['\"]", main_js))
+        command_list = bridge_js[
+            bridge_js.index("const COMMAND_NAMES") : bridge_js.index("const EVENT_NAMES")
+        ]
+        bridge_commands = set(re.findall(r"'([a-z][a-z0-9_]*)'", command_list))
+        handler_list = lib_rs[
+            lib_rs.index("tauri::generate_handler![") : lib_rs.index("])", lib_rs.index("tauri::generate_handler!["))
+        ]
+        rust_commands = set(re.findall(r"commands::([a-z][a-z0-9_]*)", handler_list))
 
-        self.assertTrue(preload_channels)
-        self.assertFalse(preload_channels - main_channels)
-        self.assertIn("run-python-command", preload_channels)
-        self.assertIn("get-provider-manifests", preload_channels)
-        self.assertIn("protect-task-args", preload_channels)
-        self.assertIn("restore-task-args", preload_channels)
+        self.assertTrue(bridge_commands)
+        self.assertFalse(bridge_commands - rust_commands)
+        self.assertIn("run_python_command", bridge_commands)
+        self.assertIn("get_provider_manifests", bridge_commands)
+        self.assertIn("protect_task_args", bridge_commands)
+        self.assertIn("restore_task_args", bridge_commands)
 
     def test_task_history_encrypts_args_and_recovers_interrupted_tasks(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
+        security_rs = read_text("wandao_electron/src-tauri/src/security.rs")
         app_js = read_text("wandao_electron/renderer/app.js")
 
-        self.assertIn("safeStorage.encryptString", main_js)
-        self.assertIn("safeStorage.decryptString", main_js)
+        self.assertIn("protect_bytes(&plain)", commands_rs)
+        restore_start = commands_rs.index("pub async fn restore_task_args")
+        restore_end = commands_rs.index("\n#[tauri::command]", restore_start)
+        restore_command = commands_rs[restore_start:restore_end]
+        self.assertRegex(
+            restore_command,
+            r"unprotect_bytes_for_user_data\s*\(\s*&encrypted\s*,\s*&state\.paths\.user_data\s*\)",
+        )
+        self.assertNotIn("unprotect_bytes(&encrypted)", restore_command)
+        self.assertIn("CryptProtectData", security_rs)
+        self.assertIn("CryptUnprotectData", security_rs)
+        self.assertIn("macos_safe_storage", security_rs)
+        self.assertIn('encrypted.starts_with(b"v10")', security_rs)
+        self.assertRegex(
+            security_rs,
+            r"#\s*\[\s*test\s*\]\s*fn\s+unprotects_synthetic_electron_v10_payload\s*\(",
+        )
+        self.assertIn('user_data.0.join("Local State")', security_rs)
+        self.assertIn('value.get("encrypted_key")', security_rs)
         self.assertIn("persistable.protectedArgs = protectedResult.payload", app_js)
         self.assertIn("persistable.args = []", app_js)
         self.assertIn("persistable.resultData = maskSensitiveValue", app_js)
@@ -62,49 +89,67 @@ class ElectronHealthTests(unittest.TestCase):
         runner = app_js[runner_start:runner_end]
         self.assertLess(runner.index("await taskHistoryLoadPromise"), runner.index("startHistoryTask("))
 
-    def test_python_process_lock_is_released_only_by_the_owned_process(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+    def test_task_runtime_owns_process_target_and_stop_state(self) -> None:
+        tasks_rs = read_text("wandao_electron/src-tauri/src/tasks.rs")
 
-        self.assertIn("if (pythonProcess === proc)", main_js)
-        self.assertIn("function terminateProcessTree", main_js)
-        self.assertIn("spawnSync('taskkill'", main_js)
-        self.assertIn("process.kill(-proc.pid", main_js)
-        self.assertIn("detached: process.platform !== 'win32'", main_js)
-        stop_start = main_js.index("function requestPythonStop()")
-        stop_handler = main_js[stop_start : main_js.index("function writePythonInput", stop_start)]
-        self.assertNotIn("pythonProcess = null", stop_handler)
-        self.assertIn("pythonProcessStopping = true", stop_handler)
-        self.assertIn("terminateProcessTree(pythonProcess)", stop_handler)
-        self.assertIn("async () => requestPythonStop()", main_js)
-        self.assertIn("const wasStopping = pythonProcess === proc && pythonProcessStopping", main_js)
-        self.assertIn("code: 130", main_js)
+        self.assertIn("pub struct TaskRuntime", tasks_rs)
+        self.assertIn("pub fn request_stop", tasks_rs)
+        self.assertIn("pub fn force_stop", tasks_rs)
+        self.assertRegex(tasks_rs, r"struct\s+ProcessTarget\s*\{")
+        self.assertRegex(
+            tasks_rs,
+            r"type\s+ProcessTerminator\s*=\s*Arc<dyn\s+Fn\s*\(\s*&ProcessTarget\s*,\s*bool\s*\)",
+        )
+        self.assertRegex(
+            tasks_rs,
+            r"fn\s+terminate_process_tree\s*\(\s*target:\s*&ProcessTarget\s*,\s*force:\s*bool\s*\)",
+        )
+        self.assertRegex(tasks_rs, r"\(self\.terminator\)\s*\(\s*&target\s*,\s*false\s*\)")
+        self.assertRegex(tasks_rs, r"\(self\.terminator\)\s*\(\s*&target\s*,\s*true\s*\)")
+        self.assertIn("process_target_for_child(&child)", tasks_rs)
+        self.assertIn("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE", tasks_rs)
+        self.assertIn("configure_process_group(&mut command)", tasks_rs)
+        self.assertIn("stop_file", tasks_rs)
+        self.assertIn("TaskExitCode::Number(130)", tasks_rs)
+        self.assertIn("active.token == token", tasks_rs)
+        self.assertRegex(
+            tasks_rs,
+            r"#\s*\[\s*test\s*\]\s*fn\s+force_stop_failure_rolls_back_stopping\s*\(",
+        )
+        self.assertRegex(
+            tasks_rs,
+            r"#\s*\[\s*test\s*\]\s*fn\s+windows_job_close_terminates_spawned_descendant\s*\(",
+        )
 
-    def test_main_process_prevents_duplicate_instances_and_handles_stdin_failures(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+    def test_tauri_runtime_prevents_duplicate_instances_and_handles_stdin_failures(self) -> None:
+        lib_rs = read_text("wandao_electron/src-tauri/src/lib.rs")
+        tasks_rs = read_text("wandao_electron/src-tauri/src/tasks.rs")
 
-        self.assertIn("app.requestSingleInstanceLock()", main_js)
-        self.assertIn("app.on('second-instance'", main_js)
-        self.assertIn("proc.stdin.on('error'", main_js)
-        self.assertIn("return writePythonInput(pythonProcess, text)", main_js)
+        self.assertIn("tauri_plugin_single_instance::init", lib_rs)
+        self.assertIn('app.get_webview_window("main")', lib_rs)
+        self.assertIn("pub fn write_input", tasks_rs)
+        self.assertIn("write_all(input.as_bytes())", tasks_rs)
 
     def test_process_and_task_logs_are_bounded(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        tasks_rs = read_text("wandao_electron/src-tauri/src/tasks.rs")
         app_js = read_text("wandao_electron/renderer/app.js")
 
-        self.assertIn("const MAX_PROCESS_OUTPUT_CHARS", main_js)
-        self.assertIn("function appendOutputTail", main_js)
+        self.assertIn("DEFAULT_OUTPUT_LIMIT_BYTES", tasks_rs)
+        self.assertIn("struct CappedOutput", tasks_rs)
+        self.assertIn("MAX_STRUCTURED_LOG_LINE_BYTES", tasks_rs)
         self.assertIn("const MAX_TASK_LOG_ENTRIES", app_js)
         self.assertIn("activeTaskLogEntries.push(entry)", app_js)
         self.assertIn("task.logs = [...activeTaskLogEntries]", app_js)
         self.assertNotIn("task.logs = detailLogEntries.slice", app_js)
 
     def test_runtime_provider_validation_fails_closed(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        providers_rs = read_text("wandao_electron/src-tauri/src/providers.rs")
 
-        self.assertIn("function validateProviderManifestRuntime", main_js)
-        self.assertIn("Provider 目录名必须和 ID 一致", main_js)
-        self.assertIn("actions[${index}].script 无效", main_js)
-        self.assertNotIn("pluginScriptRef(id, action && action.script, providerRoot) || provider.script", main_js)
+        self.assertIn("fn validate_provider_manifest", providers_rs)
+        self.assertIn("Provider 目录名必须和 ID 一致", providers_rs)
+        self.assertIn("actions[{index}].script 不能为空", providers_rs)
+        self.assertIn("safe_relative_path", providers_rs)
+        self.assertNotIn("unwrap_or(provider.script", providers_rs)
 
     def test_python_runtime_build_is_pinned_and_verified(self) -> None:
         runtime_script = read_text("wandao_electron/scripts/prepare_python_runtime.py")
@@ -115,43 +160,59 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("def verify_archive", runtime_script)
         self.assertIn("verify_archive(temporary, expected_sha256)", runtime_script)
 
-    def test_preload_does_not_expose_raw_ipc_or_node_modules(self) -> None:
-        preload_js = read_text("wandao_electron/preload.js")
-        exposed_object = preload_js.split("contextBridge.exposeInMainWorld", 1)[-1]
+    def test_bridge_does_not_expose_raw_tauri_or_node_modules(self) -> None:
+        bridge_js = read_text("wandao_electron/renderer/tauri_bridge.js")
 
-        self.assertIn("contextBridge.exposeInMainWorld('electronAPI'", preload_js)
-        self.assertNotIn("ipcRenderer,", exposed_object)
-        self.assertNotIn("require,", exposed_object)
-        self.assertNotIn("process,", exposed_object)
+        self.assertIn("root.electronAPI = api", bridge_js)
+        self.assertIn("Object.freeze({", bridge_js)
+        self.assertNotIn("root.__TAURI__ =", bridge_js)
+        self.assertNotIn("require(", bridge_js)
+        self.assertNotIn("process.", bridge_js)
 
     def test_remote_text_fetch_is_limited_to_project_docs(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
 
-        self.assertIn("function isAllowedRemoteTextUrl", main_js)
-        self.assertIn("parsed.protocol !== 'https:'", main_js)
-        self.assertIn("raw.githubusercontent.com", main_js)
-        self.assertIn("/tllovesxs/wandao/", main_js)
-        self.assertIn("公告文档超过 1MB", main_js)
+        self.assertIn("fn is_allowed_remote_text_url", commands_rs)
+        self.assertIn('url.scheme() != "https"', commands_rs)
+        self.assertIn('"raw.githubusercontent.com"', commands_rs)
+        self.assertIn('"/tllovesxs/wandao/"', commands_rs)
+        self.assertIn("MAX_REMOTE_TEXT_BYTES", commands_rs)
 
-    def test_file_and_external_ipc_have_main_process_boundaries(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+    def test_file_and_external_commands_have_rust_boundaries(self) -> None:
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
 
-        self.assertIn("function resolveManagedFilePath", main_js)
-        self.assertIn("managedFileRoots", main_js)
-        self.assertIn("resolveManagedFilePath(filePath, { allowProjectRoot: true })", main_js)
-        self.assertIn("resolveManagedFilePath(filePath)", main_js)
-        self.assertIn("function isAllowedExternalUrl", main_js)
-        self.assertIn("return parsed.protocol === 'https:'", main_js)
-        self.assertIn("if (!isAllowedExternalUrl(url))", main_js)
-        self.assertNotIn("root.startsWith(app.getPath('userData'))", main_js)
+        self.assertIn("fn resolve_managed_file_path", commands_rs)
+        self.assertIn("if !roots.iter().any(|root| is_inside(root, &path))", commands_rs)
+        self.assertIn("resolve_managed_file_path(&file_path, &state, true)", commands_rs)
+        self.assertIn("resolve_managed_file_path(&file_path, &state, false)", commands_rs)
+        self.assertIn("fn is_allowed_external_url", commands_rs)
+        self.assertIn('url.scheme() == "https"', commands_rs)
+        self.assertIn("if !is_allowed_external_url(&url)", commands_rs)
+
+    def test_save_dialog_splits_default_file_path(self) -> None:
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
+        save_start = commands_rs.index("pub async fn save_file")
+        save_end = commands_rs.index("\n#[tauri::command]", save_start)
+        save_command = commands_rs[save_start:save_end]
+
+        self.assertRegex(
+            save_command,
+            r"save_default_path_parts\s*\(\s*PathBuf::from\s*\(\s*default_path\s*\)\s*\)",
+        )
+        self.assertIn("dialog.set_directory(directory)", save_command)
+        self.assertIn("dialog.set_file_name(file_name)", save_command)
+        self.assertRegex(
+            commands_rs,
+            r"#\s*\[\s*test\s*\]\s*fn\s+save_default_path_separates_parent_directory_and_file_name\s*\(",
+        )
 
     def test_settings_have_schema_version_and_normalization(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
 
-        self.assertIn("const SETTINGS_SCHEMA_VERSION = 1", main_js)
-        self.assertIn("function normalizeAppSettings", main_js)
-        self.assertIn("schemaVersion: settings.schemaVersion || SETTINGS_SCHEMA_VERSION", main_js)
-        self.assertIn("next.schemaVersion = SETTINGS_SCHEMA_VERSION", main_js)
+        self.assertIn("const SETTINGS_SCHEMA_VERSION: u64 = 1", commands_rs)
+        self.assertIn("fn public_app_settings", commands_rs)
+        self.assertIn("fn save_settings_update", commands_rs)
+        self.assertIn('settings["schemaVersion"] = json!(SETTINGS_SCHEMA_VERSION)', commands_rs)
 
     def test_log_panel_uses_bounded_batch_rendering(self) -> None:
         app_js = read_text("wandao_electron/renderer/app.js")
@@ -211,32 +272,37 @@ class ElectronHealthTests(unittest.TestCase):
     def test_build_workflow_uses_supported_node_version(self) -> None:
         workflow = read_text(".github/workflows/build-desktop.yml")
         package = json.loads(read_text("wandao_electron/package.json"))
+        cargo = read_text("wandao_electron/src-tauri/Cargo.toml")
+        tauri_config = json.loads(read_text("wandao_electron/src-tauri/tauri.conf.json"))
 
         self.assertGreaterEqual(workflow.count('node-version: "22"'), 3)
         self.assertIn("windows-latest, ubuntu-latest, macos-latest", workflow)
         self.assertIn('python: ["3.10", "3.11"]', workflow)
-        self.assertIn("PR Windows Package Smoke", workflow)
-        self.assertIn("scripts/package_smoke.py --resources wandao_electron/dist/win-unpacked/resources", workflow)
+        self.assertIn("PR Windows Tauri Package Smoke", workflow)
+        self.assertIn("cargo test --all-targets --locked", workflow)
+        self.assertIn("cargo clippy --all-targets --locked -- -D warnings", workflow)
+        self.assertIn("scripts/package_smoke.py --resources", workflow)
+        self.assertIn("src-tauri/target/release/bundle/nsis", workflow)
         package_smoke = read_text("scripts/package_smoke.py")
         self.assertIn("verify_packaged_backend_help", package_smoke)
-        self.assertIn("verify_packaged_main_dependencies", package_smoke)
-        self.assertIn("app.asar", package_smoke)
+        self.assertIn("verify_tauri_frontend", package_smoke)
+        self.assertNotIn("app.asar", package_smoke)
         self.assertIn('"--provider", provider_id, "--", "--help"', package_smoke)
-        self.assertIn("guide_assets.js", package["build"]["files"])
         self.assertEqual(package["engines"]["node"], ">=22.12.0")
-        self.assertEqual(package["build"]["electronDist"], "node_modules/electron/dist")
-        self.assertNotIn("signExecutable", package["build"]["win"])
-        self.assertTrue(package["build"]["mac"]["hardenedRuntime"])
-        self.assertIn('CSC_IDENTITY_AUTO_DISCOVERY: "false"', workflow)
-        self.assertNotIn("Require signing credentials for a release tag", workflow)
-        self.assertNotIn("CSC_LINK:", workflow)
+        self.assertEqual(package["devDependencies"]["@tauri-apps/cli"], "2.11.4")
+        self.assertNotIn("electron", package.get("dependencies", {}))
+        self.assertNotIn("electron", package.get("devDependencies", {}))
+        self.assertIn('tauri = { version = "2.', cargo)
+        self.assertTrue(tauri_config["bundle"]["active"])
+        self.assertEqual(tauri_config["bundle"]["windows"]["nsis"]["compression"], "lzma")
+        self.assertIsNone(tauri_config["bundle"]["macOS"]["signingIdentity"])
         self.assertIn("actions/attest-build-provenance", workflow)
         self.assertIn("Generate release SBOM", workflow)
         release_files = workflow.split("files: |", 1)[1]
         self.assertIn("release-artifacts/*.exe", release_files)
         self.assertIn("release-artifacts/*.zip", release_files)
-        self.assertNotIn("release-artifacts/SHA256SUMS", release_files)
-        self.assertNotIn("release-artifacts/wandao.spdx.json", release_files)
+        self.assertIn("release-artifacts/SHA256SUMS", release_files)
+        self.assertIn("release-artifacts/wandao.spdx.json", release_files)
 
     def test_bootstrap_node_runtime_is_pinned_and_verified(self) -> None:
         powershell = read_text("start-wandao.ps1")
@@ -250,35 +316,77 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("22982235e1b71fa8850f82edd09cdae7e3f32df1764a9ec298c72d25ef2c164f", shell)
 
     def test_running_task_requires_confirmation_before_exit(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        lib_rs = read_text("wandao_electron/src-tauri/src/lib.rs")
+        tasks_rs = read_text("wandao_electron/src-tauri/src/tasks.rs")
         app_js = read_text("wandao_electron/renderer/app.js")
         index_html = read_text("wandao_electron/renderer/index.html")
 
-        self.assertIn("function confirmTaskShutdown", main_js)
-        self.assertIn("停止任务并退出", main_js)
-        self.assertIn("mainWindow.on('close'", main_js)
+        self.assertIn("WindowEvent::CloseRequested", lib_rs)
+        self.assertIn("api.prevent_close()", lib_rs)
+        self.assertIn("停止任务并退出", lib_rs)
+        shutdown_start = lib_rs.index("fn stop_running_task")
+        shutdown_end = lib_rs.index("fn show_shutdown_error", shutdown_start)
+        shutdown = lib_rs[shutdown_start:shutdown_end]
+        self.assertLess(shutdown.index("runtime.force_stop()"), shutdown.index("runtime.wait_until_idle"))
+        self.assertIn("runtime.wait_until_idle(SHUTDOWN_WAIT_TIMEOUT)", shutdown)
+        self.assertIn("const SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5)", lib_rs)
+        self.assertIn("show_shutdown_error", lib_rs)
+        self.assertRegex(
+            tasks_rs,
+            r"#\s*\[\s*test\s*\]\s*fn\s+wait_until_idle_is_bounded_and_wakes_on_completion\s*\(",
+        )
         self.assertIn('id="btn-global-stop"', index_html)
         self.assertIn("btn-global-stop", app_js)
 
+    def test_native_menu_is_registered_with_core_actions(self) -> None:
+        lib_rs = read_text("wandao_electron/src-tauri/src/lib.rs")
+        menu_rs = read_text("wandao_electron/src-tauri/src/app_menu.rs")
+
+        self.assertRegex(lib_rs, r"\.menu\s*\(\s*app_menu::build\s*\)")
+        self.assertRegex(lib_rs, r"\.on_menu_event\s*\(\s*app_menu::handle\s*\)")
+        menu_ids = dict(
+            re.findall(r'const\s+(MENU_[A-Z0-9_]+):\s*&str\s*=\s*"([^"]+)"', menu_rs)
+        )
+        self.assertEqual(menu_ids.get("MENU_STOP_TASK"), "task.stop")
+        self.assertTrue(
+            {
+                "view.reload",
+                "view.fullscreen",
+                "help.docs",
+                "help.check-updates",
+                "help.about",
+            }.issubset(menu_ids.values())
+        )
+        for title in ("文件", "编辑", "视图", "帮助"):
+            self.assertRegex(menu_rs, rf'SubmenuBuilder::new\s*\(\s*app,\s*"{title}"\s*\)')
+        self.assertRegex(menu_rs, r"runtime\.request_stop\s*\(")
+        self.assertIn('app.emit("app-info", message)', menu_rs)
+        self.assertRegex(
+            menu_rs,
+            r"#\s*\[\s*test\s*\]\s*fn\s+custom_menu_ids_are_unique\s*\(",
+        )
+        self.assertRegex(
+            menu_rs,
+            r"#\s*\[\s*test\s*\]\s*fn\s+project_links_remain_https\s*\(",
+        )
+
     def test_plugin_center_always_shows_bundled_platform_plugins(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
         app_js = read_text("wandao_electron/renderer/app.js")
 
-        self.assertIn("function bundledPluginCatalogEntries", main_js)
-        self.assertIn("function pluginCatalogWithBundled", main_js)
-        self.assertIn("plugins: pluginCatalogWithBundled(combined)", main_js)
-        self.assertIn("plugins: pluginCatalogWithBundled()", main_js)
+        self.assertIn("fn bundled_plugin_catalog", commands_rs)
+        self.assertIn("fn plugin_catalog_with_bundled", commands_rs)
+        self.assertIn("plugin_catalog_with_bundled(&state.paths, &manager", commands_rs)
         self.assertIn("随主程序提供", app_js)
         self.assertIn("安装更新", app_js)
 
     def test_plugin_release_channels_are_visible_for_experimental_plugins(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
         app_js = read_text("wandao_electron/renderer/app.js")
         workflow = read_text(".github/workflows/publish-plugins.yml")
 
-        self.assertIn("EXPERIMENTAL_PLUGIN_REGISTRY_URL", main_js)
-        self.assertIn("currentPluginRegistry(Boolean(options?.refresh), 'experimental')", main_js)
-        self.assertNotIn("includeExperimental", main_js)
+        self.assertIn("WANDAO_EXPERIMENTAL_PLUGIN_REGISTRY_URL", commands_rs)
+        self.assertIn('current_registry(&app, &state, &manager, refresh, "experimental")', commands_rs)
         self.assertIn("plugins-experimental", workflow)
         self.assertIn("dist-plugins/stable", workflow)
         self.assertIn("dist-plugins/experimental", workflow)
@@ -347,31 +455,32 @@ class ElectronHealthTests(unittest.TestCase):
 
     def test_plugin_center_supports_bulk_updates_and_download_progress(self) -> None:
         app_js = read_text("wandao_electron/renderer/app.js")
-        main_js = read_text("wandao_electron/main.js")
-        preload_js = read_text("wandao_electron/preload.js")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
+        bridge_js = read_text("wandao_electron/renderer/tauri_bridge.js")
 
         self.assertIn("data-plugin-update-all", app_js)
         self.assertIn("runPluginCenterUpdateAll", app_js)
         self.assertIn("plugin-download-progress", app_js)
         self.assertIn("onPluginDownloadProgress", app_js)
-        self.assertIn("plugin-download-progress", main_js)
-        self.assertIn("onPluginDownloadProgress", preload_js)
+        self.assertIn('"plugin-download-progress"', commands_rs)
+        self.assertIn("onPluginDownloadProgress", bridge_js)
 
     def test_plugin_runtime_migrates_known_legacy_state_without_exposing_the_data_root(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
+        providers_rs = read_text("wandao_electron/src-tauri/src/providers.rs")
         migration_js = read_text("wandao_electron/plugin_state_migration.js")
         package = json.loads(read_text("wandao_electron/package.json"))
 
-        self.assertIn("migrateLegacyPluginState", main_js)
-        self.assertIn("legacyRoot: app.getPath('userData')", main_js)
+        self.assertIn("migrate_legacy_plugin_state", commands_rs)
+        self.assertIn("pub fn migrate_legacy_plugin_state", providers_rs)
         self.assertIn(".youdao_auth.json", migration_js)
         self.assertIn(".yuque_auth.json", migration_js)
         self.assertIn(".wiz_auth.json", migration_js)
         self.assertIn("yinxiang/yinxiang_china.db", migration_js)
         self.assertIn(".feishu_import_config.json", migration_js)
-        self.assertNotIn("WANDAO_LEGACY_DATA_DIR", main_js)
-        self.assertIn("legacyRoot: pythonLibraryDir()", main_js)
-        self.assertIn("plugin_state_migration.js", package["build"]["files"])
+        self.assertNotIn("WANDAO_LEGACY_DATA_DIR", commands_rs)
+        self.assertIn("state.paths.user_data.clone()", commands_rs)
+        self.assertIn("state.paths.project_root.clone()", commands_rs)
         self.assertIn("node --check plugin_state_migration.js", package["scripts"]["check"])
 
     def test_feishu_and_ima_use_one_plugin_owned_config_path(self) -> None:
@@ -446,36 +555,36 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("navigationLocked ? 'disabled aria-disabled", app_js)
 
     def test_renderer_recovers_a_python_task_that_survives_reload(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
-        preload_js = read_text("wandao_electron/preload.js")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
+        bridge_js = read_text("wandao_electron/renderer/tauri_bridge.js")
         app_js = read_text("wandao_electron/renderer/app.js")
 
-        self.assertIn("get-python-process-state", main_js)
-        self.assertIn("broadcastPythonProcessState", main_js)
-        self.assertIn("python-process-state", preload_js)
-        self.assertIn("getPythonProcessState", preload_js)
+        self.assertIn("pub async fn get_python_process_state", commands_rs)
+        self.assertIn('"python-process-state"', commands_rs)
+        self.assertIn("'python-process-state'", bridge_js)
+        self.assertIn("getPythonProcessState", bridge_js)
         self.assertIn("function initializePythonProcessStateSync", app_js)
         self.assertIn("recoveredCommandOwner = Symbol", app_js)
         self.assertIn("已恢复导航锁和全局停止按钮", app_js)
         self.assertIn("mainPythonProcessState.taskId === task.id", app_js)
 
-    def test_main_process_rejects_parallel_python_tasks(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
-        marker = "ipcMain.handle('run-python-command'"
-        start = main_js.find(marker)
+    def test_tauri_command_rejects_parallel_python_tasks(self) -> None:
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
+        marker = "pub async fn run_python_command"
+        start = commands_rs.find(marker)
         self.assertGreater(start, -1)
-        handler = main_js[start : start + 500]
+        handler = commands_rs[start : start + 800]
 
-        self.assertIn("if (pythonProcess)", handler)
+        self.assertIn("if runtime.state().running", handler)
         self.assertIn("已有任务正在运行", handler)
 
-    def test_main_process_compresses_large_doc_id_selection_for_exporters(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+    def test_tauri_command_compresses_large_doc_id_selection_for_exporters(self) -> None:
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
 
-        self.assertIn("function compressDocIdArgs", main_js)
-        self.assertNotIn("const supported = new Set", main_js)
-        self.assertIn("if (value === '--doc-id'", main_js)
-        self.assertIn("return [...compactArgs, '--doc-id-file', filePath]", main_js)
+        self.assertIn("fn compress_doc_id_args", commands_rs)
+        self.assertNotIn("const supported", commands_rs)
+        self.assertIn('args[index] == "--doc-id"', commands_rs)
+        self.assertIn('"--doc-id-file"', commands_rs)
 
     def test_group_toc_progress_is_labeled_as_topic_list_reading(self) -> None:
         structured_logs_js = read_text("wandao_electron/renderer/structured_logs.js")
@@ -537,28 +646,28 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertNotIn("checkpoint", ima_import)
 
     def test_checkpoint_runtime_is_bundled_for_packaged_app(self) -> None:
-        package_json = read_text("wandao_electron/package.json")
-        package = json.loads(package_json)
+        package = json.loads(read_text("wandao_electron/package.json"))
         package_lock = json.loads(read_text("wandao_electron/package-lock.json"))
+        cargo = read_text("wandao_electron/src-tauri/Cargo.toml")
+        tauri_config = json.loads(read_text("wandao_electron/src-tauri/tauri.conf.json"))
+        resources = tauri_config["bundle"]["resources"]
         pyproject = read_text("pyproject.toml")
 
         self.assertRegex(package["version"], r"^\d+\.\d+\.\d+$")
         self.assertEqual(package["version"], package_lock["version"])
         self.assertEqual(package["version"], package_lock["packages"][""]["version"])
-        python_resource = next(item for item in package["build"]["extraResources"] if item.get("to") == "python")
-        self.assertEqual(python_resource["from"], "..")
-        self.assertIn("*.py", python_resource["filter"])
-        self.assertIn("wandao_core/**/*", python_resource["filter"])
-        self.assertIn("requirements.txt", python_resource["filter"])
+        self.assertIn(f'version = "{package["version"]}"', cargo)
+        self.assertEqual(tauri_config["version"], package["version"])
+        self.assertEqual(resources["../../*.py"], "python/")
+        self.assertEqual(resources["../../wandao_core/"], "python/wandao_core/")
+        self.assertEqual(resources["../../requirements.txt"], "python/requirements.txt")
         self.assertIn(f'version = "{package["version"]}"', pyproject)
         self.assertIn('"wandao_checkpoint"', pyproject)
         self.assertIn('"wandao_cli"', pyproject)
 
     def test_provider_python_scripts_are_bundled_for_packaged_app(self) -> None:
-        package = json.loads(read_text("wandao_electron/package.json"))
-        resources = package["build"]["extraResources"]
-        plugin_resource = next(item for item in resources if item.get("to") == "plugins")
-        python_resource = next(item for item in resources if item.get("to") == "python")
+        tauri_config = json.loads(read_text("wandao_electron/src-tauri/tauri.conf.json"))
+        resources = tauri_config["bundle"]["resources"]
         required_common = {
             "wandao_logging.py",
             "wandao_report.py",
@@ -568,8 +677,9 @@ class ElectronHealthTests(unittest.TestCase):
             "wandao_browser.py",
             "gui_utils.py",
         }
-        self.assertEqual(plugin_resource["from"], "../plugins")
-        self.assertEqual(python_resource["from"], "..")
+        self.assertEqual(resources["../../plugins/"], "plugins/")
+        self.assertEqual(resources["../../providers/"], "providers/")
+        self.assertEqual(resources["../runtime/python-runtime/"], "python-runtime/")
         self.assertTrue((REPO_ROOT / "wandao_core" / "__init__.py").is_file())
         self.assertTrue(required_common.issubset({path.name for path in REPO_ROOT.glob("*.py")}))
         for manifest_path in (REPO_ROOT / "plugins").glob("*/plugin.json"):
@@ -583,47 +693,84 @@ class ElectronHealthTests(unittest.TestCase):
                         self.assertTrue((provider_file.parent / script).resolve().is_file())
 
     def test_platform_scripts_only_come_from_plugins_or_file_providers(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        providers_rs = read_text("wandao_electron/src-tauri/src/providers.rs")
         providers_js = read_text("wandao_electron/renderer/providers.js")
-        self.assertNotIn("ALLOWED_SCRIPTS", main_js)
-        self.assertIn("bundled-plugin:", main_js)
-        self.assertIn("平台脚本必须来自 Plugin v1 或文件型 Provider", main_js)
+        self.assertNotIn("ALLOWED_SCRIPTS", providers_rs)
+        self.assertIn('"bundled-plugin:"', providers_rs)
+        self.assertIn("平台脚本必须来自 Plugin v1 或文件型 Provider", providers_rs)
         self.assertNotRegex(providers_js, r"(?:export|import)_[a-z0-9_]+\.py")
 
     def test_plugin_process_environment_uses_an_allowlist(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
+        tasks_rs = read_text("wandao_electron/src-tauri/src/tasks.rs")
 
-        self.assertIn("const PLUGIN_ENV_ALLOWLIST = new Set", main_js)
-        self.assertIn("pluginHostEnvironment()", main_js)
-        self.assertIn("pluginContext ? pluginHostEnvironment() : process.env", main_js)
-        self.assertNotIn("WANDAO_PLUGIN_PRIVATE_KEY)/i.test(key)", main_js)
+        self.assertIn("const PLUGIN_ENV_ALLOWLIST: &[&str]", tasks_rs)
+        self.assertIn("fn inherited_environment(plugin_isolated: bool)", tasks_rs)
+        self.assertIn("allowlist.contains(key.to_ascii_uppercase().as_str())", tasks_rs)
+        self.assertNotIn("WANDAO_PLUGIN_PRIVATE_KEY", tasks_rs)
+
+    def test_bundled_plugin_hashes_cover_discovery_and_execution(self) -> None:
+        build_rs = read_text("wandao_electron/src-tauri/build.rs")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
+        plugins_rs = read_text("wandao_electron/src-tauri/src/plugins.rs")
+        providers_rs = read_text("wandao_electron/src-tauri/src/providers.rs")
+
+        ids_start = build_rs.index("const BUNDLED_PLUGIN_IDS")
+        ids_end = build_rs.index("];", ids_start)
+        declared_ids = set(re.findall(r'"([a-z0-9_]+)"', build_rs[ids_start:ids_end]))
+        plugin_root = REPO_ROOT / "plugins"
+        repository_ids = {
+            path.name
+            for path in plugin_root.iterdir()
+            if path.is_dir() and (path / "plugin.json").is_file()
+        }
+        self.assertEqual(declared_ids, repository_ids)
+        self.assertEqual(len(declared_ids), 14)
+        self.assertIn("generate_bundled_plugin_hashes(&manifest_dir)", build_rs)
+        self.assertIn('include!(concat!(env!("OUT_DIR"), "/bundled_plugin_hashes.rs"))', plugins_rs)
+        self.assertIn("verify_bundled_plugin(&paths.bundled_plugins, &id)", commands_rs)
+
+        bundled_start = providers_rs.index('script_name.strip_prefix("bundled-plugin:")')
+        bundled_end = providers_rs.index("if let Some(rest)", bundled_start + 1)
+        bundled_resolution = providers_rs[bundled_start:bundled_end]
+        self.assertIn("verify_bundled_plugin_file", bundled_resolution)
+        self.assertRegex(
+            plugins_rs,
+            r"#\s*\[\s*test\s*\]\s*fn\s+bundled_hash_catalog_covers_all_plugins_and_detects_tampering\s*\(",
+        )
+        self.assertIn('contains("构建后被修改")', plugins_rs)
 
     def test_plugins_are_signed_sandboxed_and_official_plugins_are_bundled(self) -> None:
-        main_js = read_text("wandao_electron/main.js")
-        preload_js = read_text("wandao_electron/preload.js")
+        commands_rs = read_text("wandao_electron/src-tauri/src/commands.rs")
+        plugins_rs = read_text("wandao_electron/src-tauri/src/plugins.rs")
+        security_rs = read_text("wandao_electron/src-tauri/src/security.rs")
+        bridge_js = read_text("wandao_electron/renderer/tauri_bridge.js")
         app_js = read_text("wandao_electron/renderer/app.js")
         providers_js = read_text("wandao_electron/renderer/providers.js")
-        package = json.loads(read_text("wandao_electron/package.json"))
+        tauri_config = json.loads(read_text("wandao_electron/src-tauri/tauri.conf.json"))
 
-        self.assertIn("new PluginManager", main_js)
-        self.assertIn("providerEntriesWithErrors", main_js)
-        self.assertIn("get-plugin-catalog", main_js)
-        self.assertIn("get-plugin-ui", main_js)
-        self.assertIn("getPluginCatalog", preload_js)
-        self.assertIn("installPlugin", preload_js)
+        self.assertIn("PluginManager", commands_rs)
+        self.assertIn("provider_entries_with_errors", plugins_rs)
+        self.assertIn("pub async fn get_plugin_catalog", commands_rs)
+        self.assertIn("pub async fn get_plugin_ui", commands_rs)
+        self.assertIn("getPluginCatalog", bridge_js)
+        self.assertIn("installPlugin", bridge_js)
+        self.assertIn("verify_envelope_signature", plugins_rs)
+        self.assertIn("ed25519_dalek", security_rs)
+        self.assertIn("safe_relative_path", plugins_rs)
+        self.assertIn("MAX_PLUGIN_FILES", plugins_rs)
+        self.assertIn("MAX_PLUGIN_BYTES", plugins_rs)
         self.assertIn('sandbox="allow-scripts"', app_js)
         self.assertNotIn('sandbox="allow-scripts allow-same-origin"', app_js)
         self.assertIn("default-src 'none'", app_js)
         self.assertIn("replaceExternal", providers_js)
         self.assertNotIn("id: 'wiz'", providers_js)
         self.assertNotIn("id: 'feishu-export'", providers_js)
-        plugin_resource = next(item for item in package["build"]["extraResources"] if item.get("to") == "plugins")
-        self.assertEqual(plugin_resource["from"], "../plugins")
-        self.assertIn("bundledPluginEntriesWithErrors", main_js)
-        self.assertIn("installedPlugin?.enabled", main_js)
-        self.assertIn("compareVersions(installedPlugin.currentVersion, manifest.version) > 0", main_js)
-        self.assertIn("const bundledVersions = new Map", main_js)
-        self.assertIn("['plugin', preferredInstalledDiscovery]", main_js)
+        self.assertEqual(tauri_config["bundle"]["resources"]["../../plugins/"], "plugins/")
+        self.assertEqual(tauri_config["bundle"]["resources"]["../assets/"], "assets/")
+        self.assertIn("bundled_plugin_catalog", commands_rs)
+        self.assertIn("plugin_catalog_with_bundled", commands_rs)
+        self.assertIn("manager.list_with_registry", commands_rs)
+        self.assertIn("compare_versions", plugins_rs)
 
 
 if __name__ == "__main__":

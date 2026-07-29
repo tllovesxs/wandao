@@ -5,6 +5,7 @@ from pathlib import Path
 
 from scripts.validate_providers import (
     provider_manifest_paths,
+    validate_guide_assets,
     validate_provider_manifest,
     validate_repository,
     validate_toc,
@@ -30,6 +31,35 @@ class ProviderValidationTests(unittest.TestCase):
         self.assertIn("plugins/feishu/providers/feishu-export/provider.json", paths)
         self.assertIn("plugins/yuque/providers/yuque/provider.json", paths)
         self.assertIn("providers/_template_standard/provider.json", paths)
+
+    def test_guide_assets_require_pinned_repository_urls_and_integrity(self) -> None:
+        pinned = (
+            "https://raw.githubusercontent.com/tllovesxs/wandao/"
+            "82c027b054d9ece8449af30d79600814eb823e46/"
+            "plugins/feishu/providers/feishu-import/images/1.png"
+        )
+        valid = {
+            "guideAssets": {
+                pinned: {
+                    "mime": "image/png",
+                    "bytes": 1981436,
+                    "sha256": "16a3d8a2aa18b108ff1c3bd76eae114bd9cda639d447f5de0af91d10dc6d1ae2",
+                }
+            }
+        }
+        self.assertEqual(validate_guide_assets(valid, Path("provider.json")), [])
+
+        mutable = json.loads(json.dumps(valid))
+        mutable["guideAssets"] = {
+            pinned.replace("82c027b054d9ece8449af30d79600814eb823e46", "main"): {
+                **next(iter(valid["guideAssets"].values()))
+            }
+        }
+        bad_digest = json.loads(json.dumps(valid))
+        next(iter(bad_digest["guideAssets"].values()))["sha256"] = "A" * 64
+
+        self.assertTrue(any("不可变仓库范围" in issue.message for issue in validate_guide_assets(mutable, Path("provider.json"))))
+        self.assertTrue(any("小写 SHA-256" in issue.message for issue in validate_guide_assets(bad_digest, Path("provider.json"))))
 
     def test_rejects_provider_script_path_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

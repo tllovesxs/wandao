@@ -38,7 +38,7 @@ Provider v1 使用 `schemaVersion: 1`。贡献者按 v1 编写的 provider，后
 - 新增能力优先增加可选字段，不删除或改变已有字段含义。
 - 主程序会忽略未知扩展字段，方便社区先声明平台特有信息。
 - 如果未来必须做破坏性调整，会新增 `schemaVersion: 2`，不会让 v1 provider 静默失效。
-- 标准 UI Provider 不需要修改 Electron 主程序，也不需要注入前端代码。
+- 标准 UI Provider 不需要修改 Tauri 2 宿主，也不需要注入前端代码。
 
 机器可读 Schema 位于：
 
@@ -72,7 +72,7 @@ plugins/<plugin-id>/backend/actions.py
 
 ## 标准 UI 和复杂 UI
 
-标准 UI Provider 不需要改 Electron 主程序。贡献者只要声明 `fields` 和 `actions`，主程序会自动生成表单和按钮。
+标准 UI Provider 不需要改 Tauri 2 宿主。贡献者只要声明 `fields` 和 `actions`，主程序会自动生成表单和按钮。
 
 复杂平台可以在同一个插件中拆成多个 Provider，例如 `example-export`、`example-import`、`example-setup`。如果标准 UI 仍然不够，可以在 Plugin v1 中声明沙箱自定义 UI。自定义 UI 没有 Node 权限，不能直接读写本地文件，只能通过宿主允许的 `postMessage` 能力执行已声明动作。
 

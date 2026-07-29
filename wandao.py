@@ -16,10 +16,10 @@ ROOT = Path(__file__).resolve().parent
 
 
 def find_plugins_root() -> Path:
-    """Support both source checkout and Electron's ``resources`` layout.
+    """Support both source checkout and Tauri's ``resources`` layout.
 
-    In a checkout the launcher lives beside ``plugins/``. electron-builder
-    places the launcher in ``resources/python`` while bundled Plugin v1
+    In a checkout the launcher lives beside ``plugins/``. Tauri places the
+    launcher in ``resources/python`` while bundled Plugin v1
     packages live in ``resources/plugins``.
     """
     for candidate in (ROOT / "plugins", ROOT.parent / "plugins"):
@@ -99,14 +99,14 @@ def run_desktop_app() -> int:
         script = ROOT / "start-wandao.sh"
         if script.exists():
             return subprocess.call(["bash", str(script)], cwd=str(ROOT))
-    print("请使用 Electron 桌面端启动脚本 start-wandao。", file=sys.stderr)
+    print("请使用 Wandao 桌面端启动脚本 start-wandao。", file=sys.stderr)
     return 1
 
 
 def parse_args(argv: list[str], providers: dict[str, dict[str, Any]]) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(description="万能导：Plugin v1 多平台知识迁移启动器")
     parser.add_argument("--provider", choices=sorted(providers), help="选择 Provider")
-    parser.add_argument("--gui", action="store_true", help="启动 Electron 桌面端")
+    parser.add_argument("--gui", action="store_true", help="启动 Wandao 桌面端")
     parser.add_argument("--list", action="store_true", help="列出已发现的 Provider")
     return parser.parse_known_args(argv)
 

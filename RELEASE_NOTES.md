@@ -1,5 +1,20 @@
 # Wandao Release Notes
 
+## 1.4.0
+
+- 桌面端从 Electron 完整迁移到 Tauri 2：现有 HTML/CSS/JavaScript 界面、Plugin v1、Provider v1 和任务数据契约保持兼容，主进程改由 Rust 实现。
+- 前端兼容桥覆盖原有 32 个命令及任务日志、任务状态、插件下载和应用信息事件；旧任务历史、用户数据目录和加密参数仍可恢复。
+- Windows 兼容 Electron `safeStorage` 的 `v10` 历史密文，新数据继续使用用户级 DPAPI；macOS 延续系统钥匙串兼容路径。
+- 任务运行器改为 Rust 进程管理：支持增量 UTF-8 日志、受限 stdin、协作停止、强制停止、停止失败重试，以及 Windows Job Object 子孙进程清理。
+- 插件安装、替换、回滚和卸载采用原子目录事务与崩溃恢复；内置 14 个插件在发现和执行前按构建期 SHA-256 清单校验。
+- 恢复原生应用菜单、文件对话框、关闭确认、单实例、macOS 关闭隐藏与重新打开行为。
+- 发行包改为 Tauri NSIS / macOS `.app`，内置固定且校验过的 Python 3.11 runtime；发布门禁验证 14 个插件、20 个 Provider、19 个可执行后端和真实应用启动。
+- 修复钉钉文档正文中的根相对图片地址被可信域校验误拒绝：`/core/api/resources/img/...` 会先基于已验证的钉钉页面 origin 解析，再执行原有 HTTPS 与域名白名单校验；协议相对地址和外部域名仍会被拒绝。
+- Windows 从 1.3.x 升级时会先安全移除默认目录中的旧 Electron 程序并保留 `%APPDATA%\wandao` 用户数据；曾自定义旧安装目录的用户需先手动卸载旧版，再安装 1.4.0。
+- 依赖和构建链移除 Electron、electron-builder 及其临时安全例外，Node、Rust、Python runtime 和 Tauri CLI 均使用锁定版本。
+
+> PR、本地和手动工作流只生成带 `UNSIGNED-SMOKE` 标识的测试产物，不会创建 GitHub Release。正式 `v*` tag 必须在受保护的 `desktop-release` 环境完成 Windows Authenticode 签名、macOS Developer ID 签名与 Apple 公证；凭据缺失或任一平台验签失败时不会创建 Release。1.4.0 首次产物只创建 draft，完成干净系统验收后再由维护者公开。
+
 ## 1.3.0
 
 - 所有十个平台能力已统一迁移到 Plugin v1：官方插件随桌面端离线提供，在线签名包可覆盖、回滚或卸载。

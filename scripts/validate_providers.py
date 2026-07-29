@@ -21,6 +21,14 @@ from typing import Any
 PROVIDER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$", re.I)
 FIELD_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+GUIDE_ASSET_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+GUIDE_ASSET_URL_RE = re.compile(
+    r"^https://raw\.githubusercontent\.com/tllovesxs/wandao/"
+    r"82c027b054d9ece8449af30d79600814eb823e46/"
+    r"plugins/feishu/providers/feishu-import/images/(?:[1-9]|1\d|20)\.png$"
+)
+GUIDE_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((https://[^)\s]+)\)")
+MAX_GUIDE_ASSET_BYTES = 3 * 1024 * 1024
 
 PROVIDER_TYPES = {"automation", "guide", "hybrid"}
 PROVIDER_GROUPS = {"export", "import", "guide"}
@@ -89,6 +97,31 @@ def validate_required_strings(data: dict[str, Any], path: Path, keys: list[str])
     for key in keys:
         if not isinstance(data.get(key), str) or not data.get(key, "").strip():
             issues.append(ValidationIssue(path, f"缺少必填字符串字段：{key}"))
+    return issues
+
+
+def validate_guide_assets(data: dict[str, Any], path: Path) -> list[ValidationIssue]:
+    assets = data.get("guideAssets")
+    if assets is None:
+        return []
+    if not isinstance(assets, dict) or not assets:
+        return [ValidationIssue(path, "guideAssets 必须是非空对象")]
+    issues: list[ValidationIssue] = []
+    for url, spec in assets.items():
+        if not isinstance(url, str) or not GUIDE_ASSET_URL_RE.fullmatch(url):
+            issues.append(ValidationIssue(path, f"guideAssets URL 不在允许的不可变仓库范围：{url!r}"))
+            continue
+        if not isinstance(spec, dict) or set(spec) != {"mime", "bytes", "sha256"}:
+            issues.append(ValidationIssue(path, f"guideAssets[{url!r}] 必须精确声明 mime/bytes/sha256"))
+            continue
+        size = spec.get("bytes")
+        if spec.get("mime") != "image/png":
+            issues.append(ValidationIssue(path, f"guideAssets[{url!r}].mime 只允许 image/png"))
+        if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= MAX_GUIDE_ASSET_BYTES:
+            issues.append(ValidationIssue(path, f"guideAssets[{url!r}].bytes 超出限制"))
+        digest = spec.get("sha256")
+        if not isinstance(digest, str) or not GUIDE_ASSET_SHA256_RE.fullmatch(digest):
+            issues.append(ValidationIssue(path, f"guideAssets[{url!r}].sha256 必须是小写 SHA-256"))
     return issues
 
 
@@ -310,6 +343,7 @@ def validate_provider_manifest(path: Path, repo_root: Path) -> list[ValidationIs
     issues.extend(validate_capabilities(data, path))
     issues.extend(validate_fields(data, path))
     issues.extend(validate_toc(data, path))
+    issues.extend(validate_guide_assets(data, path))
     action_root = provider_root
     try:
         relative_parts = path.resolve().relative_to(repo_root.resolve()).parts
@@ -327,6 +361,20 @@ def validate_provider_manifest(path: Path, repo_root: Path) -> list[ValidationIs
         issues.extend(guide_issues)
         if guide_path and (not guide_path.exists() or not guide_path.is_file()):
             issues.append(ValidationIssue(path, f"guide 文件不存在：{guide}"))
+        elif guide_path:
+            markdown_assets = set(
+                GUIDE_MARKDOWN_IMAGE_RE.findall(guide_path.read_text(encoding="utf-8"))
+            )
+            declared_assets = set(data.get("guideAssets") or {})
+            if markdown_assets != declared_assets:
+                issues.append(
+                    ValidationIssue(
+                        path,
+                        "guideAssets 必须与教程中的 HTTPS 图片引用完全一致："
+                        f"missing={sorted(markdown_assets - declared_assets)} "
+                        f"unused={sorted(declared_assets - markdown_assets)}",
+                    )
+                )
 
     homepage = data.get("homepage")
     if homepage and not isinstance(homepage, str):

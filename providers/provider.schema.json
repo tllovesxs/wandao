@@ -60,6 +60,28 @@
     "guidePath": {
       "type": "string"
     },
+    "guideAssets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mime", "bytes", "sha256"],
+        "properties": {
+          "mime": {
+            "enum": ["image/png"]
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3145728
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
     "homepage": {
       "type": "string"
     },

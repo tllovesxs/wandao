@@ -20,7 +20,7 @@
   <a href="https://github.com/tllovesxs/wandao/network/members"><img src="https://img.shields.io/github/forks/tllovesxs/wandao?label=Forks&color=4f86c6" alt="GitHub Forks"></a>
   <a href="https://github.com/tllovesxs/wandao/issues?q=is%3Aissue"><img src="https://img.shields.io/github/issues-search?query=repo%3Atllovesxs%2Fwandao%20is%3Aissue&label=Issues&color=8a63d2" alt="全部 GitHub Issues"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0 License"></a>
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey" alt="Windows 与 macOS">
+  <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20macOS%20arm64-lightgrey" alt="Windows x64 与 macOS Apple Silicon">
 </p>
 
 <p align="center">
@@ -141,7 +141,7 @@
 
 ## ⚡ 快速开始
 
-1. 打开 [GitHub Releases](https://github.com/tllovesxs/wandao/releases)，下载对应系统的安装包
+1. 打开 [GitHub Releases](https://github.com/tllovesxs/wandao/releases)，下载 Windows x64 或 macOS Apple Silicon（arm64，macOS 11+）安装包
 2. 启动 Wandao，在“平台中心”选择目标平台和导入/导出操作
 3. 按界面提示登录或填写链接，然后读取目录
 4. 勾选需要处理的文档并开始任务
@@ -149,14 +149,14 @@
 
 发行版已内置运行环境，普通用户不需要安装 Python、Node.js，也不需要从源码启动。
 
-> ⚠️ **macOS 首次打开：** 当前安装包未进行 Apple 公证。请只从本项目 GitHub Release 下载。若移入“应用程序”后提示“已损坏，无法打开”，请在终端执行 `xattr -cr /Applications/Wandao.app`，然后重新打开。
+> **macOS Apple Silicon 首次打开：** 正式 Release 中的应用必须经过 Developer ID 签名和 Apple 公证。请只从本项目 GitHub Releases 下载并移入“应用程序”。若仍提示“已损坏”或被 Gatekeeper 阻止，请停止使用该文件并在项目中报告版本号和下载来源，不要通过清除隔离属性绕过系统校验。
 
 详细操作和平台注意事项请查看 [使用教程](docs/使用教程.md)。
 
 <details>
 <summary><strong>🧑‍💻 源码启动与本地开发</strong></summary>
 
-源码启动适合参与开发、调试插件或当前没有合适发行版的情况。启动脚本会检查 Node.js，并在需要时准备本地运行环境。
+源码启动适合参与开发、调试插件或当前没有合适发行版的情况。1.4.0 桌面端基于 Tauri 2；源码开发需要 Python 3.10+、Node.js 22.12+、Rust 1.88.0 和对应系统的 Tauri 前置依赖。
 
 Windows：
 
@@ -190,15 +190,17 @@ chmod +x ./start-wandao.sh
 python scripts\quality_check.py
 ```
 
-Windows 本地打包：
+涉及 `wandao_electron/src-tauri/` 时，还需使用 Rust 1.88.0 运行格式、测试和 Clippy 门禁；CI 使用同一固定版本。
+
+Windows 本地未签名 smoke 打包：
 
 ```powershell
 cd wandao_electron
 npm ci
-npm run build:win
+npm run build:win:unsigned
 ```
 
-macOS 安装包建议通过 GitHub Actions 或 macOS 设备构建。更完整的维护说明见 [发布与回滚手册](docs/发布与回滚手册.md)。
+本地与手动工作流生成的 unsigned 包只能用于 smoke，不得发布。正式 Windows/macOS 安装包只能由受保护的 `v*` tag 工作流生成。更完整的维护说明见 [发布与回滚手册](docs/发布与回滚手册.md)。
 
 </details>
 

@@ -35,7 +35,7 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Electron
+# Desktop application and legacy output paths
 import_feishu_electron/node_modules/
 import_feishu_electron/dist/
 import_feishu_electron/out/
@@ -43,6 +43,8 @@ wandao_electron/node_modules/
 wandao_electron/.runtime-cache/
 wandao_electron/runtime/
 wandao_electron/dist/
+wandao_electron/src-tauri/target/
+wandao_electron/src-tauri/gen/schemas/
 wandao_electron/dist-*/
 wandao_electron/release/
 wandao_electron/release-*/

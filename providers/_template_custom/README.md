@@ -44,7 +44,7 @@
 ```text
 请参考 docs/插件开发指南.md 和 providers/_template_custom，为某某复杂平台实现万能导 provider。
 要求：
-1. 先不要改 Electron 主程序，优先把流程拆成 provider.json actions。
+1. 先不要改 Tauri 2 宿主，优先把流程拆成 provider.json actions。
 2. 如果确实需要专属 UI，请在 README.md 写明 UI 草图、按钮、字段和状态流转。
 3. Python 脚本必须能独立运行并输出最终 JSON。
 4. 不提交 Cookie、Token、账号密码或私人测试数据。

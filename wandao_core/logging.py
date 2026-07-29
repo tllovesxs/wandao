@@ -161,7 +161,7 @@ def emit_legacy(
 ) -> None:
     """Compatibility adapter for existing scripts with ``emit(message)``.
 
-    In Electron it becomes a structured event. In CLI it remains plain text.
+    In the Tauri desktop app it becomes a structured event. In CLI it remains plain text.
     """
     if structured_logs_enabled():
         WandaoLogger(provider=current_provider_id(provider)).event(event, message, level=level, **fields)

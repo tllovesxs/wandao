@@ -1,0 +1,70 @@
+[package]
+name = "wandao"
+version = "1.4.0"
+description = "Wandao multi-platform document conversion tool"
+authors = ["tllovesxs"]
+license = "AGPL-3.0-only"
+repository = "https://github.com/tllovesxs/wandao"
+edition = "2021"
+rust-version = "1.88.0"
+
+[lib]
+name = "wandao_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+serde_json = "1"
+sha2 = "0.10"
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+futures-util = "0.3"
+hex = "0.4"
+mime_guess = "2"
+pathdiff = "0.2"
+rand = "0.8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-clipboard-manager = "2.3.2"
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-single-instance = "2.4.3"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+pbkdf2 = "0.12"
+sha1 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+aes-gcm = "0.10"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Cryptography",
+  "Win32_Storage_FileSystem",
+  "Win32_System_JobObjects",
+  "Win32_System_Memory",
+  "Win32_System_Threading",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

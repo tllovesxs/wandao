@@ -728,7 +728,7 @@ function classifyError(message) {
   };
 }
 
-// main.js 的 outputWithOmissionNotice() 会在超长输出最前面拼
+// 任务运行时会在超长输出最前面拼
 // "[前部 N 个字符已省略，以下为输出尾部]"，真正的 "XxxError: 原因" 永远在末尾，
 // 因此摘要必须从尾部抓最后一条异常行，不能 slice(0, 220) 取开头。
 function extractErrorSummary(raw, maxLength = 220) {
@@ -3354,8 +3354,17 @@ function markdownInline(value) {
   return text;
 }
 
+function safeRemoteGuideImageUrl(value) {
+  const remoteUrl = String(value || '').trim();
+  return /^https:\/\/raw\.githubusercontent\.com\/tllovesxs\/wandao\/82c027b054d9ece8449af30d79600814eb823e46\/plugins\/feishu\/providers\/feishu-import\/images\/(?:[1-9]|1\d|20)\.png$/.test(remoteUrl)
+    ? remoteUrl
+    : '';
+}
+
 function safeGuideImagePath(value) {
   const imagePath = String(value || '').trim();
+  const remoteUrl = safeRemoteGuideImageUrl(imagePath);
+  if (remoteUrl) return remoteUrl;
   if (!imagePath || imagePath.startsWith('/') || imagePath.startsWith('\\')) return '';
   if (/^[a-z][a-z0-9+.-]*:/i.test(imagePath) || /[<>"'&\x00-\x1f]/.test(imagePath)) return '';
   const segments = imagePath.replace(/\\/g, '/').split('/');
@@ -3489,17 +3498,60 @@ function renderTrustBadge(provider) {
 
 async function hydrateGuideImages(container, providerId) {
   const images = Array.from(container?.querySelectorAll?.('img[data-guide-image]') || []);
-  await Promise.all(images.map(async (image) => {
+  const grouped = new Map();
+  images.forEach((image) => {
     const imagePath = image.dataset.guideImage || '';
-    try {
-      const result = await window.electronAPI.readProviderGuideImage(providerId, imagePath);
-      if (!result?.success || !result.dataUrl) throw new Error(result?.error || '教程图片读取失败');
-      image.src = result.dataUrl;
-      image.removeAttribute('data-guide-image');
-    } catch (error) {
-      image.dataset.guideImageError = error?.message || String(error);
+    if (!grouped.has(imagePath)) grouped.set(imagePath, []);
+    grouped.get(imagePath).push(image);
+  });
+  const pending = Array.from(grouped, ([imagePath, targets]) => ({ imagePath, targets }));
+
+  const loadNext = async () => {
+    while (pending.length) {
+      const { imagePath, targets } = pending.shift();
+      let result;
+      let errorMessage = '';
+      try {
+        result = await window.electronAPI.readProviderGuideImage(providerId, imagePath);
+        if (!result?.success || !result.dataUrl) throw new Error(result?.error || '教程图片读取失败');
+        targets.forEach((image) => {
+          image.src = result.dataUrl;
+          image.removeAttribute('data-guide-image');
+        });
+        continue;
+      } catch (error) {
+        errorMessage = error?.message || String(error);
+      }
+      const fallbackUrl = safeRemoteGuideImageUrl(result?.fallbackUrl || imagePath);
+      targets.forEach((image) => {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'guide-image-fallback';
+        placeholder.setAttribute('role', 'status');
+        placeholder.title = errorMessage;
+
+        const title = document.createElement('strong');
+        title.textContent = image.alt ? `${image.alt}暂时无法加载` : '教程截图暂时无法加载';
+        placeholder.appendChild(title);
+
+        const detail = document.createElement('span');
+        detail.textContent = '请检查网络连接，教程文字与后续步骤仍可继续阅读。';
+        placeholder.appendChild(detail);
+
+        if (fallbackUrl) {
+          const openButton = document.createElement('button');
+          openButton.type = 'button';
+          openButton.className = 'guide-image-fallback-link';
+          openButton.textContent = '在 GitHub 查看原图';
+          openButton.addEventListener('click', () => window.electronAPI.openExternal(fallbackUrl));
+          placeholder.appendChild(openButton);
+        }
+        image.replaceWith(placeholder);
+      });
     }
-  }));
+  };
+
+  const workerCount = Math.min(3, pending.length);
+  await Promise.all(Array.from({ length: workerCount }, () => loadNext()));
 }
 
 function bindCollapsibleGuideImages(container, providerId) {

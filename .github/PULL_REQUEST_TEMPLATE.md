@@ -32,7 +32,8 @@
 - [ ] 如果涉及 `plugins/`，我已运行 `node scripts/validate_plugins.js` 和 `node --test tests_js/plugin_manager.test.js`
 - [ ] 如果涉及旧 `providers/` 兼容目录或公告索引，我已运行 `python scripts/validate_providers.py`
 - [ ] 我已运行相关 Python 编译检查
-- [ ] 我已运行 Electron JS 语法检查
+- [ ] 我已运行桌面前端 JS 语法检查（`cd wandao_electron && npm run check`）
+- [ ] 如果涉及 `wandao_electron/src-tauri/`，我已使用 Rust 1.88.0 运行 `cargo fmt`、`cargo test --all-targets --locked` 和 `cargo clippy --all-targets --locked -- -D warnings`
 - [ ] 我已在桌面端手动测试
 - [ ] 我已测试目录结构
 - [ ] 我已测试图片/附件处理
@@ -69,6 +70,7 @@
 - [ ] 教程公告
 - [ ] 文档
 - [ ] 打包/发布
+- [ ] Tauri 2 / Rust 主进程
 
 ## 新增或修改在线插件检查
 

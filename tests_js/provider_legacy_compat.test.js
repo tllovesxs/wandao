@@ -69,15 +69,22 @@ test('knowledge-star legacy templates explicitly declare their required entry UR
     });
   }
 });
-test('main process applies compatibility after validating Provider v1 fields', () => {
-  const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'wandao_electron', 'main.js'), 'utf8');
-  assert.match(mainSource, /Object\.assign\(provider, resolveLegacyTemplateConfig\(raw\)\)/);
+test('Tauri provider normalization projects legacy URL and output fields', () => {
+  const providerSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'wandao_electron', 'src-tauri', 'src', 'providers.rs'),
+    'utf8'
+  );
+  assert.match(providerSource, /unwrap_or_else\(\|\| legacy_url_param\(&fields\)\)/);
+  assert.match(providerSource, /unwrap_or_else\(\|\| legacy_output_param\(&fields\)\)/);
 });
 
-test('main process applies compatibility before returning the Provider', () => {
-  const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'wandao_electron', 'main.js'), 'utf8');
-  const compatibilityIndex = mainSource.indexOf('Object.assign(provider, resolveLegacyTemplateConfig(raw));');
-  const returnIndex = mainSource.indexOf('return provider;', compatibilityIndex);
+test('Tauri provider compatibility is projected before returning the Provider', () => {
+  const providerSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'wandao_electron', 'src-tauri', 'src', 'providers.rs'),
+    'utf8'
+  );
+  const compatibilityIndex = providerSource.indexOf('object.insert("urlParam".into(), json!(url_param));');
+  const returnIndex = providerSource.indexOf('Ok(provider)', compatibilityIndex);
   assert.ok(compatibilityIndex >= 0, 'Provider compatibility projection must exist');
   assert.ok(returnIndex > compatibilityIndex, 'Provider compatibility projection must run before return');
 });

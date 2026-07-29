@@ -29,7 +29,7 @@
 - 是否需要处理图片和附件：（是 / 否）
 
 实现要求：
-1. 新平台优先使用 Plugin v1，放在 plugins/平台ID/ 目录下，不要修改 Electron 主程序。
+1. 新平台优先使用 Plugin v1，放在 plugins/平台ID/ 目录下，不要修改 Tauri 2 宿主。
 2. 插件至少包含 plugin.json、providers/平台ID/provider.json 和 README.md。
 3. 如果需要自动化能力，把 Python 脚本放到 plugins/平台ID/backend/ 下，并在 provider.json 的 actions 中引用。
 4. plugin.json 必须声明 id、name、description、version、publisher、core.minVersion、entrypoints 和 permissions。
@@ -68,7 +68,7 @@
 
 实现要求：
 1. 平台目录放在 plugins/平台ID/，一个插件内可以声明多个 providers/*/provider.json。
-2. 先不要改 Electron 主程序，优先把流程拆成 provider.json actions。
+2. 先不要改 Tauri 2 宿主，优先把流程拆成 provider.json actions。
 3. 如果标准 UI 不够，请在 plugin.json 中声明 ui/index.html，并确保自定义 UI 只通过 postMessage 调用宿主允许的能力。
 4. Python 脚本必须可以独立运行，支持清晰的命令行参数。
 5. 脚本必须输出 progress x/y，并在最后输出 JSON 报告。

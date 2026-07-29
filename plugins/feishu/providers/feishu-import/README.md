@@ -6,72 +6,72 @@
 
 1. 在官方网站进行登录
 
-![登录](./images/1.png)
+![登录](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/1.png)
 
 2. 打开飞书开放平台 -> 开发者后台
 
-![示例](./images/2.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/2.png)
 
-![示例](./images/3.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/3.png)
 
 3. 创立企业自建应用
 
-![示例](./images/4.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/4.png)
 
 4. **添加机器人功能**
 
-![示例](./images/5.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/5.png)
 
 5. 复制凭证信息并填入万能导
 
-![示例](./images/6.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/6.png)
 
-![示例](./images/7.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/7.png)
 
-![示例](./images/8.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/8.png)
 
 6. 开通身份权限
 
-![示例](./images/14.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/14.png)
 
-![示例](./images/13.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/13.png)
 
 7. **发布版本**
 
-![示例](./images/9.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/9.png)
 
-![示例](./images/10.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/10.png)
 
-## 二、正式导出
+## 二、正式导入
 
 1. 进入知识库获取 **URL**
 
-![示例](./images/11.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/11.png)
 
-![示例](./images/12.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/12.png)
 
-![示例](./images/15.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/15.png)
 
-![示例](./images/16.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/16.png)
 
 2. 点击 **授权目标文档应用**
 
-![示例](./images/17.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/17.png)
 
-接下来您就能对此知识库进行导出了。
+接下来您就能向此知识库导入文档了。
 
 ## 提示
 
 导入时默认使用 Markdown 正文中的一级标题作为飞书文档名称。如本地文件由万能导导出并带有 `01-`、`02-` 等序号，可在“高级参数”中勾选“使用 Markdown 文件名作为飞书标题”，导入后会保留该序号；此选项不会修改 Markdown 正文。
 
-![示例](./images/17.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/17.png)
 
 **这一步会自动对您的文档进行授权，若多次尝试无果，可以参考以下步骤**
 
-![示例](./images/18.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/18.png)
 
-![示例](./images/19.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/19.png)
 
-![示例](./images/20.png)
+![示例](https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/20.png)
 
-接下来您就能对此知识库进行导出了
+接下来您就能向此知识库导入文档了

@@ -127,6 +127,17 @@ def is_trusted_asset_url(value: str) -> bool:
     )
 
 
+def resolve_asset_url(value: str, page_url: str) -> str:
+    """Resolve DingTalk root-relative assets without broadening the allowlist."""
+    source = str(value or "").strip()
+    parsed = urllib.parse.urlsplit(source)
+    if parsed.scheme or parsed.netloc or not source.startswith("/") or source.startswith("//"):
+        return source
+    page = parse_dingtalk_url(page_url)
+    origin = f"https://{page.hostname}"
+    return urllib.parse.urljoin(origin, source)
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         return None
@@ -763,6 +774,7 @@ def rewrite_images(
     md_path: Path,
     args: argparse.Namespace,
     asset_prefix: str = "",
+    page_url: str = ENTRY_URL,
 ) -> tuple[str, list[dict[str, str]], int]:
     failures: list[dict[str, str]] = []
     saved = 0
@@ -775,16 +787,22 @@ def rewrite_images(
             seen_sources.add(image.source)
             unique_images.append(image)
     direct_jobs: dict[int, tuple[ImageRef, Any]] = {}
+    resolved_sources = {
+        image.source: resolve_asset_url(image.source, page_url)
+        for image in unique_images
+    }
     with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS, thread_name_prefix="wandao-dingtalk-asset") as pool:
         for index, image in enumerate(unique_images, start=1):
-            if not is_trusted_asset_url(image.source):
+            source = resolved_sources[image.source]
+            if not is_trusted_asset_url(source):
                 continue
             check_stopped(args)
             throttle_request(args)
-            direct_jobs[index] = (image, pool.submit(download_direct_asset_with_retry, image.source))
+            direct_jobs[index] = (image, pool.submit(download_direct_asset_with_retry, source))
         for index, image in enumerate(unique_images, start=1):
             emit(args, f"正在下载钉钉图片：{index}/{len(unique_images)}", event="asset.download.started", progress={"current": index, "total": len(unique_images)})
-            if not is_trusted_asset_url(image.source):
+            source = resolved_sources[image.source]
+            if not is_trusted_asset_url(source):
                 replacements[image.source] = image.source
                 failures.append({"url": safe_resource_url(image.source), "error": "图片地址不在受信任的钉钉资源域名中"})
                 continue
@@ -793,15 +811,15 @@ def rewrite_images(
                 raw, content_type = job.result()
             except Exception as direct_exc:
                 try:
-                    raw, content_type = download_image_in_browser(cdp, image.source)
+                    raw, content_type = download_image_in_browser(cdp, source)
                 except Exception as browser_exc:  # noqa: BLE001 - a resource failure should not discard its document.
                     replacements[image.source] = image.source
                     failures.append({
-                        "url": safe_resource_url(image.source),
+                        "url": safe_resource_url(source),
                         "error": f"受限直连下载失败：{direct_exc}；浏览器读取失败：{browser_exc}",
                     })
                     continue
-            replacements[image.source] = save_image(raw, content_type, image.source, assets_dir, index, asset_prefix)
+            replacements[image.source] = save_image(raw, content_type, source, assets_dir, index, asset_prefix)
             saved += 1
     for source, local_path in replacements.items():
         markdown = markdown.replace(f"]({source})", f"]({local_path})")
@@ -958,6 +976,7 @@ def export_dingtalk(args: argparse.Namespace) -> dict[str, Any]:
                     md_path,
                     args,
                     asset_prefix=safe_path_segment(entry.uuid, "document", 32),
+                    page_url=args.source_url or ENTRY_URL,
                 )
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 md_path.write_text(markdown, encoding="utf-8")

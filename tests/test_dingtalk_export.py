@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -204,6 +205,62 @@ class DingTalkExportTests(unittest.TestCase):
             dingtalk.safe_resource_url("https://img.alicdn.com/example.png?signature=secret#part"),
             "https://img.alicdn.com/example.png",
         )
+
+    def test_root_relative_asset_url_is_resolved_against_the_trusted_page_origin(self) -> None:
+        self.assertEqual(
+            dingtalk.resolve_asset_url(
+                "/core/api/resources/img/redacted-resource-id?token=secret",
+                "https://alidocs.dingtalk.com/i/nodes/document-id",
+            ),
+            "https://alidocs.dingtalk.com/core/api/resources/img/redacted-resource-id?token=secret",
+        )
+        self.assertTrue(
+            dingtalk.is_trusted_asset_url(
+                dingtalk.resolve_asset_url(
+                    "/core/api/resources/img/redacted-resource-id",
+                    "https://docs.dingtalk.com/i/nodes/document-id",
+                )
+            )
+        )
+
+    def test_asset_url_resolution_does_not_accept_protocol_relative_or_external_urls(self) -> None:
+        protocol_relative = dingtalk.resolve_asset_url(
+            "//example.com/core/api/resources/img/id",
+            "https://alidocs.dingtalk.com/i/nodes/document-id",
+        )
+        external = dingtalk.resolve_asset_url(
+            "https://example.com/image.png",
+            "https://alidocs.dingtalk.com/i/nodes/document-id",
+        )
+        self.assertEqual(protocol_relative, "//example.com/core/api/resources/img/id")
+        self.assertEqual(external, "https://example.com/image.png")
+        self.assertFalse(dingtalk.is_trusted_asset_url(protocol_relative))
+        self.assertFalse(dingtalk.is_trusted_asset_url(external))
+
+    def test_rewrite_images_resolves_root_relative_url_before_validation_and_download(self) -> None:
+        rendered = dingtalk.RenderResult(
+            markdown="![图片](/core/api/resources/img/resource-id)",
+            images=[dingtalk.ImageRef("/core/api/resources/img/resource-id", "图片")],
+        )
+        args = dingtalk.parse_args([])
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                patch.object(dingtalk, "download_direct_asset_with_retry", return_value=(b"image", "image/png")) as download, \
+                patch.object(dingtalk, "check_stopped"), \
+                patch.object(dingtalk, "throttle_request"), \
+                patch.object(dingtalk, "emit"):
+            markdown, failures, saved = dingtalk.rewrite_images(
+                None,
+                rendered,
+                rendered.markdown,
+                Path(temp_dir) / "document.md",
+                args,
+                page_url="https://alidocs.dingtalk.com/i/nodes/document-id",
+            )
+
+        download.assert_called_once_with("https://alidocs.dingtalk.com/core/api/resources/img/resource-id")
+        self.assertEqual(markdown, "![图片](assets/image-001.png)")
+        self.assertEqual(failures, [])
+        self.assertEqual(saved, 1)
 
     def test_read_limited_response_rejects_oversized_content(self) -> None:
         class FakeResponse:

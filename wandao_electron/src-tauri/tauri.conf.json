@@ -1,0 +1,76 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Wandao",
+  "version": "1.4.0",
+  "identifier": "com.wandao.app",
+  "build": {
+    "beforeDevCommand": "python scripts/prepare_python_runtime.py --clean-source-caches-only",
+    "beforeBuildCommand": "",
+    "frontendDist": "../renderer"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "万能导 Wandao",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 980,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: asset:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'",
+      "freezePrototype": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "publisher": "tllovesxs",
+    "category": "Utility",
+    "copyright": "Copyright © tllovesxs",
+    "shortDescription": "多平台文档导入导出工具",
+    "longDescription": "万能导 Wandao 是一款支持多平台文档导入、导出与转换的桌面工具。",
+    "icon": [
+      "../assets/icon.ico",
+      "../assets/icon.icns",
+      "../assets/icon.png"
+    ],
+    "resources": {
+      "../../*.py": "python/",
+      "../../requirements.txt": "python/requirements.txt",
+      "../../requirements.lock": "python/requirements.lock",
+      "../../wandao_core/": "python/wandao_core/",
+      "../../plugins/": "plugins/",
+      "../../providers/": "providers/",
+      "../assets/": "assets/",
+      "../runtime/python-runtime/": "python-runtime/"
+    },
+    "targets": "all",
+    "windows": {
+      "nsis": {
+        "compression": "lzma",
+        "displayLanguageSelector": false,
+        "headerImage": "installer/assets/wandao-header.bmp",
+        "installMode": "currentUser",
+        "installerIcon": "../assets/icon.ico",
+        "installerHooks": "installer/upgrade-hooks.nsh",
+        "languages": [
+          "SimpChinese",
+          "TradChinese",
+          "English"
+        ],
+        "sidebarImage": "installer/assets/wandao-sidebar.bmp",
+        "uninstallerIcon": "../assets/icon.ico"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": null
+    }
+  }
+}

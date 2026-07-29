@@ -1,40 +1,36 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const {
-  evaluateAudit,
-  isAllowedVulnerability
-} = require('../wandao_electron/scripts/npm_audit_policy');
+const { evaluateAudit } = require('../wandao_electron/scripts/npm_audit_policy');
 
 function advisory(url, severity = 'high') {
   return { url, severity };
 }
 
-const allowedUrl = 'https://github.com/advisories/GHSA-mh99-v99m-4gvg';
-
-test('the exact temporary brace-expansion advisory can flow through dependency chains', () => {
+test('high-severity advisories and their reported dependency chains are blocking', () => {
   const vulnerabilities = {
-    'brace-expansion': { severity: 'high', via: [advisory(allowedUrl)] },
-    minimatch: { severity: 'high', via: ['brace-expansion'] },
-    'electron-builder': { severity: 'high', via: ['minimatch'] }
+    dependency: { severity: 'high', via: [advisory('https://example.test/high')] },
+    'build-tool': { severity: 'high', via: ['dependency'] }
   };
+  const result = evaluateAudit({ vulnerabilities });
 
-  assert.equal(isAllowedVulnerability('electron-builder', vulnerabilities), true);
-  assert.deepEqual(evaluateAudit({ vulnerabilities }).blocked, []);
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.ignored, []);
+  assert.deepEqual(result.blocked, ['dependency (high)', 'build-tool (high)']);
 });
 
-test('an unrelated high advisory remains blocking', () => {
+test('multiple unrelated high advisories all remain blocking', () => {
   const vulnerabilities = {
-    'brace-expansion': { severity: 'high', via: [advisory(allowedUrl)] },
+    'first-package': { severity: 'high', via: [advisory('https://example.test/first')] },
     'other-package': {
       severity: 'high',
-      via: [advisory('https://github.com/advisories/GHSA-test-test-test')]
+      via: [advisory('https://example.test/second')]
     }
   };
   const result = evaluateAudit({ vulnerabilities });
 
   assert.equal(result.passed, false);
-  assert.deepEqual(result.ignored, ['brace-expansion']);
-  assert.deepEqual(result.blocked, ['other-package (high)']);
+  assert.deepEqual(result.ignored, []);
+  assert.deepEqual(result.blocked, ['first-package (high)', 'other-package (high)']);
 });
 
 test('moderate findings stay below the high severity gate', () => {
@@ -49,10 +45,6 @@ test('moderate findings stay below the high severity gate', () => {
   assert.deepEqual(result.blocked, []);
 });
 
-test('cycles and malformed audit reports fail closed', () => {
-  assert.equal(isAllowedVulnerability('a', {
-    a: { severity: 'high', via: ['b'] },
-    b: { severity: 'high', via: ['a'] }
-  }), false);
+test('malformed audit reports fail closed', () => {
   assert.equal(evaluateAudit(null).passed, false);
 });

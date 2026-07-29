@@ -1,10 +1,13 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const { createRequire } = require('node:module');
 const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
+const desktopRequire = createRequire(path.join(repoRoot, 'wandao_electron', 'package.json'));
+const { parseHTML } = desktopRequire('linkedom');
 const appPath = path.join(repoRoot, 'wandao_electron', 'renderer', 'app.js');
 const cssPath = path.join(repoRoot, 'wandao_electron', 'renderer', 'styles.css');
 const appSource = fs.readFileSync(appPath, 'utf8');
@@ -26,6 +29,29 @@ const markdownSource = [
 const context = {};
 vm.runInNewContext(markdownSource, context);
 const markdownToHtml = context.__markdownToHtml;
+
+function createGuideRetryRuntime(readProviderGuideImage) {
+  const { document, window } = parseHTML('<main id="guide"></main>');
+  window.electronAPI = {
+    readProviderGuideImage,
+    openExternal: () => {}
+  };
+  const retryContext = { document, window };
+  const retrySource = [
+    'function safeRemoteGuideImageUrl(value) { return String(value || "").startsWith("https://") ? String(value) : ""; }',
+    sourceBetween('async function requestGuideImage(providerId, imagePath) {', '\nasync function hydrateGuideImages('),
+    'globalThis.__replaceWithGuideImageFallback = replaceWithGuideImageFallback;'
+  ].join('\n');
+  vm.runInNewContext(retrySource, retryContext);
+  return {
+    document,
+    replaceWithGuideImageFallback: retryContext.__replaceWithGuideImageFallback
+  };
+}
+
+async function flushAsyncClick() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
 
 test('guide markdown renders ordered steps as an ordered list', () => {
   assert.equal(markdownToHtml('1. 第一步\n2. 第二步'), '<ol>\n<li>第一步</li>\n<li>第二步</li>\n</ol>');
@@ -66,6 +92,7 @@ test('guide images are constrained to the tutorial panel width', () => {
   assert.match(imageRule, /max-width:\s*100%/);
   assert.match(imageRule, /height:\s*auto/);
   assert.match(cssSource, /\.guide-image-fallback\s*\{/);
+  assert.match(cssSource, /\.guide-image-retry\s*\{/);
   assert.match(cssSource, /\.guide-image-fallback-link\s*\{/);
 });
 const tutorialRoot = path.join(repoRoot, 'plugins', 'feishu', 'providers', 'feishu-import');
@@ -101,11 +128,69 @@ test('Feishu import tutorial pins all screenshots remotely and excludes them fro
 });
 
 test('guide hydration limits remote IPC concurrency and renders an offline fallback', () => {
-  const hydrateSource = sourceBetween('async function hydrateGuideImages(container, providerId) {', '\nfunction bindCollapsibleGuideImages(');
+  const hydrateSource = sourceBetween('async function requestGuideImage(providerId, imagePath) {', '\nfunction bindCollapsibleGuideImages(');
   assert.match(hydrateSource, /Math\.min\(3, pending\.length\)/);
   assert.match(hydrateSource, /guide-image-fallback/);
+  assert.match(hydrateSource, /guide-image-retry/);
+  assert.match(hydrateSource, /重新加载这张教程图片/);
+  assert.match(hydrateSource, /await requestGuideImage\(providerId, imagePath\)/);
+  assert.match(hydrateSource, /retryButton\.disabled = false/);
   assert.match(hydrateSource, /在 GitHub 查看原图/);
   assert.match(hydrateSource, /new Map\(\)/);
+});
+
+test('guide image retry restores the failed image in place', async () => {
+  let attempts = 0;
+  const runtime = createGuideRetryRuntime(async () => {
+    attempts += 1;
+    return { success: true, dataUrl: 'data:image/png;base64,cG5n' };
+  });
+  const host = runtime.document.getElementById('guide');
+  const image = runtime.document.createElement('img');
+  image.className = 'guide-image';
+  image.alt = '登录';
+  host.appendChild(image);
+
+  runtime.replaceWithGuideImageFallback(image, 'feishu-import', 'https://example.test/1.png', {
+    success: false,
+    result: { fallbackUrl: 'https://example.test/1.png' },
+    errorMessage: 'offline'
+  });
+  const retry = host.querySelector('.guide-image-retry');
+  assert.ok(retry);
+  assert.equal(retry.getAttribute('aria-label'), '重新加载这张教程图片');
+
+  retry.click();
+  await flushAsyncClick();
+
+  assert.equal(attempts, 1);
+  assert.equal(host.querySelector('.guide-image-fallback'), null);
+  assert.equal(host.querySelector('img.guide-image')?.getAttribute('src'), 'data:image/png;base64,cG5n');
+});
+
+test('guide image retry remains available after another network failure', async () => {
+  const runtime = createGuideRetryRuntime(async () => ({
+    success: false,
+    error: 'still offline',
+    fallbackUrl: 'https://example.test/1.png'
+  }));
+  const host = runtime.document.getElementById('guide');
+  const image = runtime.document.createElement('img');
+  image.className = 'guide-image';
+  host.appendChild(image);
+
+  runtime.replaceWithGuideImageFallback(image, 'feishu-import', 'https://example.test/1.png', {
+    success: false,
+    result: { fallbackUrl: 'https://example.test/1.png' },
+    errorMessage: 'offline'
+  });
+  const retry = host.querySelector('.guide-image-retry');
+  retry.click();
+  await flushAsyncClick();
+
+  assert.equal(host.querySelector('.guide-image-fallback')?.title, 'still offline');
+  assert.equal(retry.disabled, false);
+  assert.equal(retry.classList.contains('is-loading'), false);
 });
 
 test('Feishu import providers append their bundled guide after rendering the form', () => {

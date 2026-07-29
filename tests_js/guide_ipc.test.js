@@ -30,5 +30,7 @@ test('provider guide rendering hydrates image placeholders after inserting Markd
   assert.match(appSource, /hydrateGuideImages\(contentArea, provider\.id\)/);
   assert.match(appSource, /bindCollapsibleGuideImages\(contentArea, provider\.id\)/);
   assert.match(appSource, /Math\.min\(3, pending\.length\)/);
-  assert.match(appSource, /safeRemoteGuideImageUrl\(result\?\.fallbackUrl \|\| imagePath\)/);
+  assert.match(appSource, /safeRemoteGuideImageUrl\(outcome\.result\?\.fallbackUrl \|\| imagePath\)/);
+  assert.match(appSource, /className = 'guide-image-retry'/);
+  assert.match(appSource, /await requestGuideImage\(providerId, imagePath\)/);
 });

@@ -3499,6 +3499,75 @@ function renderTrustBadge(provider) {
   return `<span class="trust-badge ${trustClass}">${escapeHtml(label)}</span>`;
 }
 
+async function requestGuideImage(providerId, imagePath) {
+  let result;
+  try {
+    result = await window.electronAPI.readProviderGuideImage(providerId, imagePath);
+    if (!result?.success || !result.dataUrl) throw new Error(result?.error || '教程图片读取失败');
+    return { success: true, result };
+  } catch (error) {
+    return {
+      success: false,
+      result,
+      errorMessage: error?.message || String(error)
+    };
+  }
+}
+
+function replaceWithGuideImageFallback(image, providerId, imagePath, outcome) {
+  const fallbackUrl = safeRemoteGuideImageUrl(outcome.result?.fallbackUrl || imagePath);
+  const placeholder = document.createElement('div');
+  placeholder.className = 'guide-image-fallback';
+  placeholder.setAttribute('role', 'status');
+  placeholder.title = outcome.errorMessage;
+
+  const title = document.createElement('strong');
+  title.textContent = image.alt ? `${image.alt}暂时无法加载` : '教程截图暂时无法加载';
+  placeholder.appendChild(title);
+
+  const detail = document.createElement('span');
+  detail.textContent = '请检查网络连接，教程文字与后续步骤仍可继续阅读。';
+  placeholder.appendChild(detail);
+
+  const retryButton = document.createElement('button');
+  retryButton.type = 'button';
+  retryButton.className = 'guide-image-retry';
+  retryButton.title = '重新加载这张图片';
+  retryButton.setAttribute('aria-label', '重新加载这张教程图片');
+  const retryIcon = document.createElement('span');
+  retryIcon.className = 'guide-image-retry-icon';
+  retryIcon.textContent = '\u21bb';
+  retryIcon.setAttribute('aria-hidden', 'true');
+  retryButton.appendChild(retryIcon);
+  retryButton.addEventListener('click', async () => {
+    retryButton.disabled = true;
+    retryButton.classList.add('is-loading');
+    const retryOutcome = await requestGuideImage(providerId, imagePath);
+    if (retryOutcome.success) {
+      const replacement = document.createElement('img');
+      replacement.className = image.className || 'guide-image';
+      replacement.alt = image.alt || '';
+      replacement.src = retryOutcome.result.dataUrl;
+      placeholder.replaceWith(replacement);
+      return;
+    }
+    placeholder.title = retryOutcome.errorMessage;
+    retryButton.disabled = false;
+    retryButton.classList.remove('is-loading');
+  });
+  placeholder.appendChild(retryButton);
+
+  if (fallbackUrl) {
+    const openButton = document.createElement('button');
+    openButton.type = 'button';
+    openButton.className = 'guide-image-fallback-link';
+    openButton.textContent = '在 GitHub 查看原图';
+    openButton.addEventListener('click', () => window.electronAPI.openExternal(fallbackUrl));
+    placeholder.appendChild(openButton);
+  }
+  image.replaceWith(placeholder);
+}
+
 async function hydrateGuideImages(container, providerId) {
   const images = Array.from(container?.querySelectorAll?.('img[data-guide-image]') || []);
   const grouped = new Map();
@@ -3512,44 +3581,15 @@ async function hydrateGuideImages(container, providerId) {
   const loadNext = async () => {
     while (pending.length) {
       const { imagePath, targets } = pending.shift();
-      let result;
-      let errorMessage = '';
-      try {
-        result = await window.electronAPI.readProviderGuideImage(providerId, imagePath);
-        if (!result?.success || !result.dataUrl) throw new Error(result?.error || '教程图片读取失败');
+      const outcome = await requestGuideImage(providerId, imagePath);
+      if (outcome.success) {
         targets.forEach((image) => {
-          image.src = result.dataUrl;
+          image.src = outcome.result.dataUrl;
           image.removeAttribute('data-guide-image');
         });
         continue;
-      } catch (error) {
-        errorMessage = error?.message || String(error);
       }
-      const fallbackUrl = safeRemoteGuideImageUrl(result?.fallbackUrl || imagePath);
-      targets.forEach((image) => {
-        const placeholder = document.createElement('div');
-        placeholder.className = 'guide-image-fallback';
-        placeholder.setAttribute('role', 'status');
-        placeholder.title = errorMessage;
-
-        const title = document.createElement('strong');
-        title.textContent = image.alt ? `${image.alt}暂时无法加载` : '教程截图暂时无法加载';
-        placeholder.appendChild(title);
-
-        const detail = document.createElement('span');
-        detail.textContent = '请检查网络连接，教程文字与后续步骤仍可继续阅读。';
-        placeholder.appendChild(detail);
-
-        if (fallbackUrl) {
-          const openButton = document.createElement('button');
-          openButton.type = 'button';
-          openButton.className = 'guide-image-fallback-link';
-          openButton.textContent = '在 GitHub 查看原图';
-          openButton.addEventListener('click', () => window.electronAPI.openExternal(fallbackUrl));
-          placeholder.appendChild(openButton);
-        }
-        image.replaceWith(placeholder);
-      });
+      targets.forEach((image) => replaceWithGuideImageFallback(image, providerId, imagePath, outcome));
     }
   };
 

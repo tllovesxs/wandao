@@ -156,7 +156,7 @@
 <details>
 <summary><strong>🧑‍💻 源码启动与本地开发</strong></summary>
 
-源码启动适合参与开发、调试插件或当前没有合适发行版的情况。1.4.0 桌面端基于 Tauri 2；源码开发需要 Python 3.10+、Node.js 22.12+、Rust 1.88.0 和对应系统的 Tauri 前置依赖。
+源码启动适合参与开发、调试插件或当前没有合适发行版的情况。1.4.x 桌面端基于 Tauri 2；源码开发需要 Python 3.10+、Node.js 22.12+、Rust 1.88.0 和对应系统的 Tauri 前置依赖。
 
 Windows：
 

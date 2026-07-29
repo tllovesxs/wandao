@@ -1,6 +1,6 @@
 # Wandao Desktop
 
-万能导 1.4.0 的统一 Tauri 2 桌面端。Rust 主进程负责本地安全边界、插件与任务运行，前端继续使用 `renderer/` 中的 HTML/CSS/JavaScript。
+万能导 1.4.1 的统一 Tauri 2 桌面端。Rust 主进程负责本地安全边界、插件与任务运行，前端继续使用 `renderer/` 中的 HTML/CSS/JavaScript。
 
 ## 功能
 

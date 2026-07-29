@@ -1,6 +1,6 @@
 [package]
 name = "wandao"
-version = "1.4.0"
+version = "1.4.1"
 description = "Wandao multi-platform document conversion tool"
 authors = ["tllovesxs"]
 license = "AGPL-3.0-only"

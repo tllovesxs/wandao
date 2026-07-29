@@ -601,8 +601,28 @@ class PackagedSmokeContractTests(unittest.TestCase):
             if path.is_dir() and (path / "plugin.json").is_file()
         }
         self.assertEqual(len(expected_plugins), 14)
-        self.assertEqual(len(package_smoke.expected_providers()), 20)
-        self.assertEqual(len(package_smoke.executable_provider_ids()), 19)
+        expected_counts = {
+            "win32": (20, 19),
+            "darwin": (19, 18),
+            "linux": (18, 17),
+        }
+        for target_platform, (provider_count, executable_count) in expected_counts.items():
+            with self.subTest(platform=target_platform):
+                self.assertEqual(
+                    len(package_smoke.expected_providers(target_platform)),
+                    provider_count,
+                )
+                self.assertEqual(
+                    len(package_smoke.executable_provider_ids(target_platform)),
+                    executable_count,
+                )
+
+    def test_platform_specific_providers_are_excluded_from_smoke_expectations(self) -> None:
+        self.assertIn("onenote", package_smoke.expected_providers("win32"))
+        self.assertNotIn("onenote", package_smoke.expected_providers("darwin"))
+        self.assertNotIn("onenote", package_smoke.expected_providers("linux"))
+        self.assertIn("dingtalk-export", package_smoke.expected_providers("darwin"))
+        self.assertNotIn("dingtalk-export", package_smoke.expected_providers("linux"))
 
     def test_every_ci_package_smoke_passes_an_actual_application_path(self) -> None:
         workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")

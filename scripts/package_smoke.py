@@ -52,20 +52,35 @@ RUNTIME_TARGETS = {
 }
 
 
-def expected_providers() -> set[str]:
+def plugin_supports_platform(manifest: dict[str, object], target_platform: str) -> bool:
+    platforms = manifest.get("platforms")
+    if platforms is None:
+        return True
+    if not isinstance(platforms, list):
+        raise RuntimeError("plugin.json platforms 必须是数组")
+    return not platforms or target_platform in platforms
+
+
+def expected_providers(target_platform: str | None = None) -> set[str]:
+    target_platform = target_platform or sys.platform
     provider_ids: set[str] = set()
     for manifest_path in (REPO_ROOT / "plugins").glob("*/plugin.json"):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not plugin_supports_platform(manifest, target_platform):
+            continue
         for relative_path in manifest.get("entrypoints", {}).get("providers", []):
             provider = json.loads((manifest_path.parent / relative_path).read_text(encoding="utf-8"))
             provider_ids.add(str(provider["id"]))
     return provider_ids
 
 
-def executable_provider_ids() -> set[str]:
+def executable_provider_ids(target_platform: str | None = None) -> set[str]:
+    target_platform = target_platform or sys.platform
     provider_ids: set[str] = set()
     for manifest_path in (REPO_ROOT / "plugins").glob("*/plugin.json"):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not plugin_supports_platform(manifest, target_platform):
+            continue
         for relative_path in manifest.get("entrypoints", {}).get("providers", []):
             provider_path = manifest_path.parent / relative_path
             provider = json.loads(provider_path.read_text(encoding="utf-8"))

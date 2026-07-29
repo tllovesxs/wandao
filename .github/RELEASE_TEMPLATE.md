@@ -15,7 +15,7 @@
 - Windows：下载并运行本版本的 `.exe` 安装包。
 - macOS Apple Silicon：下载本版本的 `.zip`，解压后将 `Wandao.app` 拖入“应用程序”。
 
-正式 Release 的 Windows 安装包必须通过 Authenticode 签名和可信时间戳校验；macOS 应用必须通过 Developer ID Application 签名、Apple 公证和 stapling 校验。如果干净系统仍显示未知发布者、应用已损坏或 Gatekeeper 阻止，不得指导用户执行 `xattr -cr` 绕过，应保留 draft 并修复发布链。
+当前正式 Release 的 Windows 和 macOS 安装包均未做商业代码签名或 Apple 公证。Windows 可能显示未知发布者，macOS Gatekeeper 可能阻止首次打开；发布说明必须明确这一限制，不得宣称安装包已经签名，也不得指导用户执行 `xattr -cr` 绕过系统校验。
 
 ## 插件更新
 
@@ -28,8 +28,8 @@
 - 源码提交：`填写 commit`
 - 质量检查：`填写 Python / Node.js 测试结果`
 - 安装包冒烟：`填写插件、Provider 和可执行后端数量`
-- Windows 签名：`填写 Authenticode 签名者、证书指纹和时间戳验证结果`
-- macOS 签名/公证：`填写 codesign、spctl 和 stapler 验证结果`
+- Windows 实机安装：`填写未知发布者提示、安装、启动和升级验证结果`
+- macOS 实机安装：`填写 Gatekeeper 提示、首次允许打开、启动和升级验证结果`
 - SHA256：`填写最终 Release 文件校验值`
 
 </details>

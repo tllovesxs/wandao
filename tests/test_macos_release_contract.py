@@ -21,7 +21,7 @@ class MacosReleaseContractTests(unittest.TestCase):
         self.assertEqual(package["version"], tauri["version"])
         self.assertEqual(package["version"], cargo_version.group(1))
 
-    def test_apple_silicon_smoke_and_release_builds_are_separate(self) -> None:
+    def test_apple_silicon_release_alias_is_explicitly_unsigned(self) -> None:
         package = json.loads((REPO_ROOT / "wandao_electron/package.json").read_text(encoding="utf-8"))
         tauri = json.loads(
             (REPO_ROOT / "wandao_electron/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
@@ -32,21 +32,23 @@ class MacosReleaseContractTests(unittest.TestCase):
         unsigned_build = package["scripts"]["build:mac:arm64:unsigned"]
         release_build = package["scripts"]["build:mac:arm64:release"]
         self.assertIn("--no-sign", unsigned_build)
-        self.assertNotIn("--no-sign", release_build)
-        for build in (unsigned_build, release_build):
-            self.assertIn("--target aarch64-apple-darwin", build)
-            self.assertIn("--bundles app", build)
-        self.assertIn("--ci", release_build)
+        self.assertEqual(release_build, "npm run build:mac:arm64:unsigned")
+        self.assertIn("--target aarch64-apple-darwin", unsigned_build)
+        self.assertIn("--bundles app", unsigned_build)
 
-    def test_tag_release_requires_platform_signing_and_notarization(self) -> None:
+    def test_tag_release_publishes_unsigned_artifacts_without_signing_credentials(self) -> None:
         package = json.loads((REPO_ROOT / "wandao_electron/package.json").read_text(encoding="utf-8"))
         workflow = (REPO_ROOT / ".github/workflows/build-desktop.yml").read_text(encoding="utf-8")
         release_job = workflow.split("\n  release:\n", 1)[1]
 
-        self.assertNotIn("--no-sign", package["scripts"]["build:win:release"])
-        self.assertNotIn("--no-sign", package["scripts"]["build:mac:arm64:release"])
-        self.assertIn("name: ${{ startsWith(github.ref, 'refs/tags/') && 'desktop-release'", workflow)
-        self.assertIn("Missing desktop-release secrets", workflow)
+        self.assertEqual(package["scripts"]["build:win:release"], "npm run build:win:unsigned")
+        self.assertEqual(
+            package["scripts"]["build:mac:arm64:release"],
+            "npm run build:mac:arm64:unsigned",
+        )
+        self.assertIn("Build ${{ matrix.name }} (unsigned)", workflow)
+        self.assertIn("run: ${{ matrix.unsigned_command }}", workflow)
+        self.assertNotIn("desktop-release", workflow)
         for secret in (
             "WINDOWS_CERTIFICATE",
             "WINDOWS_CERTIFICATE_PASSWORD",
@@ -60,15 +62,10 @@ class MacosReleaseContractTests(unittest.TestCase):
             "APPLE_TEAM_ID",
             "KEYCHAIN_PASSWORD",
         ):
-            self.assertIn(f"secrets.{secret}", workflow)
-        self.assertIn("npm run build:win:release", workflow)
-        self.assertIn("npm run build:mac:arm64:release", workflow)
-        self.assertIn("Get-AuthenticodeSignature", workflow)
-        self.assertIn("TimeStamperCertificate", workflow)
-        self.assertIn("codesign --verify --deep --strict", workflow)
-        self.assertIn("spctl --assess --type execute", workflow)
-        self.assertIn("xcrun stapler validate", workflow)
-        self.assertIn("environment: desktop-release", release_job)
+            self.assertNotIn(f"secrets.{secret}", workflow)
+        self.assertNotIn("Get-AuthenticodeSignature", workflow)
+        self.assertNotIn("codesign --verify --deep --strict", workflow)
+        self.assertNotIn("xcrun stapler validate", workflow)
         self.assertIn("draft: true", release_job)
         self.assertIn("make_latest: false", release_job)
 
@@ -104,7 +101,7 @@ class MacosReleaseContractTests(unittest.TestCase):
             self.assertIn("macOS 11+", current_doc)
         for maintainer_doc in (readme, usage, desktop_readme):
             self.assertIn("unsigned", maintainer_doc)
-            self.assertIn("不得发布", maintainer_doc)
+            self.assertIn("未签名", maintainer_doc)
 
     def test_keychain_lookup_errors_cannot_overwrite_legacy_key(self) -> None:
         security = (REPO_ROOT / "wandao_electron/src-tauri/src/security.rs").read_text(encoding="utf-8")

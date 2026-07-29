@@ -13,7 +13,7 @@
 - Windows 从 1.3.x 升级时会先安全移除默认目录中的旧 Electron 程序并保留 `%APPDATA%\wandao` 用户数据；曾自定义旧安装目录的用户需先手动卸载旧版，再安装 1.4.0。
 - 依赖和构建链移除 Electron、electron-builder 及其临时安全例外，Node、Rust、Python runtime 和 Tauri CLI 均使用锁定版本。
 
-> PR、本地和手动工作流只生成带 `UNSIGNED-SMOKE` 标识的测试产物，不会创建 GitHub Release。正式 `v*` tag 必须在受保护的 `desktop-release` 环境完成 Windows Authenticode 签名、macOS Developer ID 签名与 Apple 公证；凭据缺失或任一平台验签失败时不会创建 Release。1.4.0 首次产物只创建 draft，完成干净系统验收后再由维护者公开。
+> PR、本地和手动工作流只生成带 `UNSIGNED-SMOKE` 标识的测试产物，不会创建 GitHub Release。正式 `v*` tag 生成的 Windows 和 macOS 安装包当前同样未做商业代码签名或 Apple 公证，系统可能显示未知发布者或阻止首次打开。发布流水线仍强制通过跨平台质量门、真实安装 smoke、`SHA256SUMS`、SPDX SBOM 和 build provenance；1.4.0 首次产物只创建 draft，完成干净系统验收后再由维护者公开。
 
 ## 1.3.0
 

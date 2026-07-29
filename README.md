@@ -149,7 +149,7 @@
 
 发行版已内置运行环境，普通用户不需要安装 Python、Node.js，也不需要从源码启动。
 
-> **macOS Apple Silicon 首次打开：** 正式 Release 中的应用必须经过 Developer ID 签名和 Apple 公证。请只从本项目 GitHub Releases 下载并移入“应用程序”。若仍提示“已损坏”或被 Gatekeeper 阻止，请停止使用该文件并在项目中报告版本号和下载来源，不要通过清除隔离属性绕过系统校验。
+> **macOS Apple Silicon 首次打开：** 当前正式 Release 未做 Developer ID 签名和 Apple 公证。请只从本项目 GitHub Releases 下载并移入“应用程序”；Gatekeeper 阻止时，可在“系统设置 → 隐私与安全性”确认来源后选择仍要打开。不要通过清除隔离属性绕过系统校验。
 
 详细操作和平台注意事项请查看 [使用教程](docs/使用教程.md)。
 
@@ -200,7 +200,7 @@ npm ci
 npm run build:win:unsigned
 ```
 
-本地与手动工作流生成的 unsigned 包只能用于 smoke，不得发布。正式 Windows/macOS 安装包只能由受保护的 `v*` tag 工作流生成。更完整的维护说明见 [发布与回滚手册](docs/发布与回滚手册.md)。
+本地与手动工作流生成的 `UNSIGNED-SMOKE` 包只能用于 smoke，不得直接发布。正式 `v*` tag 工作流当前也生成未签名 Windows/macOS 安装包，但会额外执行版本一致性、真实安装/资源 smoke、校验和、SBOM 和 provenance 门禁。更完整的维护说明见 [发布与回滚手册](docs/发布与回滚手册.md)。
 
 </details>
 

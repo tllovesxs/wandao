@@ -7,7 +7,7 @@
 - Windows x64：下载 `.exe` 安装包。
 - macOS Apple Silicon（arm64，macOS 11+）：下载 `.zip` 压缩包，解压后运行应用。
 
-正式 Release 中的 macOS `.zip` 必须包含经过 Developer ID 签名、Apple 公证并完成 stapling 的应用。请只从本项目 GitHub Releases 下载并移入“应用程序”。若仍提示“已损坏”或被 Gatekeeper 阻止，请停止使用该文件并报告版本号和下载来源，不要绕过系统校验。
+当前正式 Release 中的 macOS `.zip` 未做 Developer ID 签名、Apple 公证或 stapling。请只从本项目 GitHub Releases 下载并移入“应用程序”；Gatekeeper 阻止时，可在“系统设置 → 隐私与安全性”确认来源后选择仍要打开，不要通过清除隔离属性绕过系统校验。
 
 发行版已内置 Python 运行时和导入导出依赖，普通用户不需要额外安装 Python。
 
@@ -111,4 +111,4 @@ npm run build:mac:x64:unsigned
 npm run build:mac:arm64:unsigned
 ```
 
-这些命令会先下载对应平台的 Python standalone 运行时，并使用 `requirements.lock` 中固定的版本和 SHA-256 安装依赖；`requirements.txt` 保留直接依赖声明，两者必须同步。产物带 `--no-sign`，只能用于本地 smoke，不得发布；正式包只能由受保护的 `v*` tag 工作流生成。仅需清除 Tauri 打包源码里的 Python 字节码缓存时，可运行 `python scripts/prepare_python_runtime.py --clean-source-caches-only`，该模式不会下载或修改 runtime。
+这些命令会先下载对应平台的 Python standalone 运行时，并使用 `requirements.lock` 中固定的版本和 SHA-256 安装依赖；`requirements.txt` 保留直接依赖声明，两者必须同步。本地 `UNSIGNED-SMOKE` 产物只能用于 smoke，不得直接发布；正式 `v*` tag 当前也生成未签名包，但会额外通过完整质量、安装和供应链元数据门禁。仅需清除 Tauri 打包源码里的 Python 字节码缓存时，可运行 `python scripts/prepare_python_runtime.py --clean-source-caches-only`，该模式不会下载或修改 runtime。

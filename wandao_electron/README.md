@@ -33,7 +33,7 @@ macOS：
 npm run build:mac:unsigned
 ```
 
-固定架构的本地构建可使用 `npm run build:mac:x64:unsigned` 或 `npm run build:mac:arm64:unsigned`。Windows 本机只构建 NSIS 包；macOS `.app` 建议在对应架构的 macOS 环境构建。命令会先准备并验证独立 Python runtime，再执行 Tauri release 构建。这些产物带 `--no-sign`，只能用于 smoke，不得发布；正式 Windows x64 和 macOS Apple Silicon（arm64，macOS 11+）包只由受保护的 `v*` tag 工作流生成。
+固定架构的本地构建可使用 `npm run build:mac:x64:unsigned` 或 `npm run build:mac:arm64:unsigned`。Windows 本机只构建 NSIS 包；macOS `.app` 建议在对应架构的 macOS 环境构建。命令会先准备并验证独立 Python runtime，再执行 Tauri release 构建。本地和手动工作流的 `UNSIGNED-SMOKE` 产物只能用于 smoke，不得直接发布；正式 `v*` tag 当前也生成未签名 Windows x64 和 macOS Apple Silicon（arm64，macOS 11+）包，但会通过完整发布门禁后创建 Draft Release。
 
 ## 运行依赖
 

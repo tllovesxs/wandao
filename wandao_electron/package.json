@@ -14,15 +14,15 @@
     "prepare:python:mac:arm64": "python scripts/prepare_python_runtime.py --target mac-arm64",
     "build:win": "npm run build:win:unsigned",
     "build:win:unsigned": "npm run prepare:python:win && tauri build --no-sign --bundles nsis",
-    "build:win:release": "npm run prepare:python:win && tauri build --ci --bundles nsis",
+    "build:win:release": "npm run build:win:unsigned",
     "build:mac": "npm run build:mac:unsigned",
     "build:mac:unsigned": "npm run prepare:python && tauri build --no-sign --bundles app",
     "build:mac:x64": "npm run build:mac:x64:unsigned",
     "build:mac:x64:unsigned": "npm run prepare:python:mac:x64 && tauri build --no-sign --target x86_64-apple-darwin --bundles app",
-    "build:mac:x64:release": "npm run prepare:python:mac:x64 && tauri build --ci --target x86_64-apple-darwin --bundles app",
+    "build:mac:x64:release": "npm run build:mac:x64:unsigned",
     "build:mac:arm64": "npm run build:mac:arm64:unsigned",
     "build:mac:arm64:unsigned": "npm run prepare:python:mac:arm64 && tauri build --no-sign --target aarch64-apple-darwin --bundles app",
-    "build:mac:arm64:release": "npm run prepare:python:mac:arm64 && tauri build --ci --target aarch64-apple-darwin --bundles app",
+    "build:mac:arm64:release": "npm run build:mac:arm64:unsigned",
     "build:all": "npm run build:win"
   },
   "keywords": [

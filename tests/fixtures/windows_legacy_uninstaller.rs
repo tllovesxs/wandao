@@ -7,6 +7,8 @@ use std::process::{self, Command};
 use std::thread;
 
 const LEGACY_UNINSTALL_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\1b0cbfbe-638f-5e34-9149-e794da0edaeb";
+const LEGACY_INSTALL_KEY: &str =
+    r"HKCU\Software\1b0cbfbe-638f-5e34-9149-e794da0edaeb";
 const LEGACY_FIXTURE_MARKER_ENV: &str = "WANDAO_LEGACY_FIXTURE_MARKER";
 
 fn exit_with_error(message: &str) -> ! {
@@ -58,14 +60,26 @@ fn main() {
     // Record execution before validating arguments or location. Rejection
     // tests can therefore prove that an untrusted command was never launched.
     write_invocation_marker(&arguments);
-    if arguments != ["/currentuser", "/S"] {
+
+    let legacy_root = current_executable()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| exit_with_error("legacy fixture install directory is missing"));
+    if !legacy_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("wandao"))
+    {
+        exit_with_error("legacy fixture install directory must end in Wandao");
+    }
+    let expected_arguments = [
+        "/currentuser".to_owned(),
+        "/S".to_owned(),
+        format!("_?={}", legacy_root.display()),
+    ];
+    if arguments != expected_arguments {
         exit_with_error("unexpected legacy fixture arguments");
     }
-
-    let local_app_data = env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| exit_with_error("LOCALAPPDATA is missing"));
-    let legacy_root = local_app_data.join("Programs").join("wandao");
     let expected_uninstaller = legacy_root.join("Uninstall Wandao.exe");
     let current_executable = fs::canonicalize(current_executable())
         .unwrap_or_else(|error| exit_with_error(&format!("cannot resolve fixture: {error}")));
@@ -83,11 +97,13 @@ fn main() {
     fs::remove_file(&legacy_main)
         .unwrap_or_else(|error| exit_with_error(&format!("cannot remove legacy main: {error}")));
 
-    let status = Command::new("reg.exe")
-        .args(["delete", LEGACY_UNINSTALL_KEY, "/f"])
-        .status()
-        .unwrap_or_else(|error| exit_with_error(&format!("cannot run reg.exe: {error}")));
-    if !status.success() {
-        exit_with_error("cannot remove legacy fixture registry key");
+    for key in [LEGACY_UNINSTALL_KEY, LEGACY_INSTALL_KEY] {
+        let status = Command::new("reg.exe")
+            .args(["delete", key, "/f"])
+            .status()
+            .unwrap_or_else(|error| exit_with_error(&format!("cannot run reg.exe: {error}")));
+        if !status.success() {
+            exit_with_error("cannot remove legacy fixture registry key");
+        }
     }
 }

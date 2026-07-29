@@ -10,7 +10,8 @@
 - 恢复原生应用菜单、文件对话框、关闭确认、单实例、macOS 关闭隐藏与重新打开行为。
 - 发行包改为 Tauri NSIS / macOS `.app`，内置固定且校验过的 Python 3.11 runtime；发布门禁验证 14 个插件、20 个 Provider、19 个可执行后端和真实应用启动。
 - 修复钉钉文档正文中的根相对图片地址被可信域校验误拒绝：`/core/api/resources/img/...` 会先基于已验证的钉钉页面 origin 解析，再执行原有 HTTPS 与域名白名单校验；协议相对地址和外部域名仍会被拒绝。
-- Windows 从 1.3.x 升级时会先安全移除默认目录中的旧 Electron 程序并保留 `%APPDATA%\wandao` 用户数据；曾自定义旧安装目录的用户需先手动卸载旧版，再安装 1.4.0。
+- 修复所有平台停止后点击“继续任务”会重建当前页面、清空已填写字段的问题；同平台继续会保留当前表单，跨页继续会恢复已安全保存的非敏感字段。
+- Windows 从 1.3.x 升级时会验证旧版安装信息并自动迁移默认或自定义旧安装目录，同时保留 `%APPDATA%\wandao` 用户数据；旧程序仍在运行时，安装器会提示关闭后重试，不会强制结束任务。
 - 依赖和构建链移除 Electron、electron-builder 及其临时安全例外，Node、Rust、Python runtime 和 Tauri CLI 均使用锁定版本。
 
 > PR、本地和手动工作流只生成带 `UNSIGNED-SMOKE` 标识的测试产物，不会创建 GitHub Release。正式 `v*` tag 生成的 Windows 和 macOS 安装包当前同样未做商业代码签名或 Apple 公证，系统可能显示未知发布者或阻止首次打开。发布流水线仍强制通过跨平台质量门、真实安装 smoke、`SHA256SUMS`、SPDX SBOM 和 build provenance；1.4.0 首次产物只创建 draft，完成干净系统验收后再由维护者公开。

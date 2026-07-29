@@ -1651,8 +1651,11 @@ async function resumeTask(task) {
   if (!confirm(`继续任务：${task.title || task.script}\n${confirmDetail}\n\n确认继续吗？`)) {
     return;
   }
-  if (task.providerId && TOOLS[task.providerId]) {
-    switchTool(task.providerId);
+  if (task.providerId && TOOLS[task.providerId] && currentTool !== task.providerId) {
+    if (!switchTool(task.providerId)) {
+      alert('暂时无法打开这条任务对应的平台页面，请稍后重试。');
+      return;
+    }
   }
   startProgress(`继续任务：${task.title || task.script}`, retryingFailures ? '正在读取上次报告并重试失败项...' : '正在按历史命令重新执行，脚本会根据自身增量能力跳过已完成内容。');
   log(retryingFailures ? `重试失败项：${task.title || task.script}` : `继续任务：${task.title || task.script}`, 'info');

@@ -101,6 +101,40 @@ test('selects do not lose their default when its restored option is unavailable'
   assert.equal(scope.value, 'current');
 });
 
+test('safe drafts restore after task locking without collecting disabled values', () => {
+  const storage = memoryStorage();
+  const source = field({ id: 'feishu-import-source', value: 'D:/markdown' });
+  drafts.saveDraft(storage, 'feishu-import', 'import', form([source]), 100);
+
+  const lockedSource = field({ id: 'feishu-import-source', value: '', disabled: true });
+  const lockedSecret = field({
+    id: 'feishu-import-app-secret',
+    type: 'password',
+    value: '',
+    disabled: true
+  });
+  const restored = drafts.restoreDraft(
+    storage,
+    'feishu-import',
+    'import',
+    form([lockedSource, lockedSecret])
+  );
+
+  assert.equal(restored.restored, 1);
+  assert.equal(lockedSource.value, 'D:/markdown');
+  assert.equal(lockedSecret.value, '');
+
+  const disabledDraft = drafts.saveDraft(
+    storage,
+    'provider',
+    'run',
+    form([field({ id: 'disabled-target', value: 'must-not-save', disabled: true })]),
+    200
+  );
+  assert.deepEqual(disabledDraft, { saved: false, fieldCount: 0 });
+  assert.doesNotMatch(storage.raw(drafts.STORAGE_KEY), /must-not-save/);
+});
+
 test('provider-owned config fields never override the freshly loaded config', () => {
   const storage = memoryStorage();
   const source = form([

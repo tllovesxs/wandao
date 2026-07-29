@@ -143,21 +143,21 @@ jobs:
           if (-not $installer) { throw "Tauri NSIS installer was not generated" }
 
           $legacyKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\1b0cbfbe-638f-5e34-9149-e794da0edaeb"
-          $legacyRoot = Join-Path $env:LOCALAPPDATA "Programs\wandao"
+          $legacyInstallKey = "HKCU:\Software\1b0cbfbe-638f-5e34-9149-e794da0edaeb"
+          $legacyRoot = Join-Path $env:RUNNER_TEMP "wandao-custom-legacy\Wandao"
           $legacyMain = Join-Path $legacyRoot "Wandao.exe"
           $legacyUninstaller = Join-Path $legacyRoot "Uninstall Wandao.exe"
           $legacyUserData = Join-Path $env:APPDATA "wandao"
-          $customLegacyRoot = Join-Path $env:RUNNER_TEMP "wandao-custom-legacy"
-          $customBlockedRoot = Join-Path $env:RUNNER_TEMP "wandao-tauri-custom-path-upgrade"
           $blockedRoot = Join-Path $env:RUNNER_TEMP "wandao-tauri-untrusted-upgrade"
           $runningBlockedRoot = Join-Path $env:RUNNER_TEMP "wandao-tauri-running-upgrade"
           $installRoot = Join-Path $env:RUNNER_TEMP "wandao-tauri-legacy-upgrade"
           $fixtureMarker = Join-Path $env:RUNNER_TEMP "wandao-legacy-fixture-invoked.txt"
           $maliciousMarker = Join-Path $env:RUNNER_TEMP "wandao-malicious-command-executed"
-          foreach ($unusedPath in @($legacyRoot, $legacyUserData, $customLegacyRoot, $customBlockedRoot, $blockedRoot, $runningBlockedRoot, $installRoot, $fixtureMarker, $maliciousMarker)) {
+          foreach ($unusedPath in @($legacyRoot, $legacyUserData, $blockedRoot, $runningBlockedRoot, $installRoot, $fixtureMarker, $maliciousMarker)) {
             if (Test-Path -LiteralPath $unusedPath) { throw "Fixture path is not clean: $unusedPath" }
           }
           if (Test-Path -LiteralPath $legacyKey) { throw "Legacy uninstall key already exists" }
+          if (Test-Path -LiteralPath $legacyInstallKey) { throw "Legacy product key already exists" }
           if (Test-Path -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Wandao") {
             throw "Tauri uninstall key already exists"
           }
@@ -171,35 +171,14 @@ jobs:
           $env:WANDAO_LEGACY_FIXTURE_MARKER = $fixtureMarker
 
           New-Item -Path $legacyKey -Force | Out-Null
+          New-Item -Path $legacyInstallKey -Force | Out-Null
+          New-ItemProperty -LiteralPath $legacyInstallKey -Name InstallLocation -Value $legacyRoot -PropertyType String -Force | Out-Null
           $displayVersion = "1.3.10"
           $uninstallString = "`"$legacyUninstaller`" /currentuser"
           $quietUninstallString = "$uninstallString /S"
           New-ItemProperty -LiteralPath $legacyKey -Name DisplayName -Value "万能导 Wandao $displayVersion" -PropertyType String -Force | Out-Null
           New-ItemProperty -LiteralPath $legacyKey -Name DisplayVersion -Value $displayVersion -PropertyType String -Force | Out-Null
           New-ItemProperty -LiteralPath $legacyKey -Name Publisher -Value "tllovesxs" -PropertyType String -Force | Out-Null
-
-          # Even internally consistent registry values must not authorize an
-          # arbitrary executable from a user-selected legacy install path.
-          $customLegacyMain = Join-Path $customLegacyRoot "Wandao.exe"
-          $customLegacyUninstaller = Join-Path $customLegacyRoot "Uninstall Wandao.exe"
-          New-Item -ItemType Directory -Path $customLegacyRoot | Out-Null
-          Set-Content -LiteralPath $customLegacyMain -Value "controlled custom legacy main" -NoNewline
-          Copy-Item -LiteralPath $legacyUninstaller -Destination $customLegacyUninstaller
-          $customUninstallString = "`"$customLegacyUninstaller`" /currentuser"
-          New-ItemProperty -LiteralPath $legacyKey -Name DisplayIcon -Value "$customLegacyMain,0" -PropertyType String -Force | Out-Null
-          New-ItemProperty -LiteralPath $legacyKey -Name UninstallString -Value $customUninstallString -PropertyType String -Force | Out-Null
-          New-ItemProperty -LiteralPath $legacyKey -Name QuietUninstallString -Value "$customUninstallString /S" -PropertyType String -Force | Out-Null
-          $customBlocked = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$customBlockedRoot") -PassThru -Wait
-          if ($customBlocked.ExitCode -eq 0) { throw "Installer accepted a custom legacy install directory" }
-          if (-not (Test-Path -LiteralPath $legacyKey) -or -not (Test-Path -LiteralPath $customLegacyMain) -or -not (Test-Path -LiteralPath $customLegacyUninstaller)) {
-            throw "Rejected custom-directory migration modified the legacy fixture"
-          }
-          if (Test-Path -LiteralPath (Join-Path $customBlockedRoot "Wandao.exe")) {
-            throw "Rejected custom-directory migration wrote the candidate application"
-          }
-          if (Test-Path -LiteralPath $fixtureMarker) {
-            throw "Rejected custom-directory migration executed the legacy fixture"
-          }
 
           New-ItemProperty -LiteralPath $legacyKey -Name DisplayIcon -Value "$legacyMain,0" -PropertyType String -Force | Out-Null
           New-ItemProperty -LiteralPath $legacyKey -Name UninstallString -Value $uninstallString -PropertyType String -Force | Out-Null
@@ -209,7 +188,7 @@ jobs:
           New-ItemProperty -LiteralPath $legacyKey -Name QuietUninstallString -Value $maliciousQuietUninstall -PropertyType String -Force | Out-Null
           $blocked = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$blockedRoot") -PassThru -Wait
           if ($blocked.ExitCode -eq 0) { throw "Installer accepted an untrusted legacy uninstall command" }
-          if (-not (Test-Path -LiteralPath $legacyKey) -or -not (Test-Path -LiteralPath $legacyMain)) {
+          if (-not (Test-Path -LiteralPath $legacyKey) -or -not (Test-Path -LiteralPath $legacyInstallKey) -or -not (Test-Path -LiteralPath $legacyMain)) {
             throw "Rejected migration modified the legacy installation"
           }
           if (Test-Path -LiteralPath (Join-Path $blockedRoot "Wandao.exe")) {
@@ -235,7 +214,7 @@ jobs:
             if ($runningBlocked.ExitCode -eq 0) { throw "Installer accepted a running legacy application" }
             $legacyProcess.Refresh()
             if ($legacyProcess.HasExited) { throw "Installer terminated the running legacy application" }
-            if (-not (Test-Path -LiteralPath $legacyKey) -or -not (Test-Path -LiteralPath $legacyMain) -or -not (Test-Path -LiteralPath $legacyUninstaller)) {
+            if (-not (Test-Path -LiteralPath $legacyKey) -or -not (Test-Path -LiteralPath $legacyInstallKey) -or -not (Test-Path -LiteralPath $legacyMain) -or -not (Test-Path -LiteralPath $legacyUninstaller)) {
               throw "Rejected running-process migration modified the legacy fixture"
             }
             if (Test-Path -LiteralPath (Join-Path $runningBlockedRoot "Wandao.exe")) {
@@ -255,6 +234,7 @@ jobs:
           $process = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$installRoot") -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw "Installer failed with exit code $($process.ExitCode)" }
           if (Test-Path -LiteralPath $legacyKey) { throw "Legacy uninstall key survived the migration" }
+          if (Test-Path -LiteralPath $legacyInstallKey) { throw "Legacy product key survived the migration" }
           if (Test-Path -LiteralPath $legacyMain) { throw "Legacy main executable survived the migration" }
           $sentinel = Join-Path $legacyUserData "migration-sentinel.txt"
           if ((Get-Content -Raw -LiteralPath $sentinel) -ne "preserve-me") {
@@ -264,7 +244,7 @@ jobs:
             throw "Trusted migration did not invoke the controlled legacy uninstaller"
           }
           $fixtureInvocation = Get-Content -Raw -LiteralPath $fixtureMarker
-          if (-not $fixtureInvocation.Contains($legacyUninstaller) -or -not $fixtureInvocation.Contains("/currentuser") -or -not $fixtureInvocation.Contains("/S")) {
+          if (-not $fixtureInvocation.Contains($legacyUninstaller) -or -not $fixtureInvocation.Contains("/currentuser") -or -not $fixtureInvocation.Contains("/S") -or -not $fixtureInvocation.Contains("_?=$legacyRoot")) {
             throw "Trusted migration invoked the legacy fixture with unexpected path or arguments"
           }
           $appExecutable = Get-ChildItem -LiteralPath $installRoot -Filter *.exe -File | Where-Object { $_.BaseName -ieq "wandao" } | Select-Object -First 1

@@ -143,6 +143,23 @@ test('resuming historical task treats code 130 as stopped without entering failu
   assert.match(handler, /else if \(outcome === 'stopped'\) \{[\s\S]*?已停止[\s\S]*?finishProgress\('stopped', [\s\S]*?已停止[\s\S]*?\} else \{[\s\S]*?失败/);
 });
 
+test('resuming on the current provider preserves its live form instead of re-rendering it', () => {
+  const appJs = fs.readFileSync('wandao_electron/renderer/app.js', 'utf8');
+  const start = appJs.indexOf('async function resumeTask');
+  const end = appJs.indexOf('function latestResumableTask', start);
+  const handler = appJs.slice(start, end);
+
+  assert.match(
+    handler,
+    /task\.providerId && TOOLS\[task\.providerId\] && currentTool !== task\.providerId/
+  );
+  assert.match(handler, /if \(!switchTool\(task\.providerId\)\) \{/);
+  assert.ok(
+    handler.indexOf('currentTool !== task.providerId') < handler.indexOf('switchTool(task.providerId)'),
+    'the provider equality guard must run before any navigation'
+  );
+});
+
 test('generic export treats the cooperative stop exit code as stopped, not a resource failure', () => {
   const appJs = fs.readFileSync('wandao_electron/renderer/app.js', 'utf8');
   const start = appJs.indexOf('async function handleExport');

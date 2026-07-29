@@ -89,7 +89,7 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
     def test_localized_hook_is_explicit_utf8(self) -> None:
         self.assertTrue(INSTALLER_HOOK.read_bytes().startswith(b"\xef\xbb\xbf"))
 
-    def test_preinstall_targets_only_the_known_electron_install(self) -> None:
+    def test_preinstall_targets_only_a_consistent_legacy_wandao_install(self) -> None:
         self.assertIn(
             "1b0cbfbe-638f-5e34-9149-e794da0edaeb",
             self.hook,
@@ -107,6 +107,20 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
         self.assertIn('StrCmp $R2 "4" 0 wandao_legacy_untrusted', self.preinstall)
         self.assertIn("IntOp $R4 $R4 + $R2", self.preinstall)
         self.assertIn('StrCmp $R2 "tllovesxs"', self.preinstall)
+        self.assertIn("wandao_legacy_validate:", self.preinstall)
+        self.assertLess(
+            self.preinstall.index("wandao_legacy_validate:"),
+            self.preinstall.index("ReadRegStr"),
+        )
+        self.assertIn('"InstallLocation"', self.preinstall)
+        self.assertIn('${WANDAO_LEGACY_INSTALL_KEY}', self.preinstall)
+        self.assertIn('GetFullPathName $R4 "$R6"', self.preinstall)
+        self.assertIn('StrCpy $R7 "$R6\\Wandao.exe"', self.preinstall)
+        self.assertIn('StrCpy $R8 "$R6\\Uninstall Wandao.exe"', self.preinstall)
+        self.assertIn('StrCmp $R4 ":" 0 wandao_legacy_untrusted', self.preinstall)
+        self.assertIn('${StrLoc} $R5 $R4 ":" ">"', self.preinstall)
+        self.assertIn('${StrLoc} $R5 $R6 \'$\\"\' ">"', self.preinstall)
+        self.assertIn('${StrLoc} $R5 $R6 "%" ">"', self.preinstall)
 
     def test_registry_command_is_validated_but_never_executed_as_text(self) -> None:
         exec_waits = [
@@ -117,16 +131,19 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
 
         self.assertEqual(
             exec_waits,
-            [
-                "ExecWait '\"${WANDAO_LEGACY_UNINSTALLER}\" /currentuser /S' $R0"
-            ],
+            ["ExecWait '\"$R8\" /currentuser /S _?=$R6' $R0"],
         )
-        self.assertNotRegex(self.preinstall, r"ExecWait\s+['\"`]\$R[0-9]")
+        self.assertNotIn("ExecWait $R2", self.preinstall)
+        self.assertNotIn("ExecWait '$R2", self.preinstall)
+        self.assertNotIn("ExecWait '\"$R2", self.preinstall)
         self.assertLess(
             self.preinstall.index('"QuietUninstallString"'),
             self.preinstall.index("ExecWait"),
         )
-        self.assertIn('$\\" /currentuser /S', self.preinstall)
+        self.assertIn("StrCpy $R3 '$\\\"$R8$\\\" /currentuser'", self.preinstall)
+        self.assertIn("StrCpy $R3 '$\\\"$R8$\\\" /currentuser /S'", self.preinstall)
+        self.assertIn("_?= keeps the legacy uninstaller in-process", self.preinstall)
+        self.assertIn('Delete "$R8"', self.preinstall)
 
     def test_running_legacy_process_is_rejected_without_force_kill(self) -> None:
         find_process = 'nsis_tauri_utils::FindProcessCurrentUser "Wandao.exe"'
@@ -140,35 +157,56 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
             'StrCmp $R0 "1" wandao_legacy_process_not_running',
             guard,
         )
-        self.assertIn("SetErrorLevel 1", guard)
+        self.assertIn("SetErrorLevel 11", guard)
         self.assertIn("Abort", guard)
-        self.assertLess(guard.index("SetErrorLevel 1"), guard.index("Abort"))
-        self.assertNotIn("1.3.x is still running", guard)
+        self.assertLess(guard.index("SetErrorLevel 11"), guard.index("Abort"))
+        self.assertIn("MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION", guard)
+        self.assertIn("/SD IDCANCEL", guard)
+        self.assertIn("IDRETRY wandao_legacy_validate", guard)
         self.assertIn("检测到 Wandao 正在运行", guard)
         self.assertIn("请关闭所有 Wandao 窗口", guard)
-        self.assertIn("Wandao is running", guard)
-        self.assertIn("Close all Wandao windows", guard)
-        self.assertIn("run the installer again", guard)
+        self.assertIn("不会强制结束程序", guard)
 
     def test_preinstall_checks_uninstaller_exit_and_postconditions(self) -> None:
         self.assertIn("IfErrors wandao_legacy_uninstall_failed", self.preinstall)
-        self.assertIn('StrCmp $R0 "0" 0 wandao_legacy_uninstall_failed', self.preinstall)
-        self.assertGreaterEqual(
-            self.preinstall.count('${FileExists} "${WANDAO_LEGACY_MAIN_EXE}"'),
-            3,
-        )
-        self.assertIn("wandao_legacy_registry_removed", self.preinstall)
-        self.assertIn("SetErrorLevel 1", self.preinstall)
+        self.assertNotIn('StrCmp $R0 "0" 0 wandao_legacy_uninstall_failed', self.preinstall)
+        self.assertIn("authoritative postcondition", self.preinstall)
+        self.assertIn('${FileExists} "$R7"', self.preinstall)
+        self.assertIn('${FileExists} "$R8"', self.preinstall)
+        self.assertIn('${FileExists} "${WANDAO_LEGACY_MAIN_EXE}"', self.preinstall)
+        self.assertIn("wandao_legacy_wait_for_cleanup", self.preinstall)
+        self.assertIn("StrCpy $R9 40", self.preinstall)
+        self.assertIn("Sleep 250", self.preinstall)
+        self.assertIn('StrCmp $R9 "0" wandao_legacy_uninstall_failed', self.preinstall)
+        self.assertIn("wandao_legacy_remove_keys", self.preinstall)
+        self.assertIn('DeleteRegKey HKCU "${WANDAO_LEGACY_UNINSTALL_KEY}"', self.preinstall)
+        self.assertIn('DeleteRegKey HKCU "${WANDAO_LEGACY_INSTALL_KEY}"', self.preinstall)
+        self.assertIn("SetErrorLevel 12", self.preinstall)
+        self.assertIn("StrCpy $R5 13", self.preinstall)
+        self.assertIn("StrCpy $R5 23", self.preinstall)
+        self.assertIn("SetErrorLevel $R5", self.preinstall)
         self.assertNotIn("RMDir", self.preinstall)
         self.assertNotIn("$APPDATA\\wandao", self.preinstall)
 
         for label in ("wandao_legacy_untrusted:", "wandao_legacy_uninstall_failed:"):
             failure = self.preinstall.split(label, 1)[1].split("\n\n", 1)[0]
-            self.assertIn("SetErrorLevel 1", failure)
+            self.assertIn("MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION", failure)
+            self.assertIn("/SD IDCANCEL", failure)
+            self.assertIn("IDRETRY wandao_legacy_validate", failure)
+            error_level = re.search(r"SetErrorLevel (?:12|\$R5)", failure)
+            self.assertIsNotNone(error_level)
             self.assertIn("Abort", failure)
-            self.assertLess(failure.index("SetErrorLevel 1"), failure.index("Abort"))
-        self.assertIn("Repair or uninstall it before installing Wandao 1.4.0", self.preinstall)
-        self.assertIn("Wandao 1.4.0 was not installed", self.preinstall)
+            self.assertLess(error_level.start(), failure.index("Abort"))
+        self.assertEqual(
+            self.preinstall.count("MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION"),
+            3,
+        )
+        self.assertEqual(self.preinstall.count("/SD IDCANCEL"), 3)
+        self.assertEqual(self.preinstall.count("IDRETRY wandao_legacy_validate"), 3)
+        self.assertIn("安装信息不完整或路径不可信", self.preinstall)
+        self.assertIn("手动卸载旧版", self.preinstall)
+        self.assertIn("与开发环境无关", self.preinstall)
+        self.assertIn("用户数据目录 %APPDATA%\\wandao", self.preinstall)
 
     def test_skip_switch_is_explicit_and_precedes_registry_access(self) -> None:
         switch = '${GetOptions} $CMDLINE "/SKIPLEGACYUNINSTALL"'
@@ -198,7 +236,7 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
             if "Start-Process -FilePath $installer.FullName" in line
         ]
 
-        self.assertEqual(len(install_lines), 5)
+        self.assertEqual(len(install_lines), 4)
         for line in install_lines:
             with self.subTest(line=line):
                 arguments = line.split("-ArgumentList @(", 1)[1].split(")", 1)[0]
@@ -230,12 +268,13 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
             package_smoke_job,
         )
         self.assertIn("wandao-custom-legacy", package_smoke_job)
-        self.assertIn("foreach ($unusedPath in @($legacyRoot, $legacyUserData, $customLegacyRoot", package_smoke_job)
+        self.assertIn('wandao-custom-legacy\\Wandao', package_smoke_job)
+        self.assertIn("$legacyInstallKey", package_smoke_job)
+        self.assertIn("-Name InstallLocation -Value $legacyRoot", package_smoke_job)
         self.assertIn('Tauri uninstall key already exists', package_smoke_job)
         self.assertIn("WANDAO_LEGACY_FIXTURE_MARKER", package_smoke_job)
-        self.assertIn("Installer accepted a custom legacy install directory", package_smoke_job)
-        self.assertIn("Rejected custom-directory migration modified", package_smoke_job)
-        self.assertIn("Rejected custom-directory migration executed the legacy fixture", package_smoke_job)
+        self.assertNotIn("Installer accepted a custom legacy install directory", package_smoke_job)
+        self.assertNotIn("Rejected custom-directory migration", package_smoke_job)
         self.assertIn('$maliciousQuietUninstall = "`"$env:ComSpec`" /d /c mkdir', package_smoke_job)
         self.assertIn("if ($blocked.ExitCode -eq 0)", package_smoke_job)
         self.assertIn("Rejected migration modified the legacy installation", package_smoke_job)
@@ -249,6 +288,7 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
         self.assertIn("Rejected running-process migration invoked the legacy uninstaller", package_smoke_job)
         self.assertIn("Stop-Process -Id $legacyProcess.Id -Force", package_smoke_job)
         self.assertIn("Legacy uninstall key survived the migration", package_smoke_job)
+        self.assertIn("Legacy product key survived the migration", package_smoke_job)
         self.assertIn("Legacy main executable survived the migration", package_smoke_job)
         self.assertIn("Legacy user data was not preserved", package_smoke_job)
         self.assertIn("Trusted migration did not invoke the controlled legacy uninstaller", package_smoke_job)
@@ -260,14 +300,12 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
         self.assertIn('arguments == ["--stay-running"]', fixture)
         self.assertIn('eq_ignore_ascii_case("Wandao.exe")', fixture)
         self.assertIn("thread::park()", fixture)
-        self.assertRegex(
-            fixture,
-            r"write_invocation_marker\(&arguments\);\s+if arguments != "
-            r'\["/currentuser", "/S"\]',
-        )
-        self.assertIn("arguments != [\"/currentuser\", \"/S\"]", fixture)
-        self.assertIn('env::var_os("LOCALAPPDATA")', fixture)
-        self.assertIn('join("Programs").join("wandao")', fixture)
+        self.assertIn('"/currentuser".to_owned()', fixture)
+        self.assertIn('"/S".to_owned()', fixture)
+        self.assertIn('format!("_?={}", legacy_root.display())', fixture)
+        self.assertIn("arguments != expected_arguments", fixture)
+        self.assertIn('eq_ignore_ascii_case("wandao")', fixture)
+        self.assertIn("LEGACY_INSTALL_KEY", fixture)
         self.assertIn("same_windows_path", fixture)
         self.assertIn("fs::remove_file(&legacy_main)", fixture)
         self.assertIn("reg.exe", fixture)
@@ -280,7 +318,7 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
         self.assertIn("1.3.x", current_release)
         self.assertIn("%APPDATA%\\wandao", current_release)
         self.assertIn("自定义旧安装目录", current_release)
-        self.assertIn("先手动卸载旧版", current_release)
+        self.assertIn("自动迁移", current_release)
 
 
 if __name__ == "__main__":

@@ -85,8 +85,8 @@
     return safeText(attribute || field.name || field.id, 180);
   }
 
-  function isDraftableField(field) {
-    if (!field || field.disabled || isSensitiveField(field)) return false;
+  function isDraftableField(field, options = {}) {
+    if (!field || (!options.allowDisabled && field.disabled) || isSensitiveField(field)) return false;
     const type = String(field.type || '').toLowerCase();
     if (['button', 'submit', 'reset', 'hidden', 'file', 'password', 'radio'].includes(type)) return false;
     return Boolean(fieldKey(field));
@@ -118,7 +118,11 @@
     const fields = Array.from(rootNode.querySelectorAll('input, textarea, select'));
     let restored = 0;
     for (const field of fields) {
-      if (!isDraftableField(field)) continue;
+      // A task can lock a freshly rendered form before an asynchronous
+      // provider-config load finishes. Restoring an already-vetted draft into
+      // those disabled controls is safe; collecting new values from disabled
+      // controls remains forbidden.
+      if (!isDraftableField(field, { allowDisabled: true })) continue;
       const value = values[fieldKey(field)];
       if (!value || typeof value !== 'object') continue;
       if (String(field.type || '').toLowerCase() === 'checkbox') {

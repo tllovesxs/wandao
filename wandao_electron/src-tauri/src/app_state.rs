@@ -204,16 +204,15 @@ fn resolve_for_boundary(path: &Path) -> PathBuf {
 }
 
 fn fs_canonicalize(path: &Path) -> Option<PathBuf> {
-    std::fs::canonicalize(path).ok().map(|resolved| {
-        #[cfg(target_os = "windows")]
-        {
-            let text = resolved.to_string_lossy();
-            if let Some(without_prefix) = text.strip_prefix(r"\\?\") {
-                return PathBuf::from(without_prefix);
-            }
+    let resolved = std::fs::canonicalize(path).ok()?;
+    #[cfg(target_os = "windows")]
+    {
+        let text = resolved.to_string_lossy();
+        if let Some(without_prefix) = text.strip_prefix(r"\\?\") {
+            return Some(PathBuf::from(without_prefix));
         }
-        resolved
-    })
+    }
+    Some(resolved)
 }
 
 pub fn normalize_absolute(path: &Path) -> PathBuf {

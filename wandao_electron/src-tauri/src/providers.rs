@@ -1289,14 +1289,20 @@ mod tests {
             "provider discovery errors: {:?}",
             discovery.errors
         );
-        assert_eq!(discovery.providers.len(), 20);
+        let expected_provider_count = match platform_id() {
+            "win32" => 20,
+            "darwin" => 19,
+            "linux" => 18,
+            platform => panic!("unsupported test platform: {platform}"),
+        };
+        assert_eq!(discovery.providers.len(), expected_provider_count);
         assert_eq!(
             discovery
                 .providers
                 .iter()
                 .filter(|provider| provider["sourceKind"] == "bundled-plugin")
                 .count(),
-            20
+            expected_provider_count
         );
         let executable: Vec<&Value> = discovery
             .providers
@@ -1307,10 +1313,24 @@ mod tests {
                     .is_some_and(|actions| !actions.is_empty())
             })
             .collect();
-        assert_eq!(executable.len(), 19);
+        assert_eq!(executable.len(), expected_provider_count - 1);
         assert!(executable.iter().all(|provider| provider["script"]
             .as_str()
             .is_some_and(|script| script.starts_with("bundled-plugin:"))));
+        assert_eq!(
+            discovery
+                .providers
+                .iter()
+                .any(|provider| provider["id"] == "onenote"),
+            platform_id() == "win32"
+        );
+        assert_eq!(
+            discovery
+                .providers
+                .iter()
+                .any(|provider| provider["id"] == "dingtalk-export"),
+            platform_id() != "linux"
+        );
         let notion = discovery
             .providers
             .iter()

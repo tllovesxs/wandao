@@ -95,13 +95,11 @@ pub async fn select_file(app: AppHandle, options: Option<Value>) -> Result<Optio
 
 #[tauri::command]
 pub async fn select_browser_file(app: AppHandle) -> Result<Value, String> {
-    let mut dialog = app.dialog().file().set_title("选择浏览器");
+    let dialog = app.dialog().file().set_title("选择浏览器");
     #[cfg(target_os = "windows")]
-    {
-        dialog = dialog
-            .add_filter("浏览器可执行文件", &["exe"])
-            .add_filter("所有文件", &["*"]);
-    }
+    let dialog = dialog
+        .add_filter("浏览器可执行文件", &["exe"])
+        .add_filter("所有文件", &["*"]);
     let Some(file) = dialog.blocking_pick_file().and_then(file_path_string) else {
         return Ok(json!({"success": false, "canceled": true}));
     };

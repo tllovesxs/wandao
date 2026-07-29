@@ -399,6 +399,8 @@ pub fn unprotect_bytes_for_user_data(
 #[cfg(not(target_os = "windows"))]
 mod macos_safe_storage {
     #[cfg(target_os = "macos")]
+    use super::macos_keychain_item_is_missing;
+    #[cfg(target_os = "macos")]
     use std::process::Command;
 
     #[cfg(target_os = "macos")]

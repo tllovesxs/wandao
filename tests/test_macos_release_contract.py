@@ -109,6 +109,7 @@ class MacosReleaseContractTests(unittest.TestCase):
     def test_keychain_lookup_errors_cannot_overwrite_legacy_key(self) -> None:
         security = (REPO_ROOT / "wandao_electron/src-tauri/src/security.rs").read_text(encoding="utf-8")
 
+        self.assertIn("use super::macos_keychain_item_is_missing;", security)
         self.assertIn("macos_keychain_item_is_missing(output.status.code())", security)
         self.assertIn("为避免覆盖历史任务密钥", security)
         add_command = security.split('"add-generic-password"', 1)[1].split("])", 1)[0]

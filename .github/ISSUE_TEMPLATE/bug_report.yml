@@ -118,6 +118,7 @@ body:
     id: willing
     attributes:
       label: 是否愿意协助修复或测试
+      description: 仅反馈问题或协助测试没有时限。选择认领修复时，认领确认后 2 天内需提交 Draft PR 或可验证进展；复杂任务请说明情况并至少每 2 天同步一次。
       options:
         - 愿意协助测试
         - 愿意认领修复

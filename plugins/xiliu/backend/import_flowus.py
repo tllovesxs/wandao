@@ -68,6 +68,7 @@ COS_REGION = "beijing"
 # Markdown image patterns
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^\n)]+)\)")
 MARKDOWN_DOC_EXTENSIONS = {".md", ".markdown", ".mdown"}
+RUNTIME_JOB_ID_RE = re.compile(r"^\d{10,}-[a-z0-9]+$", re.I)
 
 
 class ImportTaskTerminalFailure(FlowUsError):
@@ -757,7 +758,7 @@ def page_exists(client: FlowUsClient, page_id: str) -> bool:
         if not isinstance(blocks, dict):
             raise FlowUsError("确认页面是否存在失败：响应中缺少 blocks")
         return page_id in blocks
-    if str(code) == "404":
+    if str(code) in ("404", "3005"):
         return False
     raise FlowUsError(f"确认页面是否存在失败：{_api_error_msg(data)}")
 
@@ -1259,6 +1260,49 @@ def _persist_import_item(
     )
 
 
+def _seed_checkpoint_from_latest_scope(checkpoint: Any) -> None:
+    """Adopt items from the latest same-scope run when old UI used per-run job IDs."""
+    if not checkpoint or not hasattr(checkpoint, "conn"):
+        return
+    row = checkpoint.conn.execute(
+        "SELECT resume_key FROM tasks WHERE task_id = ?",
+        (checkpoint.task_id,),
+    ).fetchone()
+    resume_key = str(row["resume_key"] or "") if row else ""
+    if not resume_key:
+        return
+    existing = checkpoint.conn.execute(
+        "SELECT 1 FROM items WHERE task_id = ? LIMIT 1",
+        (checkpoint.task_id,),
+    ).fetchone()
+    if existing:
+        return
+    source = checkpoint.conn.execute(
+        """
+        SELECT task_id FROM tasks
+        WHERE provider_id = ? AND action = ? AND resume_key = ? AND task_id != ?
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (checkpoint.provider_id, checkpoint.action, resume_key, checkpoint.task_id),
+    ).fetchone()
+    if not source:
+        return
+    checkpoint.conn.execute(
+        """
+        INSERT OR IGNORE INTO items (
+            task_id, item_key, source_id, parent_key, title, status, stage, attempts,
+            target_id, last_error, metadata_json, created_at, updated_at, completed_at
+        )
+        SELECT ?, item_key, source_id, parent_key, title, status, stage, attempts,
+            target_id, last_error, metadata_json, created_at, updated_at, completed_at
+        FROM items WHERE task_id = ?
+        """,
+        (checkpoint.task_id, str(source["task_id"])),
+    )
+    checkpoint.conn.commit()
+
+
 def _ensure_parent_pages(
     client: FlowUsClient,
     checkpoint: Any,
@@ -1387,6 +1431,7 @@ def _import_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, 
             "resume": bool(getattr(args, "resume", False)),
             "retryFailed": bool(getattr(args, "retry_failed", False)),
         })
+        _seed_checkpoint_from_latest_scope(checkpoint)
 
     checkpoint_metadata = _checkpoint_metadata(checkpoint)
     for doc in docs:
@@ -1600,6 +1645,9 @@ def _import_flowus_impl(args: argparse.Namespace, checkpoint: Any) -> dict[str, 
 
 
 def import_flowus(args: argparse.Namespace) -> dict[str, Any]:
+    checkpoint_task_id = str(getattr(args, "checkpoint_task_id", "") or "")
+    if not checkpoint_task_id or RUNTIME_JOB_ID_RE.match(checkpoint_task_id):
+        args.checkpoint_task_id = "xiliu-import"
     checkpoint = open_checkpoint_from_args(args, "xiliu", "import")
     try:
         return _import_flowus_impl(args, checkpoint)

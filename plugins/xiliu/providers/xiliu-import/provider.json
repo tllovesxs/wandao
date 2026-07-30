@@ -92,6 +92,15 @@
       "min": 30,
       "advanced": true,
       "actions": ["import"]
+    },
+    {
+      "name": "retry_failed",
+      "label": "只重试上次失败项",
+      "type": "checkbox",
+      "arg": "--retry-failed",
+      "default": false,
+      "advanced": true,
+      "actions": ["import"]
     }
   ],
   "actions": [
@@ -137,7 +146,7 @@
       "kind": "import",
       "label": "开始导入",
       "script": "../../backend/import_flowus.py",
-      "args": ["--progress-every", "1"],
+      "args": ["--progress-every", "1", "--checkpoint-task-id", "xiliu-import"],
       "progressTitle": "息流导入",
       "progressDetail": "正在导入文档..."
     }

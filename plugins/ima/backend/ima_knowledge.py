@@ -17,11 +17,15 @@ import getpass
 import hashlib
 import hmac
 import html
+import http.client
+import ipaddress
 import json
 import mimetypes
 import os
 import random
 import re
+import socket
+import string
 import sys
 import time
 import urllib.error
@@ -133,6 +137,25 @@ MARKDOWN_REFERENCE_RE = re.compile(
     r"!\[[^\]]*\]\(([^)]+)\)|\[[^\]]+\]\(([^)]+)\)|<img\b[^>]*\bsrc=[\"']([^\"']+)[\"']",
     re.IGNORECASE,
 )
+MARKDOWN_FENCE_RE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>[^\r\n]*)")
+MARKDOWN_LIST_MARKER_RE = re.compile(r"(?P<marker>[-+*]|\d{1,9}[.)])(?P<spacing>[ \t]+)")
+MARKDOWN_BACKSLASH_ESCAPE_RE = re.compile(r"\\([" + re.escape(string.punctuation) + r"])")
+MARKDOWN_REFERENCE_DEFINITION_RE = re.compile(
+    r"^ {0,3}\[(?P<label>(?:\\.|[^\]\\\r\n])+)\]:[ \t]*"
+)
+HTML_IMAGE_SOURCE_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_:.-])src[ \t]*=[ \t]*"
+    r'(?:"(?P<double>[^"]*)"|\'(?P<single>[^\']*)\'|(?P<bare>[^\s"\'=<>`]+))'
+)
+NOTE_IMAGE_CONTENT_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/avif": ".avif",
+}
+NOTE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif"}
+MAX_NOTE_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 @dataclass
@@ -155,6 +178,10 @@ class KnowledgeEntry:
     @property
     def export_id(self) -> str:
         return f"{self.kb_id}{DOC_ID_SEPARATOR}{self.media_id}"
+
+    @property
+    def path(self) -> str:
+        return "/".join([self.kb_name, *self.relative_parts, self.title])
 
 
 def emit(message: str, *, event: str = "log.message", level: str = "info", **fields: Any) -> None:
@@ -506,6 +533,694 @@ def extract_content_text(data: dict[str, Any]) -> str:
     return ""
 
 
+def get_note_export_text(client: ImaClient, note_id: str, title: str) -> tuple[str, bool]:
+    data = client.note("get_doc_content", {"note_id": note_id, "target_content_format": 1})
+    markdown = extract_content_text(data)
+    if not markdown:
+        raise ImaError(f"ima 笔记 Markdown 正文为空：{title}")
+    return markdown, False
+
+
+def resolve_public_image_addresses(hostname: str, port: int) -> list[str]:
+    try:
+        results = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ImaError(f"图片域名解析失败：{exc}") from exc
+    addresses: list[str] = []
+    for item in results:
+        address = item[4][0]
+        if address not in addresses:
+            addresses.append(address)
+    if not addresses:
+        raise ImaError("图片域名没有解析到可用地址")
+    for address in addresses:
+        if not ipaddress.ip_address(address).is_global:
+            raise ImaError("图片地址指向非公网网络")
+    return addresses
+
+
+def validate_remote_image_url(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    except ValueError as exc:
+        raise ImaError("图片地址格式无效") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ImaError("图片地址不是安全的 HTTP/HTTPS URL")
+    resolve_public_image_addresses(parsed.hostname, port)
+    return url
+
+
+def connect_to_public_image_address(connection: http.client.HTTPConnection) -> None:
+    last_error: OSError | None = None
+    for address in resolve_public_image_addresses(connection.host, connection.port):
+        try:
+            connection.sock = connection._create_connection(
+                (address, connection.port),
+                connection.timeout,
+                connection.source_address,
+            )
+            return
+        except OSError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise ImaError("图片域名没有可连接的公网地址")
+
+
+class PinnedHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        connect_to_public_image_address(self)
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        connect_to_public_image_address(self)
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+
+
+class PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, request):
+        return self.do_open(PinnedHTTPConnection, request)
+
+
+class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(PinnedHTTPSConnection, request)
+
+
+class SafeImageRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validate_remote_image_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def read_note_image_response(response: Any, max_bytes: int = MAX_NOTE_IMAGE_BYTES) -> bytes:
+    try:
+        declared_size = int(str(response.headers.get("Content-Length") or "0") or "0")
+    except ValueError:
+        declared_size = 0
+    if declared_size > max_bytes:
+        raise ImaError(f"图片超过大小限制（{max_bytes // 1024 // 1024} MB）")
+    body = response.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise ImaError(f"图片超过大小限制（{max_bytes // 1024 // 1024} MB）")
+    return body
+
+
+def download_note_image(url: str, timeout: int = 120) -> tuple[bytes, str, str]:
+    validate_remote_image_url(url)
+    request = urllib.request.Request(url, headers={"User-Agent": "Wandao/ima-export"})
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        SafeImageRedirectHandler(),
+        PinnedHTTPHandler(),
+        PinnedHTTPSHandler(),
+    )
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            final_url = str(response.geturl() or url)
+            content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if not content_type.startswith("image/"):
+                raise ImaError(f"图片响应不是图片类型：{content_type or 'unknown'}")
+            body = read_note_image_response(response)
+    except ImaError:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise ImaError(f"图片下载 HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise ImaError(f"图片下载失败：{exc}") from exc
+    if not body:
+        raise ImaError("图片响应为空")
+    return body, content_type, final_url
+
+
+def note_image_extension(content_type: str, final_url: str) -> str:
+    normalized = content_type.split(";", 1)[0].strip().lower()
+    if normalized in NOTE_IMAGE_CONTENT_EXTENSIONS:
+        return NOTE_IMAGE_CONTENT_EXTENSIONS[normalized]
+    suffix = Path(urllib.parse.urlsplit(final_url).path).suffix.lower()
+    if suffix in NOTE_IMAGE_SUFFIXES:
+        return ".jpg" if suffix == ".jpeg" else suffix
+    raise ImaError(f"不支持的图片类型：{normalized or 'unknown'}")
+
+
+def safe_note_image_url(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "[invalid image URL]"
+    hostname = parsed.hostname or ""
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    try:
+        if parsed.port:
+            hostname = f"{hostname}:{parsed.port}"
+    except ValueError:
+        pass
+    return urllib.parse.urlunsplit((parsed.scheme, hostname, parsed.path, "", ""))
+
+
+def markdown_blockquote_prefix(line: str) -> tuple[int, int]:
+    depth = 0
+    index = 0
+    while index < len(line):
+        candidate = index
+        spaces = 0
+        while candidate < len(line) and line[candidate] == " " and spaces < 3:
+            candidate += 1
+            spaces += 1
+        if candidate >= len(line) or line[candidate] != ">":
+            break
+        depth += 1
+        index = candidate + 1
+        if index < len(line) and line[index] in " \t":
+            index += 1
+    return depth, index
+
+
+def markdown_fenced_code_ranges(markdown: str) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    opening: tuple[str, int, int, int] | None = None
+    offset = 0
+    for line in markdown.splitlines(keepends=True):
+        quote_depth, content_index = markdown_blockquote_prefix(line)
+        if (
+            opening is not None
+            and quote_depth < opening[3]
+            and line[content_index:].strip()
+        ):
+            ranges.append((opening[2], offset))
+            opening = None
+        match = MARKDOWN_FENCE_RE.match(line[content_index:])
+        if match:
+            marker = match.group("marker")
+            rest = match.group("rest")
+            if opening is None:
+                opening = (marker[0], len(marker), offset, quote_depth)
+            elif (
+                marker[0] == opening[0]
+                and len(marker) >= opening[1]
+                and quote_depth == opening[3]
+                and not rest.strip()
+            ):
+                ranges.append((opening[2], offset + len(line)))
+                opening = None
+        offset += len(line)
+    if opening is not None:
+        ranges.append((opening[2], len(markdown)))
+    return ranges
+
+
+def merge_markdown_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def markdown_leading_indent(line: str) -> tuple[int, int]:
+    columns = 0
+    index = 0
+    while index < len(line) and line[index] in " \t":
+        if line[index] == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            columns += 1
+        index += 1
+    return columns, index
+
+
+def markdown_list_content_indent(line: str, indent: int, content_index: int, base: int) -> int | None:
+    if indent - base > 3:
+        return None
+    match = MARKDOWN_LIST_MARKER_RE.match(line, content_index)
+    if not match:
+        return None
+    marker_width = len(match.group("marker"))
+    column = indent + marker_width
+    spacing_columns = 0
+    for char in match.group("spacing"):
+        width = 4 - (column % 4) if char == "\t" else 1
+        spacing_columns += width
+        column += width
+    padding = spacing_columns if 1 <= spacing_columns <= 4 else 1
+    return indent + marker_width + padding
+
+
+def markdown_indented_code_ranges(
+    markdown: str,
+    fenced_ranges: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    list_indents: list[int] = []
+    active_quote_depth = 0
+    fence_index = 0
+    offset = 0
+    for line in markdown.splitlines(keepends=True):
+        while fence_index < len(fenced_ranges) and offset >= fenced_ranges[fence_index][1]:
+            fence_index += 1
+        if fence_index < len(fenced_ranges) and offset >= fenced_ranges[fence_index][0]:
+            offset += len(line)
+            continue
+        quote_depth, quote_content_index = markdown_blockquote_prefix(line)
+        content = line[quote_content_index:]
+        if not content.strip():
+            offset += len(line)
+            continue
+        if quote_depth != active_quote_depth:
+            list_indents.clear()
+            active_quote_depth = quote_depth
+        indent, relative_content_index = markdown_leading_indent(content)
+        content_index = quote_content_index + relative_content_index
+        while list_indents and indent < list_indents[-1]:
+            list_indents.pop()
+        base = list_indents[-1] if list_indents else 0
+        list_content_indent = markdown_list_content_indent(line, indent, content_index, base)
+        if list_content_indent is not None:
+            list_indents.append(list_content_indent)
+        elif indent - base >= 4:
+            ranges.append((offset, offset + len(line)))
+        offset += len(line)
+    return ranges
+
+
+def is_markdown_character_escaped(markdown: str, index: int) -> bool:
+    backslashes = 0
+    index -= 1
+    while index >= 0 and markdown[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return bool(backslashes % 2)
+
+
+def markdown_inline_code_end(markdown: str, cursor: int, limit: int | None = None) -> int | None:
+    if markdown[cursor] != "`" or is_markdown_character_escaped(markdown, cursor):
+        return None
+    run_end = cursor + 1
+    while run_end < len(markdown) and markdown[run_end] == "`":
+        run_end += 1
+    marker = markdown[cursor:run_end]
+    search_end = len(markdown) if limit is None else limit
+    closing = markdown.find(marker, run_end, search_end)
+    while closing >= 0 and (
+        (closing > 0 and markdown[closing - 1] == "`")
+        or (closing + len(marker) < len(markdown) and markdown[closing + len(marker)] == "`")
+    ):
+        closing = markdown.find(marker, closing + len(marker), search_end)
+    return closing + len(marker) if closing >= 0 else None
+
+
+def markdown_html_comment_ranges(
+    markdown: str,
+    blocked_ranges: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    blocked_index = 0
+    cursor = 0
+    while cursor < len(markdown):
+        while blocked_index < len(blocked_ranges) and cursor >= blocked_ranges[blocked_index][1]:
+            blocked_index += 1
+        if blocked_index < len(blocked_ranges) and cursor >= blocked_ranges[blocked_index][0]:
+            cursor = blocked_ranges[blocked_index][1]
+            continue
+        limit = blocked_ranges[blocked_index][0] if blocked_index < len(blocked_ranges) else len(markdown)
+        code_end = markdown_inline_code_end(markdown, cursor, limit)
+        if code_end is not None:
+            cursor = code_end
+            continue
+        if markdown.startswith("<!--", cursor):
+            closing = markdown.find("-->", cursor + 4)
+            end = len(markdown) if closing < 0 else closing + 3
+            ranges.append((cursor, end))
+            cursor = end
+            continue
+        cursor += 1
+    return ranges
+
+
+def markdown_ignored_ranges(markdown: str) -> list[tuple[int, int]]:
+    fenced_ranges = markdown_fenced_code_ranges(markdown)
+    block_ranges = merge_markdown_ranges(
+        fenced_ranges + markdown_indented_code_ranges(markdown, fenced_ranges)
+    )
+    return merge_markdown_ranges(
+        block_ranges + markdown_html_comment_ranges(markdown, block_ranges)
+    )
+
+
+def markdown_link_closing_paren(markdown: str, cursor: int) -> int | None:
+    while cursor < len(markdown) and markdown[cursor] in " \t":
+        cursor += 1
+    if cursor >= len(markdown) or markdown[cursor] in "\r\n":
+        return None
+    if markdown[cursor] == ")":
+        return cursor
+    opener = markdown[cursor]
+    closer = {"\"": "\"", "'": "'", "(": ")"}.get(opener)
+    if closer is None:
+        return None
+    cursor += 1
+    escaped = False
+    while cursor < len(markdown):
+        char = markdown[cursor]
+        if char in "\r\n":
+            return None
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == closer:
+            cursor += 1
+            while cursor < len(markdown) and markdown[cursor] in " \t":
+                cursor += 1
+            return cursor if cursor < len(markdown) and markdown[cursor] == ")" else None
+        cursor += 1
+    return None
+
+
+def normalize_markdown_reference_label(label: str) -> str:
+    unescaped = MARKDOWN_BACKSLASH_ESCAPE_RE.sub(r"\1", label)
+    return " ".join(unescaped.split()).casefold()
+
+
+def markdown_reference_definition_targets(
+    markdown: str,
+    reference_labels: set[str],
+    ignored_ranges: list[tuple[int, int]],
+) -> list[tuple[int, int, str]]:
+    if not reference_labels:
+        return []
+    targets: list[tuple[int, int, str]] = []
+    seen_labels: set[str] = set()
+    ignored_index = 0
+    offset = 0
+    for line in markdown.splitlines(keepends=True):
+        while ignored_index < len(ignored_ranges) and offset >= ignored_ranges[ignored_index][1]:
+            ignored_index += 1
+        if ignored_index < len(ignored_ranges) and offset >= ignored_ranges[ignored_index][0]:
+            offset += len(line)
+            continue
+        match = MARKDOWN_REFERENCE_DEFINITION_RE.match(line)
+        if not match:
+            offset += len(line)
+            continue
+        label = normalize_markdown_reference_label(match.group("label"))
+        if label not in reference_labels or label in seen_labels:
+            offset += len(line)
+            continue
+        seen_labels.add(label)
+        cursor = match.end()
+        if cursor >= len(line) or line[cursor] in "\r\n":
+            offset += len(line)
+            continue
+        if line[cursor] == "<":
+            url_start = cursor + 1
+            url_end = url_start
+            escaped = False
+            while url_end < len(line):
+                char = line[url_end]
+                if char in "\r\n":
+                    break
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == ">":
+                    break
+                url_end += 1
+            if url_end >= len(line) or line[url_end] != ">":
+                offset += len(line)
+                continue
+        else:
+            url_start = cursor
+            url_end = cursor
+            escaped = False
+            while url_end < len(line):
+                char = line[url_end]
+                if char in "\r\n" or (char in " \t" and not escaped):
+                    break
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                url_end += 1
+        source_url = MARKDOWN_BACKSLASH_ESCAPE_RE.sub(
+            r"\1",
+            html.unescape(line[url_start:url_end]),
+        )
+        if source_url.lower().startswith(("http://", "https://")):
+            targets.append((offset + url_start, offset + url_end, source_url))
+        offset += len(line)
+    return targets
+
+
+def markdown_html_image_targets(
+    markdown: str,
+    ignored_ranges: list[tuple[int, int]],
+) -> list[tuple[int, int, str]]:
+    targets: list[tuple[int, int, str]] = []
+    ignored_index = 0
+    cursor = 0
+    while cursor < len(markdown):
+        while ignored_index < len(ignored_ranges) and cursor >= ignored_ranges[ignored_index][1]:
+            ignored_index += 1
+        if ignored_index < len(ignored_ranges) and cursor >= ignored_ranges[ignored_index][0]:
+            cursor = ignored_ranges[ignored_index][1]
+            continue
+        limit = ignored_ranges[ignored_index][0] if ignored_index < len(ignored_ranges) else None
+        code_end = markdown_inline_code_end(markdown, cursor, limit)
+        if code_end is not None:
+            cursor = code_end
+            continue
+        if markdown[cursor:cursor + 4].lower() != "<img" or (
+            cursor + 4 < len(markdown)
+            and markdown[cursor + 4] not in " \t\r\n/>"
+        ):
+            cursor += 1
+            continue
+        tag_end = cursor + 4
+        quote = ""
+        while tag_end < len(markdown):
+            char = markdown[tag_end]
+            if quote:
+                if char == quote:
+                    quote = ""
+            elif char in "\"'":
+                quote = char
+            elif char == ">":
+                break
+            tag_end += 1
+        if tag_end >= len(markdown) or markdown[tag_end] != ">":
+            cursor += 4
+            continue
+        tag = markdown[cursor:tag_end + 1]
+        source_match = HTML_IMAGE_SOURCE_RE.search(tag)
+        if source_match:
+            group_name = next(
+                name for name in ("double", "single", "bare")
+                if source_match.group(name) is not None
+            )
+            relative_start, relative_end = source_match.span(group_name)
+            source_url = html.unescape(source_match.group(group_name))
+            if source_url.lower().startswith(("http://", "https://")):
+                targets.append(
+                    (cursor + relative_start, cursor + relative_end, source_url)
+                )
+        cursor = tag_end + 1
+    return targets
+
+
+def iter_markdown_remote_image_targets(markdown: str) -> list[tuple[int, int, str]]:
+    targets: list[tuple[int, int, str]] = []
+    reference_labels: set[str] = set()
+    ignored_ranges = markdown_ignored_ranges(markdown)
+    ignored_index = 0
+    cursor = 0
+    while cursor < len(markdown):
+        while ignored_index < len(ignored_ranges) and cursor >= ignored_ranges[ignored_index][1]:
+            ignored_index += 1
+        if ignored_index < len(ignored_ranges) and cursor >= ignored_ranges[ignored_index][0]:
+            cursor = ignored_ranges[ignored_index][1]
+            continue
+        code_end = markdown_inline_code_end(
+            markdown,
+            cursor,
+            ignored_ranges[ignored_index][0] if ignored_index < len(ignored_ranges) else None,
+        )
+        if code_end is not None:
+            cursor = code_end
+            continue
+        if not markdown.startswith("![", cursor):
+            cursor += 1
+            continue
+        if is_markdown_character_escaped(markdown, cursor):
+            cursor += 2
+            continue
+        label_cursor = cursor + 2
+        label_depth = 1
+        escaped = False
+        while label_cursor < len(markdown) and label_depth:
+            char = markdown[label_cursor]
+            if char in "\r\n":
+                break
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "[":
+                label_depth += 1
+            elif char == "]":
+                label_depth -= 1
+            label_cursor += 1
+        if label_depth or label_cursor > len(markdown):
+            cursor += 2
+            continue
+        label = markdown[cursor + 2:label_cursor - 1]
+        if label_cursor >= len(markdown) or markdown[label_cursor] != "(":
+            reference_label = label
+            reference_end = label_cursor
+            if label_cursor < len(markdown) and markdown[label_cursor] == "[":
+                closing = markdown.find("]", label_cursor + 1)
+                if closing < 0 or "\n" in markdown[label_cursor:closing] or "\r" in markdown[label_cursor:closing]:
+                    cursor += 2
+                    continue
+                explicit_label = markdown[label_cursor + 1:closing]
+                reference_label = explicit_label or label
+                reference_end = closing + 1
+            normalized_label = normalize_markdown_reference_label(reference_label)
+            if normalized_label:
+                reference_labels.add(normalized_label)
+            cursor = reference_end
+            continue
+        target_cursor = label_cursor + 1
+        while target_cursor < len(markdown) and markdown[target_cursor] in " \t":
+            target_cursor += 1
+        if target_cursor >= len(markdown) or markdown[target_cursor] in "\r\n":
+            cursor += 2
+            continue
+        if markdown[target_cursor] == "<":
+            url_start = target_cursor + 1
+            url_end = url_start
+            escaped = False
+            while url_end < len(markdown):
+                char = markdown[url_end]
+                if char in "\r\n":
+                    break
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == ">":
+                    break
+                url_end += 1
+            if url_end >= len(markdown) or markdown[url_end] != ">":
+                cursor += 2
+                continue
+            link_end = markdown_link_closing_paren(markdown, url_end + 1)
+        else:
+            url_start = target_cursor
+            url_end = target_cursor
+            depth = 0
+            escaped = False
+            link_end = None
+            while url_end < len(markdown):
+                char = markdown[url_end]
+                if char in "\r\n":
+                    break
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    if depth == 0:
+                        link_end = url_end
+                        break
+                    depth -= 1
+                elif char in " \t" and depth == 0:
+                    link_end = markdown_link_closing_paren(markdown, url_end)
+                    break
+                url_end += 1
+        if link_end is None or url_end <= url_start:
+            cursor += 2
+            continue
+        source_url = MARKDOWN_BACKSLASH_ESCAPE_RE.sub(
+            r"\1",
+            html.unescape(markdown[url_start:url_end]),
+        )
+        if source_url.lower().startswith(("http://", "https://")):
+            targets.append((url_start, url_end, source_url))
+        cursor = link_end + 1
+    targets.extend(
+        markdown_reference_definition_targets(
+            markdown,
+            reference_labels,
+            ignored_ranges,
+        )
+    )
+    targets.extend(markdown_html_image_targets(markdown, ignored_ranges))
+    return sorted({target for target in targets}, key=lambda target: target[0])
+
+
+def localize_note_images(markdown: str, md_path: Path) -> tuple[str, int, list[dict[str, str]]]:
+    assets_dir = md_path.with_name(f"{md_path.stem}_assets")
+    localized: dict[str, str | None] = {}
+    failures: list[dict[str, str]] = []
+    saved = 0
+    next_index = 1
+
+    def localize(source_url: str) -> str | None:
+        nonlocal saved, next_index
+        if source_url not in localized:
+            index = next_index
+            next_index += 1
+            try:
+                body, content_type, final_url = download_note_image(source_url)
+                extension = note_image_extension(content_type, final_url)
+                assets_dir.mkdir(parents=True, exist_ok=True)
+                target = assets_dir / f"image-{index:03d}{extension}"
+                target.write_bytes(body)
+                relative = urllib.parse.quote(f"{assets_dir.name}/{target.name}", safe="/")
+                localized[source_url] = relative
+                saved += 1
+            except ImaStopped:
+                raise
+            except Exception as exc:
+                localized[source_url] = None
+                failures.append(
+                    {
+                        "kind": "image",
+                        "url": safe_note_image_url(source_url),
+                        "error": str(exc),
+                        "index": str(index),
+                    }
+                )
+        return localized[source_url]
+
+    parts: list[str] = []
+    previous = 0
+    for url_start, url_end, source_url in iter_markdown_remote_image_targets(markdown):
+        relative = localize(source_url)
+        if not relative:
+            continue
+        parts.append(markdown[previous:url_start])
+        parts.append(relative)
+        previous = url_end
+    parts.append(markdown[previous:])
+    rewritten = "".join(parts)
+    return rewritten, saved, failures
+
+
 def extension_for_download(title: str, media_type: int | None, content_type: str) -> str:
     suffix = Path(title).suffix
     if suffix:
@@ -531,24 +1246,35 @@ def download_url(url: str, headers: dict[str, str] | None = None) -> tuple[bytes
         raise ImaError(f"下载原文失败：{exc}") from exc
 
 
-def save_note_entry(client: ImaClient, entry: KnowledgeEntry, target_dir: Path) -> Path:
+def save_note_entry(
+    client: ImaClient,
+    entry: KnowledgeEntry,
+    target_dir: Path,
+    existing_path: Path | None = None,
+) -> tuple[Path, list[dict[str, str]]]:
     media_info = client.wiki("get_media_info", {"media_id": entry.media_id})
     note_id = str((media_info.get("notebook_ext_info") or {}).get("notebook_id") or "")
     if not note_id:
         raise ImaError("笔记类型没有返回 notebook_id")
-    note_data = client.note("get_doc_content", {"note_id": note_id, "target_content_format": 0})
-    text = extract_content_text(note_data).strip()
-    if not text:
-        text = f"# {entry.title}\n\n> ima 笔记接口未返回可导出的正文。"
-    elif not text.lstrip().startswith("#"):
-        text = f"# {entry.title}\n\n{text}\n"
+    text, _ = get_note_export_text(client, note_id, entry.title)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = unique_path(target_dir / f"{sanitize_filename(entry.title)}.md")
+    if existing_path is not None:
+        candidate = existing_path.expanduser().resolve()
+        if candidate.suffix.lower() == ".md" and candidate.parent == target_dir.resolve():
+            target = candidate
+    text, _, resource_failures = localize_note_images(text, target)
     target.write_text(text, "utf-8")
-    return target
+    return target, resource_failures
 
 
-def save_media_entry(client: ImaClient, entry: KnowledgeEntry, output_root: Path) -> tuple[str, Path | None, str]:
+def save_media_entry(
+    client: ImaClient,
+    entry: KnowledgeEntry,
+    output_root: Path,
+    *,
+    existing_note_path: Path | None = None,
+) -> tuple[str, Path | None, str, list[dict[str, str]]]:
     target_dir = output_root / sanitize_filename(entry.kb_name, "knowledge-base")
     for part in entry.relative_parts:
         target_dir /= sanitize_filename(part, "folder")
@@ -557,14 +1283,19 @@ def save_media_entry(client: ImaClient, entry: KnowledgeEntry, output_root: Path
     media_info = client.wiki("get_media_info", {"media_id": entry.media_id})
     media_type = int(media_info.get("media_type") or entry.media_type or 0)
     if media_type == 11:
-        path = save_note_entry(client, entry, target_dir)
-        return "exported_note", path, ""
+        path, resource_failures = save_note_entry(
+            client,
+            entry,
+            target_dir,
+            existing_path=existing_note_path,
+        )
+        return "exported_note", path, "", resource_failures
 
     url_info = media_info.get("url_info") or {}
     url = str(url_info.get("url") or "")
     headers = url_info.get("headers") if isinstance(url_info.get("headers"), dict) else {}
     if not url:
-        return "skipped", None, "ima 未返回可下载原文链接"
+        return "skipped", None, "ima 未返回可下载原文链接", []
 
     content, content_type = download_url(url, {str(k): str(v) for k, v in headers.items()})
     ext = extension_for_download(entry.title, media_type, content_type)
@@ -573,7 +1304,7 @@ def save_media_entry(client: ImaClient, entry: KnowledgeEntry, output_root: Path
         name += ext
     target = unique_path(target_dir / name)
     target.write_bytes(content)
-    return "exported", target, ""
+    return "exported", target, "", []
 
 
 def selected_entries(entries: list[KnowledgeEntry], doc_ids: list[str]) -> list[KnowledgeEntry]:
@@ -596,6 +1327,7 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
     checkpoint = open_checkpoint_from_args(args, "ima", "export")
     kbs, entries = scan_remote_tree(client, args)
     docs = selected_entries(entries, args.doc_id or [])
+    failed_checkpoint_items: dict[str, dict[str, Any]] = {}
     if checkpoint:
         checkpoint.start_task(
             {
@@ -612,15 +1344,20 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
                 title=entry.title,
                 source_url=entry.path,
                 source_id=entry.export_id,
-                parent_key=entry.parent_id,
-                metadata={"exportId": entry.export_id, "mediaId": entry.media_id, "knowledgeBaseId": entry.knowledge_base_id},
+                parent_key=entry.parent_node_id,
+                metadata={"exportId": entry.export_id, "mediaId": entry.media_id, "knowledgeBaseId": entry.kb_id},
             )
+        failed_checkpoint_items = {
+            str(item.get("item_key") or ""): item
+            for item in checkpoint.failed_items()
+        }
         if getattr(args, "retry_failed", False):
             docs = [entry for entry in docs if checkpoint.item_status(f"ima:entry:{entry.export_id}") == "failed"]
     total = len(docs)
     exported = 0
     skipped = 0
     failures: list[dict[str, str]] = []
+    resource_failures: list[dict[str, str]] = []
     started = time.time()
     emit(
         f"开始导出 ima 知识库内容：共 {total} 个文件。",
@@ -642,16 +1379,60 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
                 event="document.export.started",
                 doc={"id": entry.export_id, "title": entry.title, "index": index},
             )
-            status, path, reason = save_media_entry(client, entry, output)
+            previous_item = failed_checkpoint_items.get(item_key) or {}
+            previous_path = str(previous_item.get("local_path") or "").strip()
+            status, path, reason, entry_resource_failures = save_media_entry(
+                client,
+                entry,
+                output,
+                existing_note_path=Path(previous_path) if previous_path else None,
+            )
             if status.startswith("exported"):
                 exported += 1
+                reported_entry_failures = [
+                    {**failure, "document": entry.title}
+                    for failure in entry_resource_failures
+                ]
+                resource_failures.extend(reported_entry_failures)
                 if checkpoint:
-                    checkpoint.complete_item(item_key, local_path=str(path or ""), metadata={"exportId": entry.export_id})
+                    item_metadata = {
+                        "exportId": entry.export_id,
+                        "resourceFailures": reported_entry_failures,
+                    }
+                    if reported_entry_failures:
+                        checkpoint.complete_item(
+                            item_key,
+                            local_path=str(path or ""),
+                            metadata=item_metadata,
+                        )
+                        checkpoint.fail_item(
+                            item_key,
+                            f"{len(reported_entry_failures)} 个资源下载失败",
+                        )
+                    else:
+                        checkpoint.complete_item(
+                            item_key,
+                            local_path=str(path or ""),
+                            metadata=item_metadata,
+                        )
                 emit(
                     f"ima 文件导出完成：{entry.title}",
                     event="document.export.completed",
                     doc={"id": entry.export_id, "title": entry.title, "index": index, "path": str(path)},
                 )
+                for failure in entry_resource_failures:
+                    emit(
+                        f"ima 图片下载失败，已保留远程链接：{entry.title}：{failure.get('error', '')}",
+                        event="resource.download.failed",
+                        level="warn",
+                        doc={"id": entry.export_id, "title": entry.title, "index": index, "path": str(path)},
+                        resource={
+                            "type": failure.get("kind", "image"),
+                            "url": failure.get("url", ""),
+                            "index": failure.get("index", ""),
+                        },
+                        error={"message": failure.get("error", "")},
+                    )
             else:
                 skipped += 1
                 if reason:
@@ -684,7 +1465,12 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
                 f"progress {index}/{total} exported={exported} skipped={skipped} failures={len(failures)}",
                 event="task.progress",
                 progress={"current": index, "total": total},
-                stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures)},
+                stats={
+                    "exportedDocs": exported,
+                    "skippedDocs": skipped,
+                    "failureCount": len(failures),
+                    "resourceFailureCount": len(resource_failures),
+                },
             )
     report = {
         "provider": "ima",
@@ -695,6 +1481,8 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
         "skippedDocs": skipped,
         "failureCount": len(failures),
         "failures": failures[:20],
+        "resourceFailureCount": len(resource_failures),
+        "resourceFailures": resource_failures,
         "output": str(output),
         "elapsedSeconds": round(time.time() - started, 1),
         "requestCount": int(getattr(args, "_request_count", 0) or 0),
@@ -703,16 +1491,29 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
         report["checkpoint"] = checkpoint.stats()
     report = finalize_report(report, provider="ima", mode="export", output=output)
     if checkpoint:
-        if failures:
-            checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+        if failures or resource_failures:
+            checkpoint.fail_task(
+                f"{len(failures)} 个文档失败，{len(resource_failures)} 个资源失败",
+                status="failed",
+            )
         else:
             checkpoint.complete_task(report)
         checkpoint.close()
+    warning_parts = []
+    if failures:
+        warning_parts.append(f"{len(failures)} 个文档失败")
+    if resource_failures:
+        warning_parts.append(f"{len(resource_failures)} 个资源下载失败")
     emit(
-        "ima 导出完成" if not failures else f"ima 导出完成，但有 {len(failures)} 个失败项",
+        "ima 导出完成" if not warning_parts else f"ima 导出完成，但有{'，'.join(warning_parts)}",
         event="task.completed",
-        level="success" if not failures else "warn",
-        stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures)},
+        level="success" if not warning_parts else "warn",
+        stats={
+            "exportedDocs": exported,
+            "skippedDocs": skipped,
+            "failureCount": len(failures),
+            "resourceFailureCount": len(resource_failures),
+        },
     )
     return report
 

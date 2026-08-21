@@ -77,9 +77,10 @@ def iter_python_files() -> list[Path]:
 
 
 def run_py_compile() -> None:
-    for path in iter_python_files():
+    python_files = iter_python_files()
+    for path in python_files:
         py_compile.compile(str(path), doraise=True)
-    print(f"Python compile passed ({len(iter_python_files())} files).")
+    print(f"Python compile passed ({len(python_files)} files).")
 
 
 def run_unittest() -> None:

@@ -65,6 +65,12 @@ IMAGE_CONTENT_TYPES = {
     "image/webp": ".webp",
     "image/avif": ".avif",
 }
+# Regexes used while walking every HTML node — precompiled to avoid per-node cache churn.
+_WHITESPACE_RE = re.compile(r"\s+")
+_TRAILING_WS_BEFORE_NEWLINE_RE = re.compile(r"[ \t]+\n")
+_LEADING_WS_AFTER_NEWLINE_RE = re.compile(r"\n[ \t]+")
+_EXCESS_NEWLINES_RE = re.compile(r"\n{3,}")
+_CODE_LANG_RE = re.compile(r"(?:language|lang)-([A-Za-z0-9_+-]+)")
 
 
 @dataclass(frozen=True)
@@ -330,12 +336,12 @@ class CsdnMarkdownRenderer:
 
     @staticmethod
     def _inline_text(value: str) -> str:
-        return re.sub(r"\s+", " ", html.unescape(str(value or "")).replace("\xa0", " "))
+        return _WHITESPACE_RE.sub(" ", html.unescape(str(value or "")).replace("\xa0", " "))
 
     def _inline(self, value: str) -> str:
-        text = re.sub(r"[ \t]+\n", "\n", value)
-        text = re.sub(r"\n[ \t]+", "\n", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = _TRAILING_WS_BEFORE_NEWLINE_RE.sub("\n", value)
+        text = _LEADING_WS_AFTER_NEWLINE_RE.sub("\n", text)
+        text = _EXCESS_NEWLINES_RE.sub("\n\n", text)
         return text
 
     def _text(self, node: HtmlNode) -> str:
@@ -353,13 +359,13 @@ class CsdnMarkdownRenderer:
     def _code_language(node: HtmlNode) -> str:
         classes = node.attrs.get("class", "").split()
         for value in classes:
-            match = re.search(r"(?:language|lang)-([A-Za-z0-9_+-]+)", value)
+            match = _CODE_LANG_RE.search(value)
             if match:
                 return match.group(1).lower()
         for child in node.children:
             if isinstance(child, HtmlNode):
                 for value in child.attrs.get("class", "").split():
-                    match = re.search(r"(?:language|lang)-([A-Za-z0-9_+-]+)", value)
+                    match = _CODE_LANG_RE.search(value)
                     if match:
                         return match.group(1).lower()
         return ""
@@ -367,8 +373,8 @@ class CsdnMarkdownRenderer:
     @staticmethod
     def _normalize(value: str) -> str:
         text = value.replace("\r\n", "\n").replace("\r", "\n")
-        text = re.sub(r"[ \t]+\n", "\n", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = _TRAILING_WS_BEFORE_NEWLINE_RE.sub("\n", text)
+        text = _EXCESS_NEWLINES_RE.sub("\n\n", text)
         return text.strip() + "\n" if text.strip() else ""
 
 

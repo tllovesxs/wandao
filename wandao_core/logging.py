@@ -30,6 +30,7 @@ SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"\b(cookie|token|secret|password|authorization|signature|access[_-]?key|api[_-]?key)\s*([:=])\s*[^\s,&;)]+",
     re.I,
 )
+BEARER_TOKEN_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]+", re.I)
 
 
 def structured_logs_enabled() -> bool:
@@ -65,7 +66,7 @@ def mask_sensitive(value: Any) -> Any:
         return [mask_sensitive(item) for item in value]
     if isinstance(value, str):
         text = SIGNATURE_QUERY_RE.sub(r"\1***", value)
-        text = re.sub(r"(Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1***", text, flags=re.I)
+        text = BEARER_TOKEN_RE.sub(r"\1***", text)
         text = SENSITIVE_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}***", text)
         return text
     return value
@@ -171,7 +172,3 @@ def emit_legacy(
 
 def print_text(message: str) -> None:
     print(message, flush=True)
-    try:
-        sys.stdout.flush()
-    except Exception:
-        pass

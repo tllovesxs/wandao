@@ -933,64 +933,99 @@ async (fallbackTitle) => {
       || document.querySelector(".editor-container");
     return [...(root ? root.children : [])].filter(el => el.getAttribute && el.getAttribute("data-block-type"));
   }
+
+  /* feishu-scroll-api:start */
+  function resolveFeishuDocScroller(root, doc) {
+    const ownerDocument = doc || document;
+    let el = root;
+    while (el && el !== ownerDocument.body) {
+      const style = getComputedStyle(el);
+      if (el.scrollHeight > el.clientHeight + 30 && /(auto|scroll)/.test(style.overflowY)) return el;
+      el = el.parentElement;
+    }
+    return ownerDocument.scrollingElement || ownerDocument.documentElement;
+  }
+
+  async function collectFeishuDocBlocks(options) {
+    const {
+      scroller,
+      document: doc,
+      sleep,
+      setScroll: setScrollOpt,
+      currentBlocks: listBlocks,
+      renderBlock: renderOne,
+      maxIterations = 80,
+    } = options;
+    const ownerDocument = doc || document;
+    const scrollWindow = scroller === ownerDocument.scrollingElement
+      || scroller === ownerDocument.documentElement
+      || scroller === ownerDocument.body;
+    const setScroll = setScrollOpt || function setScroll(y) {
+      if (scrollWindow) window.scrollTo(0, y);
+      else {
+        scroller.scrollTop = y;
+        try { scroller.dispatchEvent(new Event("scroll", {bubbles: true})); } catch (_) {}
+      }
+    };
+    const seen = new Set();
+    const rendered = [];
+    const collect = () => {
+      for (const block of listBlocks()) {
+        const key = block.getAttribute("data-record-id")
+          || block.getAttribute("data-block-id")
+          || `${block.getAttribute("data-block-type")}:${clean(block.innerText || block.textContent || "").slice(0, 80)}:${rendered.length}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const md = renderOne(block);
+        if (md) rendered.push(md);
+      }
+    };
+    setScroll(0);
+    await sleep(220);
+    collect();
+    let y = 0;
+    let stable = 0;
+    let scrollIterations = 0;
+    for (let i = 0; i < maxIterations; i++) {
+      scrollIterations = i + 1;
+      const viewport = scrollWindow ? window.innerHeight : scroller.clientHeight;
+      const maxY = Math.max(0, scroller.scrollHeight - viewport);
+      if (y >= maxY && stable >= 2) break;
+      y = Math.min(maxY, y + Math.max(360, Math.floor(viewport * 0.7)));
+      setScroll(y);
+      await sleep(260);
+      const before = rendered.length;
+      collect();
+      stable = rendered.length === before ? stable + 1 : 0;
+      if (y >= maxY) stable += 1;
+    }
+    setScroll(0);
+    return { rendered, blockCount: rendered.length, scrollIterations };
+  }
+
+  const api = { resolveFeishuDocScroller, collectFeishuDocBlocks };
+  if (typeof globalThis !== "undefined") globalThis.__feishuConverterScrollApi = api;
+  /* feishu-scroll-api:end */
+
   const pageTitle = clean((document.querySelector(".page-block-content") || {}).innerText || fallbackTitle || document.title.replace(/\s*-\s*飞书云文档\s*$/, ""));
   const initialRoot = document.querySelector(".root-render-unit-container")
     || document.querySelector(".page-main-item.editor")
     || document.querySelector(".editor-container")
     || document.body;
-  function findScroller(root) {
-    let el = root;
-    while (el && el !== document.body) {
-      const style = getComputedStyle(el);
-      if (el.scrollHeight > el.clientHeight + 30 && /(auto|scroll)/.test(style.overflowY)) return el;
-      el = el.parentElement;
-    }
-    return document.scrollingElement || document.documentElement;
-  }
-  const scroller = findScroller(initialRoot);
-  const scrollWindow = scroller === document.scrollingElement || scroller === document.documentElement || scroller === document.body;
-  function setScroll(y) {
-    if (scrollWindow) window.scrollTo(0, y);
-    else {
-      scroller.scrollTop = y;
-      scroller.dispatchEvent(new Event("scroll", {bubbles: true}));
-    }
-  }
-  const seen = new Set();
-  const rendered = [];
+  const scroller = resolveFeishuDocScroller(initialRoot, document);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const collect = () => {
-    for (const block of currentBlocks()) {
-      const key = block.getAttribute("data-record-id")
-        || block.getAttribute("data-block-id")
-        || `${block.getAttribute("data-block-type")}:${clean(block.innerText).slice(0, 80)}:${rendered.length}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const md = renderBlock(block);
-      if (md) rendered.push(md);
-    }
-  };
-  setScroll(0);
-  await sleep(220);
-  collect();
-  let y = 0;
-  let stable = 0;
-  for (let i = 0; i < 80; i++) {
-    const viewport = scrollWindow ? window.innerHeight : scroller.clientHeight;
-    const maxY = Math.max(0, scroller.scrollHeight - viewport);
-    if (y >= maxY && stable >= 2) break;
-    y = Math.min(maxY, y + Math.max(360, Math.floor(viewport * 0.7)));
-    setScroll(y);
-    await sleep(260);
-    const before = rendered.length;
-    collect();
-    stable = rendered.length === before ? stable + 1 : 0;
-    if (y >= maxY) stable += 1;
-  }
-  setScroll(0);
-  const body = rendered.filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+  const collected = await collectFeishuDocBlocks({
+    root: initialRoot,
+    scroller,
+    document,
+    sleep,
+    currentBlocks,
+    renderBlock,
+    maxIterations: 80,
+  });
+  const body = collected.rendered.filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
   const markdown = "# " + pageTitle + "\n\n" + body + "\n";
-  return {title: pageTitle, markdown, images: [...new Set(images)], blockCount: rendered.length, textLength: body.length, renderer: "native_doc"};
+  return {title: pageTitle, markdown, images: [...new Set(images)], blockCount: collected.blockCount, textLength: body.length, renderer: "native_doc"};
 }
 """
 

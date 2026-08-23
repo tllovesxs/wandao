@@ -937,11 +937,44 @@ async (fallbackTitle) => {
   /* feishu-scroll-api:start */
   function resolveFeishuDocScroller(root, doc) {
     const ownerDocument = doc || document;
+    const candidates = [];
+    const pushUnique = (el) => {
+      if (el && !candidates.includes(el)) candidates.push(el);
+    };
     let el = root;
     while (el && el !== ownerDocument.body) {
       const style = getComputedStyle(el);
-      if (el.scrollHeight > el.clientHeight + 30 && /(auto|scroll)/.test(style.overflowY)) return el;
+      if (el.scrollHeight > el.clientHeight + 30 && /(auto|scroll)/.test(style.overflowY || "")) {
+        pushUnique(el);
+      }
       el = el.parentElement;
+    }
+    const shell = (root && root.closest)
+      ? (root.closest(".page-main") || root.closest(".editor-container") || root.closest(".wiki-main") || root)
+      : root;
+    const allowlistRoots = [shell, ownerDocument].filter(Boolean);
+    for (const scope of allowlistRoots) {
+      try {
+        for (const node of scope.querySelectorAll(".page-main, [class*=\"scroll\"]")) {
+          pushUnique(node);
+        }
+      } catch (_) {}
+    }
+    // Prefer deepest (closest to editor root) candidates first.
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      const maxScroll = Math.max(0, (candidate.scrollHeight || 0) - (candidate.clientHeight || 0));
+      if (maxScroll <= 0) continue;
+      const original = candidate.scrollTop || 0;
+      const probe = Math.min(42, maxScroll);
+      try {
+        candidate.scrollTop = probe;
+        const accepted = Math.abs((candidate.scrollTop || 0) - original) > 0.5;
+        candidate.scrollTop = original;
+        if (accepted) return candidate;
+      } catch (_) {
+        try { candidate.scrollTop = original; } catch (__) {}
+      }
     }
     return ownerDocument.scrollingElement || ownerDocument.documentElement;
   }
@@ -954,7 +987,7 @@ async (fallbackTitle) => {
       setScroll: setScrollOpt,
       currentBlocks: listBlocks,
       renderBlock: renderOne,
-      maxIterations = 80,
+      maxIterations = 120,
     } = options;
     const ownerDocument = doc || document;
     const scrollWindow = scroller === ownerDocument.scrollingElement
@@ -990,14 +1023,15 @@ async (fallbackTitle) => {
       scrollIterations = i + 1;
       const viewport = scrollWindow ? window.innerHeight : scroller.clientHeight;
       const maxY = Math.max(0, scroller.scrollHeight - viewport);
-      if (y >= maxY && stable >= 2) break;
+      if (y >= maxY && stable >= 4) break;
       y = Math.min(maxY, y + Math.max(360, Math.floor(viewport * 0.7)));
       setScroll(y);
       await sleep(260);
+      const heightBefore = scroller.scrollHeight;
       const before = rendered.length;
       collect();
-      stable = rendered.length === before ? stable + 1 : 0;
-      if (y >= maxY) stable += 1;
+      if (rendered.length > before || scroller.scrollHeight > heightBefore) stable = 0;
+      else stable += 1;
     }
     setScroll(0);
     return { rendered, blockCount: rendered.length, scrollIterations };
@@ -1021,7 +1055,7 @@ async (fallbackTitle) => {
     sleep,
     currentBlocks,
     renderBlock,
-    maxIterations: 80,
+    maxIterations: 120,
   });
   const body = collected.rendered.filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
   const markdown = "# " + pageTitle + "\n\n" + body + "\n";
@@ -1254,16 +1288,6 @@ def wait_for_doc_ready(
         time.sleep(0.5)
     kind = "Markdown 文件预览" if markdown_file else "文档正文"
     raise ExportError(f"飞书{kind}没有加载完成：{(node or {}).get('title') or '未命名'}")
-
-
-def materialize_doc_dom(cdp: CDPClient) -> None:
-    cdp.evaluate(
-        "(async () => {"
-        "const h = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);"
-        "for (const p of [0, 0.25, 0.5, 0.75, 1, 0]) { window.scrollTo(0, Math.floor(h * p)); await new Promise(r => setTimeout(r, 160)); }"
-        "})()",
-        timeout=10,
-    )
 
 
 def extract_doc_markdown_current(

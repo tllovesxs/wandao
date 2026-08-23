@@ -57,12 +57,12 @@ Keep incremental collection into `seen` / `rendered`, but change termination:
 
 - Recompute `maxY` every iteration from current `scrollHeight` / viewport.
 - After each scroll, wait briefly, then collect.
-- Treat “bottom reached” as provisional: require several consecutive stable rounds where **both**:
+- Treat “bottom reached” as provisional: require **4** consecutive stable rounds where **both**:
   - no new blocks were collected, and
   - `scrollHeight` did not grow.
 - If height grows or new blocks appear, reset the stable counter and continue.
-- Keep a hard iteration / time ceiling so a broken page cannot hang forever; surface whatever was collected (same as today) rather than inventing a new failure mode in this change.
-- Slightly increase bottom patience versus today’s `stable >= 2` with an extra `stable += 1` when already at bottom, which currently exits too eagerly while lazy content is still mounting.
+- Keep a hard ceiling of about **120** scroll iterations (up from 80) so a broken page cannot hang forever; surface whatever was collected (same as today) rather than inventing a new failure mode in this change.
+- Remove today’s extra `stable += 1` when already at `maxY`. That double-counts bottom contact and exits before lazy mounts finish.
 
 Do not change Markdown rendering rules in this pass.
 
@@ -77,7 +77,7 @@ Return existing converter fields (`blockCount`, `textLength`, `renderer: "native
 
 ### 5. Testing
 
-Add focused tests around the scroll/collection behavior, preferably by extracting the JS helpers into a testable string/module boundary already used by the exporter, or by evaluating the resolver/loop against a fake DOM in a Node/jsdom-style harness if the repo already has one; otherwise, unit-test the Python-side composition and include a pure-JS fixture exercised by the existing test runner if practical.
+Extract the scroll-container resolver and scroll/collect loop from `FEISHU_CONVERTER_JS` into named JS helper functions inside the same Python string (or a small adjacent JS snippet loaded by tests). Drive those helpers from Python unit tests with a minimal fake DOM object (no live browser, no Feishu credentials).
 
 Minimum scenarios:
 
@@ -85,7 +85,7 @@ Minimum scenarios:
 2. Lazy height growth after first bottom contact continues collection until height stabilizes.
 3. Existing Feishu session / Markdown-file tests still pass.
 
-Because live Feishu DOM is unavailable in CI, tests should use synthetic DOM fixtures that mimic:
+Synthetic fixtures must mimic:
 
 - nested overflow scroller
 - blocks mounted only after scrollTop crosses thresholds

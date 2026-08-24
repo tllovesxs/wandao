@@ -932,11 +932,22 @@ async (fallbackTitle) => {
       || document.querySelector(".page-main-item.editor")
       || document.querySelector(".editor-container");
     if (!root) return [];
-    // Prefer every top-level logical block (not nested inside another block) so
-    // Feishu's nested render-unit wrappers are not missed.
+    // Prefer every top-level logical block under the editor root. Walk parents
+    // only up to `root` — do NOT use Element.closest(), which would also match
+    // outer shell nodes that happen to carry data-block-type and would filter
+    // out every real content block (producing empty exports).
     const all = [...root.querySelectorAll("[data-block-type]")];
-    if (all.length) return all.filter(el => !el.parentElement || !el.parentElement.closest("[data-block-type]"));
-    return [...root.children].filter(el => el.getAttribute && el.getAttribute("data-block-type"));
+    if (!all.length) {
+      return [...root.children].filter(el => el.getAttribute && el.getAttribute("data-block-type"));
+    }
+    return all.filter((el) => {
+      let parent = el.parentElement;
+      while (parent && parent !== root) {
+        if (parent.getAttribute && parent.getAttribute("data-block-type")) return false;
+        parent = parent.parentElement;
+      }
+      return true;
+    });
   }
 
   /* feishu-scroll-api:start */

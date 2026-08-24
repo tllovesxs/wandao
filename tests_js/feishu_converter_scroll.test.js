@@ -261,3 +261,45 @@ test('resolveFeishuDocScroller skips scrollbar chrome that cannot scroll', () =>
   const resolved = api.resolveFeishuDocScroller(root, document);
   assert.equal(resolved, scroller);
 });
+
+test('collectFeishuDocBlocks mounts blocks via scrollIntoView nudging', async () => {
+  const api = loadScrollApi();
+  const { document, window } = parseHTML(`<!doctype html><html><body>
+    <div class="root-render-unit-container">
+      <div class="render-unit-wrapper"></div>
+    </div>
+  </body></html>`);
+  const wrapper = document.querySelector('.render-unit-wrapper');
+  const root = document.querySelector('.root-render-unit-container');
+  // The collector no longer depends on a real scroller's scrollTop; a minimal
+  // window-scroll fallback is enough as long as scrollIntoView mounts blocks.
+  let nextId = 3;
+  const mk = (id, text) => {
+    const block = document.createElement('div');
+    block.setAttribute('data-block-type', 'paragraph');
+    block.setAttribute('data-block-id', id);
+    block.textContent = text;
+    block.scrollIntoView = () => {
+      if (wrapper.childElementCount < 4) {
+        const idNum = nextId++;
+        mk(`block-${idNum}`, `block-${idNum}`);
+      }
+    };
+    wrapper.appendChild(block);
+  };
+  mk('block-1', 'block-1');
+  mk('block-2', 'block-2');
+  const sleep = async () => {};
+  const currentBlocks = () => [...wrapper.children].filter((el) => el.getAttribute('data-block-type'));
+  const renderBlock = (el) => el.textContent || '';
+  const result = await api.collectFeishuDocBlocks({
+    root,
+    scroller: document.documentElement,
+    document,
+    sleep,
+    currentBlocks,
+    renderBlock,
+    maxIterations: 40,
+  });
+  assert.deepEqual(result.rendered, ['block-1', 'block-2', 'block-3', 'block-4']);
+});

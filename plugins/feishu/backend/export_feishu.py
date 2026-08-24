@@ -1087,8 +1087,10 @@ async (fallbackTitle) => {
       } catch (_) {}
       return out;
     };
+    const containsContent = (el) => Boolean(
+      el && el.querySelector && (el.querySelector("[data-block-type]") || el.querySelector(".ace-line"))
+    );
     const stepScrollables = (scrollables) => {
-      let moved = false;
       for (const el of scrollables) {
         try {
           const viewport = el.clientHeight || (win && win.innerHeight) || 600;
@@ -1098,12 +1100,10 @@ async (fallbackTitle) => {
           const step = Math.max(240, Math.floor(viewport * 0.75));
           // Even when already at the bottom, re-assign scrollTop = maxY so
           // Feishu's lazy-mount listeners (and our test fixtures) fire again
-          // after height growth. Skipping the re-assign was why later docs
-          // stopped scrolling after the first viewport.
+          // after height growth.
           const target = before >= maxY - 2 ? maxY : Math.min(maxY, before + step);
           el.scrollTop = target;
           try { el.dispatchEvent(new Event("scroll", {bubbles: true})); } catch (_) {}
-          if (Math.abs((el.scrollTop || 0) - before) > 0.5) moved = true;
         } catch (_) {}
       }
       // Always also scroll the last mounted block into view — this scrolls every
@@ -1113,11 +1113,15 @@ async (fallbackTitle) => {
         const last = blocks[blocks.length - 1];
         if (last && last.scrollIntoView) last.scrollIntoView({ block: "end", inline: "nearest" });
       } catch (_) {}
-      return moved;
     };
-    const allAtBottom = (scrollables) => {
-      if (!scrollables.length) return false;
-      return scrollables.every((el) => {
+    // Only require content-bearing scrollers to be at bottom. Outer window /
+    // shell panes often stay "not at bottom" forever and caused a full 180-iter
+    // stall + false incomplete after the real doc body was already collected.
+    const contentAtBottom = (scrollables) => {
+      const content = scrollables.filter(containsContent);
+      const pool = content.length ? content : scrollables;
+      if (!pool.length) return false;
+      return pool.every((el) => {
         try {
           const maxY = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
           return maxY <= 0 || (el.scrollTop || 0) >= maxY - 2;
@@ -1139,7 +1143,9 @@ async (fallbackTitle) => {
     };
 
     // Start at top, collect the first viewport, then keep stepping EVERY
-    // scrollable until no new blocks appear for several rounds while at bottom.
+    // scrollable until no new blocks / height growth for several rounds while
+    // the content scroller is at bottom. Do NOT treat scrollTop motion alone
+    // as progress — that kept the loop alive after the doc was already done.
     let scrollables = findScrollables();
     resetScroll(scrollables);
     await sleep(220);
@@ -1147,21 +1153,31 @@ async (fallbackTitle) => {
     let stable = 0;
     let scrollIterations = 0;
     let finalScrollHeight = 0;
+    let reachedBottom = false;
     for (let i = 0; i < maxIterations; i++) {
       scrollIterations = i + 1;
       scrollables = findScrollables();
       const heightBefore = maxScrollHeight(scrollables);
-      const moved = stepScrollables(scrollables);
-      await sleep(320);
+      stepScrollables(scrollables);
+      const atBottom = contentAtBottom(scrollables);
+      await sleep(atBottom ? 180 : 280);
       const changed = collect();
       finalScrollHeight = maxScrollHeight(scrollables);
-      const progressed = changed > 0 || finalScrollHeight > heightBefore + 2 || moved;
+      const progressed = changed > 0 || finalScrollHeight > heightBefore + 2;
       if (progressed) stable = 0;
       else stable += 1;
-      if (stable >= 4 && allAtBottom(scrollables)) break;
+      if (atBottom) reachedBottom = true;
+      if (stable >= 3 && atBottom) break;
     }
     resetScroll(scrollables);
-    return { rendered, blockCount: rendered.length, scrollIterations, finalScrollHeight };
+    return {
+      rendered,
+      blockCount: rendered.length,
+      scrollIterations,
+      finalScrollHeight,
+      reachedBottom,
+      hitIterationCeiling: scrollIterations >= maxIterations,
+    };
   }
 
   const api = { resolveFeishuDocScroller, collectFeishuDocBlocks };
@@ -1195,7 +1211,11 @@ async (fallbackTitle) => {
   result.scrollIterations = collected.scrollIterations;
   result.finalScrollHeight = collected.finalScrollHeight;
   if (scrollerHint) result.scroller = scrollerHint;
-  if (collected.scrollIterations >= 180) result.incomplete = true;
+  // Only flag incomplete when we exhausted the iteration ceiling WITHOUT
+  // reaching the bottom of the content scroller. A clean bottom stop means the
+  // document was fully collected; hitting the ceiling by itself used to cause
+  // false "内容可能不完整" reports on fully-exported docs.
+  if (collected.hitIterationCeiling && !collected.reachedBottom) result.incomplete = true;
   return result;
 }
 """

@@ -303,3 +303,59 @@ test('collectFeishuDocBlocks mounts blocks via scrollIntoView nudging', async ()
   });
   assert.deepEqual(result.rendered, ['block-1', 'block-2', 'block-3', 'block-4']);
 });
+
+test('collectFeishuDocBlocks stops cleanly at bottom without false incomplete', async () => {
+  const api = loadScrollApi();
+  const { document, window } = parseHTML(`<!doctype html><html><body>
+    <div class="page-scroller" data-overflow-y="auto" style="height:200px; overflow:auto">
+      <div class="root-render-unit-container"><div class="render-unit-wrapper"></div></div>
+    </div>
+  </body></html>`);
+  const scroller = document.querySelector('.page-scroller');
+  const wrapper = document.querySelector('.render-unit-wrapper');
+  Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 200 });
+  let scrollHeight = 500;
+  let scrollTop = 0;
+  Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => scrollHeight });
+  Object.defineProperty(scroller, 'scrollTop', {
+    configurable: true,
+    get: () => scrollTop,
+    set: (value) => {
+      scrollTop = Math.min(Math.max(value, 0), scrollHeight - 200);
+      // Mount all blocks on first reach of bottom; after that, nothing grows.
+      if (scrollTop >= scrollHeight - 200 && wrapper.childElementCount < 4) {
+        scrollHeight = 1400;
+        for (const id of ['block-3', 'block-4']) {
+          const block = document.createElement('div');
+          block.setAttribute('data-block-type', 'paragraph');
+          block.setAttribute('data-block-id', id);
+          block.textContent = id;
+          wrapper.appendChild(block);
+        }
+      }
+    },
+  });
+  for (const id of ['block-1', 'block-2']) {
+    const block = document.createElement('div');
+    block.setAttribute('data-block-type', 'paragraph');
+    block.setAttribute('data-block-id', id);
+    block.textContent = id;
+    wrapper.appendChild(block);
+  }
+  const sleep = async () => {};
+  const currentBlocks = () => [...wrapper.children].filter((el) => el.getAttribute('data-block-type'));
+  const renderBlock = (el) => el.textContent || '';
+  const result = await api.collectFeishuDocBlocks({
+    root: document.querySelector('.root-render-unit-container'),
+    scroller,
+    document,
+    sleep,
+    currentBlocks,
+    renderBlock,
+    maxIterations: 180,
+  });
+  assert.deepEqual(result.rendered, ['block-1', 'block-2', 'block-3', 'block-4']);
+  assert.equal(result.reachedBottom, true);
+  assert.equal(result.hitIterationCeiling, false);
+  assert.ok(result.scrollIterations < 40, `should stop near bottom, got ${result.scrollIterations}`);
+});

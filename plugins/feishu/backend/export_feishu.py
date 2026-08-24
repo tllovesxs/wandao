@@ -931,7 +931,12 @@ async (fallbackTitle) => {
       || document.querySelector(".root-render-unit-container")
       || document.querySelector(".page-main-item.editor")
       || document.querySelector(".editor-container");
-    return [...(root ? root.children : [])].filter(el => el.getAttribute && el.getAttribute("data-block-type"));
+    if (!root) return [];
+    // Prefer every top-level logical block (not nested inside another block) so
+    // Feishu's nested render-unit wrappers are not missed.
+    const all = [...root.querySelectorAll("[data-block-type]")];
+    if (all.length) return all.filter(el => !el.parentElement || !el.parentElement.closest("[data-block-type]"));
+    return [...root.children].filter(el => el.getAttribute && el.getAttribute("data-block-type"));
   }
 
   /* feishu-scroll-api:start */
@@ -987,7 +992,7 @@ async (fallbackTitle) => {
       setScroll: setScrollOpt,
       currentBlocks: listBlocks,
       renderBlock: renderOne,
-      maxIterations = 120,
+      maxIterations = 180,
     } = options;
     const ownerDocument = doc || document;
     const scrollWindow = scroller === ownerDocument.scrollingElement
@@ -1000,18 +1005,33 @@ async (fallbackTitle) => {
         try { scroller.dispatchEvent(new Event("scroll", {bubbles: true})); } catch (_) {}
       }
     };
-    const seen = new Set();
+    // seen: key -> index in rendered; rendered holds md strings. Remounts may
+    // upgrade a block in place, so collect returns {changed, count}.
+    const seen = new Map();
     const rendered = [];
+    const keyFor = (block) => block.getAttribute("data-record-id")
+      || block.getAttribute("data-block-id")
+      || `${block.getAttribute("data-block-type")}:${clean(block.innerText || block.textContent || "").slice(0, 80)}`;
     const collect = () => {
+      let changed = 0;
       for (const block of listBlocks()) {
-        const key = block.getAttribute("data-record-id")
-          || block.getAttribute("data-block-id")
-          || `${block.getAttribute("data-block-type")}:${clean(block.innerText || block.textContent || "").slice(0, 80)}:${rendered.length}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        const key = keyFor(block);
+        if (!key) continue;
         const md = renderOne(block);
-        if (md) rendered.push(md);
+        if (!md) continue;
+        if (seen.has(key)) {
+          const index = seen.get(key);
+          if (md.length > rendered[index].length) {
+            rendered[index] = md;
+            changed += 1;
+          }
+        } else {
+          seen.set(key, rendered.length);
+          rendered.push(md);
+          changed += 1;
+        }
       }
+      return changed;
     };
     setScroll(0);
     await sleep(220);
@@ -1019,22 +1039,26 @@ async (fallbackTitle) => {
     let y = 0;
     let stable = 0;
     let scrollIterations = 0;
+    let heightBefore = scroller.scrollHeight;
     for (let i = 0; i < maxIterations; i++) {
       scrollIterations = i + 1;
       const viewport = scrollWindow ? window.innerHeight : scroller.clientHeight;
       const maxY = Math.max(0, scroller.scrollHeight - viewport);
       if (y >= maxY && stable >= 4) break;
-      y = Math.min(maxY, y + Math.max(360, Math.floor(viewport * 0.7)));
+      const nearBottom = y >= maxY - viewport;
+      const step = nearBottom ? Math.max(120, Math.floor(viewport * 0.2)) : Math.max(360, Math.floor(viewport * 0.7));
+      y = Math.min(maxY, y + step);
       setScroll(y);
-      await sleep(260);
-      const heightBefore = scroller.scrollHeight;
-      const before = rendered.length;
-      collect();
-      if (rendered.length > before || scroller.scrollHeight > heightBefore) stable = 0;
+      const settle = nearBottom ? 500 : 260;
+      await sleep(settle);
+      const changed = collect();
+      const heightAfter = scroller.scrollHeight;
+      if (changed > 0 || heightAfter > heightBefore) stable = 0;
       else stable += 1;
+      heightBefore = heightAfter;
     }
     setScroll(0);
-    return { rendered, blockCount: rendered.length, scrollIterations };
+    return { rendered, blockCount: rendered.length, scrollIterations, finalScrollHeight: heightBefore };
   }
 
   const api = { resolveFeishuDocScroller, collectFeishuDocBlocks };
@@ -1059,7 +1083,17 @@ async (fallbackTitle) => {
   });
   const body = collected.rendered.filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
   const markdown = "# " + pageTitle + "\n\n" + body + "\n";
-  return {title: pageTitle, markdown, images: [...new Set(images)], blockCount: collected.blockCount, textLength: body.length, renderer: "native_doc"};
+  const scrollerHint = (() => {
+    try {
+      return (scroller && scroller.tagName || "") + ":" + (scroller.className ? String(scroller.className).split(/\s+/)[0] || "" : "");
+    } catch (_) { return ""; }
+  })();
+  const result = {title: pageTitle, markdown, images: [...new Set(images)], blockCount: collected.blockCount, textLength: body.length, renderer: "native_doc"};
+  result.scrollIterations = collected.scrollIterations;
+  result.finalScrollHeight = collected.finalScrollHeight;
+  if (scrollerHint) result.scroller = scrollerHint;
+  if (collected.scrollIterations >= 180) result.incomplete = true;
+  return result;
 }
 """
 
@@ -1335,7 +1369,7 @@ def extract_doc_markdown_current(
             value = evaluate_markdown_file(True)
     else:
         wait_for_doc_ready(cdp, timeout=35, args=args, node=node)
-        value = cdp.evaluate(f"({FEISHU_CONVERTER_JS})({js_string(node.get('title') or '未命名')})", timeout=60)
+        value = cdp.evaluate(f"({FEISHU_CONVERTER_JS})({js_string(node.get('title') or '未命名')})", timeout=120)
     if not isinstance(value, dict):
         raise ExportError(f"Unexpected Feishu doc response: {node.get('title')}")
     if value.get("renderer") == "markdown_preview_fallback":
@@ -1817,13 +1851,20 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                         {
                             "title": doc.get("title") or "",
                             "wiki_token": token,
-                            "error": "飞书原始 Markdown 下载失败，已保留页面预览兜底内容，但内容可能不完整",
+                            "error": "飞书原始 Markdown 下载失败，已保留页面预览兜底内容，但内容可能不完整"
+                            if result.get("renderer") == "markdown_preview_fallback"
+                            else "飞书原生文档滚动采集触达上限，内容可能不完整（已保留已采集内容）",
                             "local_path": str(md_path),
                         }
                     )
                 if checkpoint:
                     if incomplete:
-                        checkpoint.fail_item(item_key, "原始 Markdown 下载失败，页面预览兜底内容可能不完整")
+                        checkpoint.fail_item(
+                            item_key,
+                            "原始 Markdown 下载失败，页面预览兜底内容可能不完整"
+                            if result.get("renderer") == "markdown_preview_fallback"
+                            else "原生文档滚动采集触达上限，内容可能不完整",
+                        )
                     elif img_errors:
                         checkpoint.fail_item(item_key, f"{len(img_errors)} 个图片下载失败")
                     else:
@@ -1843,6 +1884,11 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                         "imageSuccessInDoc": count,
                         "imageFailuresInDoc": len(img_errors),
                         "contentIncomplete": incomplete,
+                        "scrollIterations": result.get("scrollIterations"),
+                        "finalScrollHeight": result.get("finalScrollHeight"),
+                        "scroller": result.get("scroller"),
+                        "blockCount": result.get("blockCount"),
+                        "textLength": result.get("textLength"),
                     },
                 )
             except ExportStopped:

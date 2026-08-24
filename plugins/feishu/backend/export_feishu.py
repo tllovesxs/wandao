@@ -1017,17 +1017,17 @@ async (fallbackTitle) => {
 
   async function collectFeishuDocBlocks(options) {
     const {
+      root,
       scroller,
       document: doc,
       sleep,
-      setScroll: setScrollOpt,
       currentBlocks: listBlocks,
       renderBlock: renderOne,
       maxIterations = 180,
     } = options;
-    const ownerDocument = doc || document;
-    // seen: key -> index in rendered; rendered holds md strings. Remounts may
-    // upgrade a block in place, so collect returns the number of changes.
+    const ownerDoc = doc || document;
+    const win = (ownerDoc.defaultView) || (typeof window !== "undefined" ? window : null);
+    // seen: key -> index in rendered; remounts may upgrade a block in place.
     const seen = new Map();
     const rendered = [];
     const keyFor = (block) => block.getAttribute("data-record-id")
@@ -1054,56 +1054,113 @@ async (fallbackTitle) => {
       }
       return changed;
     };
-    const ownerDoc = doc || document;
-    const scrollWindow = scroller === ownerDoc.scrollingElement
-      || scroller === ownerDoc.documentElement
-      || scroller === ownerDoc.body;
-    // Nudge whichever container actually scrolls. scrollIntoView on the last
-    // mounted block makes the browser scroll every real scrollable ancestor,
-    // which is far more robust than guessing which element is Feishu's scroller
-    // (e.g. DIV.scrollbar-container proved to be a dead end).
-    const scrollLastIntoView = () => {
+    // Discover every element that can currently scroll. Feishu often keeps the
+    // real virtual-list scroller nested; the first document after navigate may
+    // respond to window scroll while later documents only respond to an inner
+    // pane. Re-scanning each iteration avoids "first doc scrolls, rest don't".
+    const findScrollables = () => {
+      const out = [];
+      const push = (el) => {
+        if (!el || out.includes(el)) return;
+        const cls = String(el.className || "").toLowerCase();
+        if (cls.includes("scrollbar-container")) return;
+        let style;
+        try { style = getComputedStyle(el); } catch (_) { return; }
+        if (!/(auto|scroll)/.test(style.overflowY || "")) return;
+        const maxScroll = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+        if (maxScroll <= 0) return;
+        out.push(el);
+      };
+      let el = root;
+      while (el && el !== ownerDoc.body) {
+        push(el);
+        el = el.parentElement;
+      }
+      push(scroller);
+      push(ownerDoc.scrollingElement);
+      push(ownerDoc.documentElement);
+      push(ownerDoc.body);
+      try {
+        for (const node of ownerDoc.querySelectorAll("[class*=\"scroll\"], .page-main, .editor-container, .wiki-main")) {
+          push(node);
+        }
+      } catch (_) {}
+      return out;
+    };
+    const stepScrollables = (scrollables) => {
+      let moved = false;
+      for (const el of scrollables) {
+        try {
+          const viewport = el.clientHeight || (win && win.innerHeight) || 600;
+          const maxY = Math.max(0, (el.scrollHeight || 0) - viewport);
+          if (maxY <= 0) continue;
+          const before = el.scrollTop || 0;
+          const step = Math.max(240, Math.floor(viewport * 0.75));
+          // Even when already at the bottom, re-assign scrollTop = maxY so
+          // Feishu's lazy-mount listeners (and our test fixtures) fire again
+          // after height growth. Skipping the re-assign was why later docs
+          // stopped scrolling after the first viewport.
+          const target = before >= maxY - 2 ? maxY : Math.min(maxY, before + step);
+          el.scrollTop = target;
+          try { el.dispatchEvent(new Event("scroll", {bubbles: true})); } catch (_) {}
+          if (Math.abs((el.scrollTop || 0) - before) > 0.5) moved = true;
+        } catch (_) {}
+      }
+      // Always also scroll the last mounted block into view — this scrolls every
+      // real ancestor the browser knows about, even ones we failed to list.
       try {
         const blocks = listBlocks();
         const last = blocks[blocks.length - 1];
-        if (last && last.scrollIntoView) last.scrollIntoView({ block: "end" });
+        if (last && last.scrollIntoView) last.scrollIntoView({ block: "end", inline: "nearest" });
       } catch (_) {}
+      return moved;
     };
-    const nudgeScroller = () => {
-      try {
-        if (!scroller || scroller.scrollTop === undefined) return;
-        const maxY = Math.max(0, (scroller.scrollHeight || 0) - (scroller.clientHeight || 0));
-        if (maxY > 0) {
-          scroller.scrollTop = maxY;
-          try { scroller.dispatchEvent(new Event("scroll", {bubbles: true})); } catch (_) {}
-        }
-      } catch (_) {}
+    const allAtBottom = (scrollables) => {
+      if (!scrollables.length) return false;
+      return scrollables.every((el) => {
+        try {
+          const maxY = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+          return maxY <= 0 || (el.scrollTop || 0) >= maxY - 2;
+        } catch (_) { return true; }
+      });
     };
-    const resetScroll = () => {
-      try {
-        if (scroller) {
-          if (scrollWindow) ownerDoc.defaultView && ownerDoc.defaultView.scrollTo(0, 0);
-          else scroller.scrollTop = 0;
-        }
-      } catch (_) {}
+    const maxScrollHeight = (scrollables) => {
+      let best = 0;
+      for (const el of scrollables) {
+        try { best = Math.max(best, el.scrollHeight || 0); } catch (_) {}
+      }
+      return best;
     };
+    const resetScroll = (scrollables) => {
+      for (const el of scrollables) {
+        try { el.scrollTop = 0; } catch (_) {}
+      }
+      try { if (win) win.scrollTo(0, 0); } catch (_) {}
+    };
+
+    // Start at top, collect the first viewport, then keep stepping EVERY
+    // scrollable until no new blocks appear for several rounds while at bottom.
+    let scrollables = findScrollables();
+    resetScroll(scrollables);
+    await sleep(220);
     collect();
     let stable = 0;
     let scrollIterations = 0;
     let finalScrollHeight = 0;
     for (let i = 0; i < maxIterations; i++) {
       scrollIterations = i + 1;
+      scrollables = findScrollables();
+      const heightBefore = maxScrollHeight(scrollables);
+      const moved = stepScrollables(scrollables);
+      await sleep(320);
       const changed = collect();
-      scrollLastIntoView();
-      nudgeScroller();
-      await sleep(280);
-      const changedAfter = collect();
-      try { finalScrollHeight = scroller ? (scroller.scrollHeight || 0) : 0; } catch (_) {}
-      if (changed + changedAfter > 0) stable = 0;
+      finalScrollHeight = maxScrollHeight(scrollables);
+      const progressed = changed > 0 || finalScrollHeight > heightBefore + 2 || moved;
+      if (progressed) stable = 0;
       else stable += 1;
-      if (stable >= 4) break;
+      if (stable >= 4 && allAtBottom(scrollables)) break;
     }
-    resetScroll();
+    resetScroll(scrollables);
     return { rendered, blockCount: rendered.length, scrollIterations, finalScrollHeight };
   }
 
@@ -1125,7 +1182,7 @@ async (fallbackTitle) => {
     sleep,
     currentBlocks,
     renderBlock,
-    maxIterations: 120,
+    maxIterations: 180,
   });
   const body = collected.rendered.filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
   const markdown = "# " + pageTitle + "\n\n" + body + "\n";

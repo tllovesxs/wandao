@@ -962,42 +962,57 @@ async (fallbackTitle) => {
     const pushUnique = (el) => {
       if (el && !candidates.includes(el)) candidates.push(el);
     };
+    // 1) Ancestors of the editor root.
     let el = root;
     while (el && el !== ownerDocument.body) {
-      const style = getComputedStyle(el);
-      if (el.scrollHeight > el.clientHeight + 30 && /(auto|scroll)/.test(style.overflowY || "")) {
-        pushUnique(el);
-      }
+      pushUnique(el);
       el = el.parentElement;
     }
+    // 2) Known Feishu doc shells near the editor (short allowlist).
     const shell = (root && root.closest)
       ? (root.closest(".page-main") || root.closest(".editor-container") || root.closest(".wiki-main") || root)
       : root;
     const allowlistRoots = [shell, ownerDocument].filter(Boolean);
     for (const scope of allowlistRoots) {
       try {
-        for (const node of scope.querySelectorAll(".page-main, [class*=\"scroll\"]")) {
+        for (const node of scope.querySelectorAll(".page-main, .editor-container, [class*=\"scroll\"]")) {
           pushUnique(node);
         }
       } catch (_) {}
     }
-    // Prefer deepest (closest to editor root) candidates first.
-    for (let i = 0; i < candidates.length; i++) {
-      const candidate = candidates[i];
-      const maxScroll = Math.max(0, (candidate.scrollHeight || 0) - (candidate.clientHeight || 0));
-      if (maxScroll <= 0) continue;
-      const original = candidate.scrollTop || 0;
-      const probe = Math.min(42, maxScroll);
+    const isScrollbarChrome = (el) => {
+      const cls = String(el.className || "").toLowerCase();
+      if (cls.includes("scrollbar-container")) return true;
+      return false;
+    };
+    const acceptsScroll = (el) => {
+      if (isScrollbarChrome(el)) return false;
+      let style;
+      try { style = getComputedStyle(el); } catch (_) { return false; }
+      if (!/(auto|scroll)/.test(style.overflowY || "")) return false;
+      const maxScroll = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+      if (maxScroll <= 0) return false;
+      const original = el.scrollTop || 0;
+      const probe = Math.min(64, maxScroll);
       try {
-        candidate.scrollTop = probe;
-        const accepted = Math.abs((candidate.scrollTop || 0) - original) > 0.5;
-        candidate.scrollTop = original;
-        if (accepted) return candidate;
+        el.scrollTop = probe;
+        const accepted = Math.abs((el.scrollTop || 0) - original) > 0.5;
+        el.scrollTop = original;
+        return accepted;
       } catch (_) {
-        try { candidate.scrollTop = original; } catch (__) {}
+        try { el.scrollTop = original; } catch (__) {}
+        return false;
       }
-    }
-    return ownerDocument.scrollingElement || ownerDocument.documentElement;
+    };
+    const containsContent = (el) => Boolean(
+      el && el.querySelector && (el.querySelector("[data-block-type]") || el.querySelector(".ace-line"))
+    );
+    const active = candidates.filter(acceptsScroll);
+    // Prefer a scroller that actually contains document blocks (the deepest,
+    // nearest the editor root). Skip scrollbar chrome like .scrollbar-container.
+    const withContent = active.filter(containsContent);
+    const pool = withContent.length ? withContent : active;
+    return pool[0] || ownerDocument.scrollingElement || ownerDocument.documentElement;
   }
 
   async function collectFeishuDocBlocks(options) {

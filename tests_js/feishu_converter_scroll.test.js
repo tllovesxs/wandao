@@ -223,3 +223,41 @@ test('collectFeishuDocBlocks upgrades a partially mounted block in place', async
   });
   assert.deepEqual(result.rendered, ['partial text plus the rest of the sentence https://example.com/x']);
 });
+
+test('resolveFeishuDocScroller skips scrollbar chrome that cannot scroll', () => {
+  const api = loadScrollApi();
+  const { document, window } = parseHTML(`<!doctype html><html><body>
+    <div class="page-scroller" data-overflow-y="auto" style="height:200px; overflow:auto">
+      <div class="scrollbar-container" data-overflow-y="auto" style="height:200px">
+        <div class="root-render-unit-container">
+          <div class="render-unit-wrapper">
+            <div data-block-type="paragraph" data-block-id="a">hello</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body></html>`);
+  const scroller = document.querySelector('.page-scroller');
+  const chrome = document.querySelector('.scrollbar-container');
+  const root = document.querySelector('.root-render-unit-container');
+  let chromeHeight = 200;
+  Object.defineProperty(chrome, 'clientHeight', { configurable: true, get: () => 200 });
+  Object.defineProperty(chrome, 'scrollHeight', { configurable: true, get: () => 200 });
+  let chromeTop = 0;
+  Object.defineProperty(chrome, 'scrollTop', {
+    configurable: true,
+    get: () => chromeTop,
+    set: (value) => { chromeTop = value; },
+  });
+  Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 200 });
+  let scrollerHeight = 600;
+  Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => scrollerHeight });
+  let scrollerTop = 0;
+  Object.defineProperty(scroller, 'scrollTop', {
+    configurable: true,
+    get: () => scrollerTop,
+    set: (value) => { scrollerTop = value; },
+  });
+  const resolved = api.resolveFeishuDocScroller(root, document);
+  assert.equal(resolved, scroller);
+});

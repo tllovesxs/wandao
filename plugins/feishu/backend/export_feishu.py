@@ -932,15 +932,17 @@ async (fallbackTitle) => {
       || document.querySelector(".page-main-item.editor")
       || document.querySelector(".editor-container");
     if (!root) return [];
-    // Prefer every top-level logical block under the editor root. Walk parents
-    // only up to `root` — do NOT use Element.closest(), which would also match
-    // outer shell nodes that happen to carry data-block-type and would filter
-    // out every real content block (producing empty exports).
+    // Prefer direct children of the render-unit wrapper — that is the pre-#129
+    // behaviour that successfully collected content. Also accept nested
+    // top-level blocks under intermediate wrappers, but only when the direct-
+    // child path would otherwise return nothing. Never use Element.closest()
+    // here: Feishu shell nodes may also carry data-block-type and would filter
+    // every real content block out (empty exports).
+    const direct = [...root.children].filter(el => el.getAttribute && el.getAttribute("data-block-type"));
+    if (direct.length) return direct;
     const all = [...root.querySelectorAll("[data-block-type]")];
-    if (!all.length) {
-      return [...root.children].filter(el => el.getAttribute && el.getAttribute("data-block-type"));
-    }
-    return all.filter((el) => {
+    if (!all.length) return [];
+    const topLevel = all.filter((el) => {
       let parent = el.parentElement;
       while (parent && parent !== root) {
         if (parent.getAttribute && parent.getAttribute("data-block-type")) return false;
@@ -948,6 +950,9 @@ async (fallbackTitle) => {
       }
       return true;
     });
+    // If nesting filters everything away (e.g. a shell data-block-type wraps
+    // the whole tree), fall back to the raw query so we still export something.
+    return topLevel.length ? topLevel : all;
   }
 
   /* feishu-scroll-api:start */

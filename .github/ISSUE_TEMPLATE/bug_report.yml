@@ -32,9 +32,16 @@ body:
       label: 错误日志
       description: 建议粘贴软件里的错误报告或运行日志；没有日志可以填写“无”。
       render: text
+  - type: upload
+    id: log_file
+    attributes:
+      label: 上传错误日志文件（可选）
+      description: 日志较长时可以直接拖入文件或点击选择；支持 .log、.txt、.json、.csv、.zip，单个文件最大 25MB。
+    validations:
+      required: false
+      accept: ".log,.txt,.json,.csv,.zip"
   - type: textarea
     id: screenshot
     attributes:
       label: 截图
       description: 可以直接拖拽截图到这里；没有截图可以填写“无”。
-

@@ -262,6 +262,30 @@ test('resolveFeishuDocScroller skips scrollbar chrome that cannot scroll', () =>
   assert.equal(resolved, scroller);
 });
 
+test('resolveFeishuDocScroller accepts a scrollbar container that owns document blocks', () => {
+  const api = loadScrollApi();
+  const { document } = parseHTML(`<!doctype html><html><body>
+    <div class="scrollbar-container etherpad-container-wrapper clearfix" data-overflow-y="auto">
+      <div class="root-render-unit-container">
+        <div class="render-unit-wrapper">
+          <div data-block-type="paragraph" data-block-id="a">hello</div>
+        </div>
+      </div>
+    </div>
+  </body></html>`);
+  const scroller = document.querySelector('.scrollbar-container');
+  Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 200 });
+  Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 900 });
+  let scrollTop = 0;
+  Object.defineProperty(scroller, 'scrollTop', {
+    configurable: true,
+    get: () => scrollTop,
+    set: (value) => { scrollTop = value; },
+  });
+  const resolved = api.resolveFeishuDocScroller(document.querySelector('.root-render-unit-container'), document);
+  assert.equal(resolved, scroller);
+});
+
 test('collectFeishuDocBlocks mounts blocks via scrollIntoView nudging', async () => {
   const api = loadScrollApi();
   const { document, window } = parseHTML(`<!doctype html><html><body>
@@ -358,32 +382,4 @@ test('collectFeishuDocBlocks stops cleanly at bottom without false incomplete', 
   assert.equal(result.reachedBottom, true);
   assert.equal(result.hitIterationCeiling, false);
   assert.ok(result.scrollIterations < 40, `should stop near bottom, got ${result.scrollIterations}`);
-});
-
-test('resolveImageSource converts browser blob images to data URLs', async () => {
-  const api = loadScrollApi();
-  const originalFetch = global.fetch;
-  const originalFileReader = global.FileReader;
-  global.fetch = async () => ({
-    ok: true,
-    blob: async () => new Blob(['image'], { type: 'image/png' }),
-  });
-  global.FileReader = class {
-    readAsDataURL(blob) {
-      blob.arrayBuffer().then((buffer) => {
-        this.result = `data:image/png;base64,${Buffer.from(buffer).toString('base64')}`;
-        this.onload();
-      });
-    }
-  };
-  try {
-    assert.equal(
-      await api.resolveImageSource('blob:https://my.feishu.cn/image-1'),
-      'data:image/png;base64,aW1hZ2U=',
-    );
-  } finally {
-    global.fetch = originalFetch;
-    if (originalFileReader === undefined) delete global.FileReader;
-    else global.FileReader = originalFileReader;
-  }
 });

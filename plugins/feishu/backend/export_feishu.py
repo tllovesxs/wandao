@@ -998,6 +998,41 @@ async (fallbackTitle) => {
     });
   }
 
+  async function resolveImageSource(img, source) {
+    if (!/^blob:/i.test(String(source || ""))) return source;
+    // Feishu may display the Blob URL successfully while blocking fetch(blob:)
+    // from the page's security policy. Prefer the already-loaded image itself.
+    try {
+      const width = img && (img.naturalWidth || img.width || 0);
+      const height = img && (img.naturalHeight || img.height || 0);
+      if (img && img.complete && width > 0 && height > 0 && document && document.createElement) {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        if (context) {
+          context.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL("image/png");
+          if (dataUrl && dataUrl !== "data:,") return dataUrl;
+        }
+      }
+    } catch (_) {}
+    if (typeof fetch !== "function" || typeof FileReader !== "function") return source;
+    try {
+      const response = await fetch(source);
+      if (!response.ok) return source;
+      const blob = await response.blob();
+      return await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || source));
+        reader.onerror = () => resolve(source);
+        reader.readAsDataURL(blob);
+      });
+    } catch (_) {
+      return source;
+    }
+  }
+
   async function settleImageSources(rendered, sourceList = [], sourceNodes = new Map()) {
     const replacements = new Map();
     const sources = new Set(sourceList);
@@ -1006,7 +1041,7 @@ async (fallbackTitle) => {
       const current = imageSource(img);
       if (!current) return null;
       observed.add(current);
-      return { observed, source: current };
+      return { observed, source: await resolveImageSource(img, current) };
     }));
     for (const item of settled) {
       if (!item) continue;
@@ -1049,10 +1084,12 @@ async (fallbackTitle) => {
         }
       } catch (_) {}
     }
+    const containsContent = (el) => Boolean(
+      el && el.querySelector && (el.querySelector("[data-block-type]") || el.querySelector(".ace-line"))
+    );
     const isScrollbarChrome = (el) => {
       const cls = String(el.className || "").toLowerCase();
-      if (cls.includes("scrollbar-container")) return true;
-      return false;
+      return cls.includes("scrollbar-container") && !containsContent(el);
     };
     const acceptsScroll = (el) => {
       if (isScrollbarChrome(el)) return false;
@@ -1073,9 +1110,6 @@ async (fallbackTitle) => {
         return false;
       }
     };
-    const containsContent = (el) => Boolean(
-      el && el.querySelector && (el.querySelector("[data-block-type]") || el.querySelector(".ace-line"))
-    );
     const active = candidates.filter(acceptsScroll);
     // Prefer a scroller that actually contains document blocks (the deepest,
     // nearest the editor root). Skip scrollbar chrome like .scrollbar-container.
@@ -1129,12 +1163,15 @@ async (fallbackTitle) => {
     // real virtual-list scroller nested; the first document after navigate may
     // respond to window scroll while later documents only respond to an inner
     // pane. Re-scanning each iteration avoids "first doc scrolls, rest don't".
+    const containsContent = (el) => Boolean(
+      el && el.querySelector && (el.querySelector("[data-block-type]") || el.querySelector(".ace-line"))
+    );
     const findScrollables = () => {
       const out = [];
       const push = (el) => {
         if (!el || out.includes(el)) return;
         const cls = String(el.className || "").toLowerCase();
-        if (cls.includes("scrollbar-container")) return;
+        if (cls.includes("scrollbar-container") && !containsContent(el)) return;
         let style;
         try { style = getComputedStyle(el); } catch (_) { return; }
         if (!/(auto|scroll)/.test(style.overflowY || "")) return;
@@ -1158,10 +1195,8 @@ async (fallbackTitle) => {
       } catch (_) {}
       return out;
     };
-    const containsContent = (el) => Boolean(
-      el && el.querySelector && (el.querySelector("[data-block-type]") || el.querySelector(".ace-line"))
-    );
     const stepScrollables = (scrollables) => {
+      let moved = false;
       for (const el of scrollables) {
         try {
           const viewport = el.clientHeight || (win && win.innerHeight) || 600;
@@ -1174,16 +1209,21 @@ async (fallbackTitle) => {
           // after height growth.
           const target = before >= maxY - 2 ? maxY : Math.min(maxY, before + step);
           el.scrollTop = target;
+          if (Math.abs((el.scrollTop || 0) - before) > 1) moved = true;
           try { el.dispatchEvent(new Event("scroll", {bubbles: true})); } catch (_) {}
         } catch (_) {}
       }
-      // Always also scroll the last mounted block into view — this scrolls every
-      // real ancestor the browser knows about, even ones we failed to list.
-      try {
-        const blocks = listBlocks();
-        const last = blocks[blocks.length - 1];
-        if (last && last.scrollIntoView) last.scrollIntoView({ block: "end", inline: "nearest" });
-      } catch (_) {}
+      // Use scrollIntoView only as a fallback. On native Feishu docs it can
+      // undo the explicit scrollTop step and keep the real document scroller
+      // pinned near the first mounted block.
+      const hasContentScroller = scrollables.some(containsContent);
+      if (!moved && !hasContentScroller) {
+        try {
+          const blocks = listBlocks();
+          const last = blocks[blocks.length - 1];
+          if (last && last.scrollIntoView) last.scrollIntoView({ block: "end", inline: "nearest" });
+        } catch (_) {}
+      }
     };
     // Only require content-bearing scrollers to be at bottom. Outer window /
     // shell panes often stay "not at bottom" forever and caused a full 180-iter
@@ -1195,7 +1235,8 @@ async (fallbackTitle) => {
       return pool.every((el) => {
         try {
           const maxY = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
-          return maxY <= 0 || (el.scrollTop || 0) >= maxY - 2;
+          const tolerance = Math.max(8, Math.min(160, Math.floor((el.clientHeight || 0) * 0.1)));
+          return maxY <= 0 || (el.scrollTop || 0) >= maxY - tolerance;
         } catch (_) { return true; }
       });
     };

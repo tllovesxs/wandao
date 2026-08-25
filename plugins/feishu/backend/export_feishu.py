@@ -843,6 +843,7 @@ def order_tree(tree: dict[str, Any]) -> list[dict[str, Any]]:
 FEISHU_CONVERTER_JS = r"""
 async (fallbackTitle) => {
   const images = [];
+  const imageSourcesByNode = new Map();
   const ZERO = /[\u200b\u200c\u200d\ufeff]/g;
   function clean(value) {
     return (value || "")
@@ -855,6 +856,18 @@ async (fallbackTitle) => {
   function escTable(value) {
     return clean(value).replace(/\|/g, "\\|").replace(/\n+/g, "<br>");
   }
+  function trackImage(img) {
+    const src = imageSource(img);
+    if (!src) return "";
+    images.push(src);
+    let observed = imageSourcesByNode.get(img);
+    if (!observed) {
+      observed = new Set();
+      imageSourcesByNode.set(img, observed);
+    }
+    observed.add(src);
+    return src;
+  }
   function inline(node) {
     if (!node) return "";
     if (node.nodeType === 3) return node.nodeValue.replace(ZERO, "");
@@ -862,9 +875,8 @@ async (fallbackTitle) => {
     const tag = node.tagName.toLowerCase();
     if (tag === "br") return "\n";
     if (tag === "img") {
-      const src = node.getAttribute("src") || node.getAttribute("data-src") || "";
+      const src = trackImage(node);
       const alt = node.getAttribute("alt") || "image";
-      if (src) images.push(src);
       return src ? `![${alt}](${src})` : "";
     }
     const text = [...node.childNodes].map(inline).join("");
@@ -897,9 +909,8 @@ async (fallbackTitle) => {
   function renderImage(el) {
     const img = el.querySelector("img");
     if (!img) return "";
-    const src = img.getAttribute("src") || img.getAttribute("data-src") || "";
+    const src = trackImage(img);
     const alt = img.getAttribute("alt") || "image";
-    if (src) images.push(src);
     return src ? `![${alt}](${src})` : "";
   }
   function quote(value) {
@@ -956,6 +967,81 @@ async (fallbackTitle) => {
   }
 
   /* feishu-scroll-api:start */
+  function imageSource(img) {
+    if (!img) return "";
+    const candidates = [
+      img.getAttribute("data-src"),
+      img.getAttribute("data-original"),
+      img.getAttribute("data-image-url"),
+      img.getAttribute("data-original-src"),
+      img.getAttribute("data-lazy-src"),
+      img.currentSrc,
+      img.getAttribute("src"),
+    ];
+    return candidates.map(value => String(value || "").trim()).find(Boolean) || "";
+  }
+
+  async function resolveImageSource(source) {
+    if (!/^blob:/i.test(String(source || ""))) return source;
+    if (typeof fetch !== "function" || typeof FileReader !== "function") return source;
+    try {
+      const response = await fetch(source);
+      if (!response.ok) return source;
+      const blob = await response.blob();
+      return await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || source));
+        reader.onerror = () => resolve(source);
+        reader.readAsDataURL(blob);
+      });
+    } catch (_) {
+      return source;
+    }
+  }
+
+  async function waitForImage(img, timeout = 1800) {
+    if (!img || img.complete || typeof img.addEventListener !== "function") return;
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        try { img.removeEventListener("load", finish); } catch (_) {}
+        try { img.removeEventListener("error", finish); } catch (_) {}
+        resolve();
+      };
+      img.addEventListener("load", finish, { once: true });
+      img.addEventListener("error", finish, { once: true });
+      setTimeout(finish, timeout);
+    });
+  }
+
+  async function settleImageSources(rendered, sourceList = [], sourceNodes = new Map()) {
+    const replacements = new Map();
+    const sources = new Set(sourceList);
+    for (const [img, observed] of sourceNodes.entries()) {
+      await waitForImage(img);
+      const current = imageSource(img);
+      if (!current) continue;
+      observed.add(current);
+      const resolved = await resolveImageSource(current);
+      sources.add(resolved || current);
+      for (const previous of observed) {
+        if (previous && previous !== (resolved || current)) {
+          replacements.set(previous, resolved || current);
+        }
+      }
+    }
+    for (let index = 0; index < rendered.length; index++) {
+      let markdown = rendered[index];
+      for (const [from, to] of replacements) {
+        if (from && to && markdown.includes(from)) markdown = markdown.split(from).join(to);
+      }
+      rendered[index] = markdown;
+    }
+    return [...sources].filter(source => !replacements.has(source));
+  }
+
   function resolveFeishuDocScroller(root, doc) {
     const ownerDocument = doc || document;
     const candidates = [];
@@ -1023,6 +1109,8 @@ async (fallbackTitle) => {
       sleep,
       currentBlocks: listBlocks,
       renderBlock: renderOne,
+      imageList = [],
+      imageNodes = new Map(),
       maxIterations = 180,
     } = options;
     const ownerDoc = doc || document;
@@ -1042,7 +1130,7 @@ async (fallbackTitle) => {
         if (!md) continue;
         if (seen.has(key)) {
           const index = seen.get(key);
-          if (md.length > rendered[index].length) {
+          if (md !== rendered[index]) {
             rendered[index] = md;
             changed += 1;
           }
@@ -1169,9 +1257,11 @@ async (fallbackTitle) => {
       if (atBottom) reachedBottom = true;
       if (stable >= 3 && atBottom) break;
     }
+    const settledImages = await settleImageSources(rendered, imageList, imageNodes);
     resetScroll(scrollables);
     return {
       rendered,
+      images: settledImages,
       blockCount: rendered.length,
       scrollIterations,
       finalScrollHeight,
@@ -1180,7 +1270,7 @@ async (fallbackTitle) => {
     };
   }
 
-  const api = { resolveFeishuDocScroller, collectFeishuDocBlocks };
+  const api = { resolveFeishuDocScroller, collectFeishuDocBlocks, resolveImageSource };
   if (typeof globalThis !== "undefined") globalThis.__feishuConverterScrollApi = api;
   /* feishu-scroll-api:end */
 
@@ -1198,6 +1288,8 @@ async (fallbackTitle) => {
     sleep,
     currentBlocks,
     renderBlock,
+    imageList: images,
+    imageNodes: imageSourcesByNode,
     maxIterations: 180,
   });
   const body = collected.rendered.filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -1207,7 +1299,7 @@ async (fallbackTitle) => {
       return (scroller && scroller.tagName || "") + ":" + (scroller.className ? String(scroller.className).split(/\s+/)[0] || "" : "");
     } catch (_) { return ""; }
   })();
-  const result = {title: pageTitle, markdown, images: [...new Set(images)], blockCount: collected.blockCount, textLength: body.length, renderer: "native_doc"};
+  const result = {title: pageTitle, markdown, images: collected.images, blockCount: collected.blockCount, textLength: body.length, renderer: "native_doc"};
   result.scrollIterations = collected.scrollIterations;
   result.finalScrollHeight = collected.finalScrollHeight;
   if (scrollerHint) result.scroller = scrollerHint;
@@ -1516,6 +1608,9 @@ def fetch_doc_markdown(
 
 
 def guess_extension(url: str, content_type: str | None) -> str:
+    if url.lower().startswith("data:"):
+        metadata = url[5:].split(",", 1)[0]
+        content_type = metadata.split(";", 1)[0] or content_type or ""
     path = urllib.parse.urlparse(url).path.lower()
     match = re.search(r"\.([a-z0-9]{2,5})$", path)
     if match:
@@ -1535,6 +1630,23 @@ def guess_extension(url: str, content_type: str | None) -> str:
     return "png"
 
 
+def decode_data_url(url: str) -> tuple[bytes, str]:
+    if not url.lower().startswith("data:") or "," not in url:
+        raise ExportError("Invalid image data URL")
+    metadata, payload = url[5:].split(",", 1)
+    content_type = metadata.split(";", 1)[0] or "application/octet-stream"
+    if any(part.lower() == "base64" for part in metadata.split(";")):
+        try:
+            data = base64.b64decode(payload, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise ExportError("Invalid base64 image data URL") from exc
+    else:
+        data = urllib.parse.unquote_to_bytes(payload)
+    if not data:
+        raise ExportError("Empty image data URL")
+    return data, content_type
+
+
 def cookie_header_for_url(cookies: list[dict[str, Any]], url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     host = parsed.hostname or ""
@@ -1552,14 +1664,18 @@ def cookie_header_for_url(cookies: list[dict[str, Any]], url: str) -> str:
 
 
 def download_image(url: str, dest_dir: Path, cookies: list[dict[str, Any]], timeout: int) -> Path:
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.feishu.cn/"}
-    cookie_header = cookie_header_for_url(cookies, url)
-    if cookie_header:
-        headers["Cookie"] = cookie_header
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = response.read()
-        ext = guess_extension(url, response.headers.get("Content-Type"))
+    if url.lower().startswith("data:"):
+        data, content_type = decode_data_url(url)
+        ext = guess_extension(url, content_type)
+    else:
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.feishu.cn/"}
+        cookie_header = cookie_header_for_url(cookies, url)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = response.read()
+            ext = guess_extension(url, response.headers.get("Content-Type"))
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / (hashlib.sha1(url.encode("utf-8")).hexdigest()[:12] + "." + ext)
     if not target.exists():
@@ -1582,9 +1698,11 @@ def localize_images(
     failures: list[dict[str, str]] = []
     for url in sorted(set(images)):
         check_stopped(args)
-        if not url.startswith(("http://", "https://")):
-            continue
         try:
+            if not url.lower().startswith(("http://", "https://", "data:")):
+                if url.lower().startswith("blob:"):
+                    raise ExportError("浏览器 Blob 图片未能转换为可下载的图片数据")
+                continue
             target = download_image(url, md_path.parent / "assets", cookies, timeout)
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
             success += 1

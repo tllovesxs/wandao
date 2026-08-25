@@ -359,3 +359,31 @@ test('collectFeishuDocBlocks stops cleanly at bottom without false incomplete', 
   assert.equal(result.hitIterationCeiling, false);
   assert.ok(result.scrollIterations < 40, `should stop near bottom, got ${result.scrollIterations}`);
 });
+
+test('resolveImageSource converts browser blob images to data URLs', async () => {
+  const api = loadScrollApi();
+  const originalFetch = global.fetch;
+  const originalFileReader = global.FileReader;
+  global.fetch = async () => ({
+    ok: true,
+    blob: async () => new Blob(['image'], { type: 'image/png' }),
+  });
+  global.FileReader = class {
+    readAsDataURL(blob) {
+      blob.arrayBuffer().then((buffer) => {
+        this.result = `data:image/png;base64,${Buffer.from(buffer).toString('base64')}`;
+        this.onload();
+      });
+    }
+  };
+  try {
+    assert.equal(
+      await api.resolveImageSource('blob:https://my.feishu.cn/image-1'),
+      'data:image/png;base64,aW1hZ2U=',
+    );
+  } finally {
+    global.fetch = originalFetch;
+    if (originalFileReader === undefined) delete global.FileReader;
+    else global.FileReader = originalFileReader;
+  }
+});

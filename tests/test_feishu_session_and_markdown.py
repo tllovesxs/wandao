@@ -665,6 +665,29 @@ class FakeCheckpoint:
         self.closed = True
 
 
+class FeishuImageLocalizationTests(unittest.TestCase):
+    def test_localize_images_saves_browser_data_url(self) -> None:
+        data_url = "data:image/png;base64,aW1hZ2U="
+        cdp = FakeSessionCdp()
+        with tempfile.TemporaryDirectory() as directory:
+            md_path = Path(directory) / "document.md"
+            markdown, success, failures = feishu.localize_images(
+                cdp,
+                f"![image]({data_url})",
+                [data_url],
+                md_path,
+                timeout=5,
+                keep_remote=True,
+            )
+
+            self.assertEqual(success, 1)
+            self.assertEqual(failures, [])
+            self.assertNotIn(data_url, markdown)
+            image_files = list((md_path.parent / "assets").glob("*.png"))
+            self.assertEqual(len(image_files), 1)
+            self.assertEqual(image_files[0].read_bytes(), b"image")
+
+
 class FeishuRelativeResourceReportingTests(unittest.TestCase):
     def test_relative_markdown_resources_make_report_partial_and_checkpoint_failed(self) -> None:
         node = {

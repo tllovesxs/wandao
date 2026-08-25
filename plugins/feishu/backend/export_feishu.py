@@ -1019,17 +1019,19 @@ async (fallbackTitle) => {
   async function settleImageSources(rendered, sourceList = [], sourceNodes = new Map()) {
     const replacements = new Map();
     const sources = new Set(sourceList);
-    for (const [img, observed] of sourceNodes.entries()) {
+    const settled = await Promise.all([...sourceNodes.entries()].map(async ([img, observed]) => {
       await waitForImage(img);
       const current = imageSource(img);
-      if (!current) continue;
+      if (!current) return null;
       observed.add(current);
       const resolved = await resolveImageSource(current);
-      sources.add(resolved || current);
-      for (const previous of observed) {
-        if (previous && previous !== (resolved || current)) {
-          replacements.set(previous, resolved || current);
-        }
+      return { observed, source: resolved || current };
+    }));
+    for (const item of settled) {
+      if (!item) continue;
+      sources.add(item.source);
+      for (const previous of item.observed) {
+        if (previous && previous !== item.source) replacements.set(previous, item.source);
       }
     }
     for (let index = 0; index < rendered.length; index++) {

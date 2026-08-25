@@ -687,6 +687,30 @@ class FeishuImageLocalizationTests(unittest.TestCase):
             self.assertEqual(len(image_files), 1)
             self.assertEqual(image_files[0].read_bytes(), b"image")
 
+    def test_localize_images_reads_browser_blob_through_cdp(self) -> None:
+        blob_url = "blob:https://example.feishu.cn/image-1"
+        data_url = "data:image/png;base64,aW1hZ2U="
+
+        class FakeBlobCdp(FakeSessionCdp):
+            def evaluate(self, _expression: str, timeout: int | float = 30) -> str:
+                return data_url
+
+        with tempfile.TemporaryDirectory() as directory:
+            md_path = Path(directory) / "document.md"
+            markdown, success, failures = feishu.localize_images(
+                FakeBlobCdp(),
+                f"![image]({blob_url})",
+                [blob_url],
+                md_path,
+                timeout=5,
+                keep_remote=True,
+            )
+
+            self.assertEqual(success, 1)
+            self.assertEqual(failures, [])
+            self.assertNotIn(blob_url, markdown)
+            self.assertEqual(len(list((md_path.parent / "assets").glob("*.png"))), 1)
+
 
 class FeishuRelativeResourceReportingTests(unittest.TestCase):
     def test_relative_markdown_resources_make_report_partial_and_checkpoint_failed(self) -> None:

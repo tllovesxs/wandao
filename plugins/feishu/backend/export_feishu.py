@@ -981,24 +981,6 @@ async (fallbackTitle) => {
     return candidates.map(value => String(value || "").trim()).find(Boolean) || "";
   }
 
-  async function resolveImageSource(source) {
-    if (!/^blob:/i.test(String(source || ""))) return source;
-    if (typeof fetch !== "function" || typeof FileReader !== "function") return source;
-    try {
-      const response = await fetch(source);
-      if (!response.ok) return source;
-      const blob = await response.blob();
-      return await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || source));
-        reader.onerror = () => resolve(source);
-        reader.readAsDataURL(blob);
-      });
-    } catch (_) {
-      return source;
-    }
-  }
-
   async function waitForImage(img, timeout = 1800) {
     if (!img || img.complete || typeof img.addEventListener !== "function") return;
     await new Promise((resolve) => {
@@ -1024,8 +1006,7 @@ async (fallbackTitle) => {
       const current = imageSource(img);
       if (!current) return null;
       observed.add(current);
-      const resolved = await resolveImageSource(current);
-      return { observed, source: resolved || current };
+      return { observed, source: current };
     }));
     for (const item of settled) {
       if (!item) continue;
@@ -1272,7 +1253,7 @@ async (fallbackTitle) => {
     };
   }
 
-  const api = { resolveFeishuDocScroller, collectFeishuDocBlocks, resolveImageSource };
+  const api = { resolveFeishuDocScroller, collectFeishuDocBlocks };
   if (typeof globalThis !== "undefined") globalThis.__feishuConverterScrollApi = api;
   /* feishu-scroll-api:end */
 
@@ -1665,6 +1646,24 @@ def cookie_header_for_url(cookies: list[dict[str, Any]], url: str) -> str:
     return "; ".join(pairs)
 
 
+BLOB_IMAGE_DATA_URL_JS = r"""
+async (url) => {
+  if (typeof fetch !== "function" || typeof FileReader !== "function") {
+    throw new Error("浏览器不支持读取 Blob 图片");
+  }
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Blob 图片读取失败：HTTP ${response.status}`);
+  const blob = await response.blob();
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Blob 图片读取失败"));
+    reader.readAsDataURL(blob);
+  });
+}
+"""
+
+
 def download_image(url: str, dest_dir: Path, cookies: list[dict[str, Any]], timeout: int) -> Path:
     if url.lower().startswith("data:"):
         data, content_type = decode_data_url(url)
@@ -1685,6 +1684,13 @@ def download_image(url: str, dest_dir: Path, cookies: list[dict[str, Any]], time
     return target
 
 
+def download_blob_image(cdp: CDPClient, url: str, dest_dir: Path, timeout: int) -> Path:
+    data_url = cdp.evaluate(f"({BLOB_IMAGE_DATA_URL_JS})({js_string(url)})", timeout=timeout)
+    if not isinstance(data_url, str) or not data_url.lower().startswith("data:"):
+        raise ExportError("浏览器 Blob 图片未返回有效图片数据")
+    return download_image(data_url, dest_dir, [], timeout)
+
+
 def localize_images(
     cdp: CDPClient,
     markdown: str,
@@ -1701,11 +1707,12 @@ def localize_images(
     for url in sorted(set(images)):
         check_stopped(args)
         try:
-            if not url.lower().startswith(("http://", "https://", "data:")):
-                if url.lower().startswith("blob:"):
-                    raise ExportError("浏览器 Blob 图片未能转换为可下载的图片数据")
+            if url.lower().startswith("blob:"):
+                target = download_blob_image(cdp, url, md_path.parent / "assets", timeout)
+            elif url.lower().startswith(("http://", "https://", "data:")):
+                target = download_image(url, md_path.parent / "assets", cookies, timeout)
+            else:
                 continue
-            target = download_image(url, md_path.parent / "assets", cookies, timeout)
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
             success += 1
         except Exception as exc:

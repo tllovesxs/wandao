@@ -733,12 +733,16 @@
               <span>目标已有同名文件时跳过</span>
             </label>
             <label class="checkbox-label">
+              <input type="checkbox" id="ima-import-preserve-folders" checked>
+              <span>保留本地文件夹层级（自动创建 ima 子文件夹）</span>
+            </label>
+            <label class="checkbox-label">
               <input type="checkbox" id="ima-import-include-assets">
               <span>将 Markdown 引用的本地图片/附件也作为独立文件上传</span>
             </label>
           </div>
         </details>
-        <p class="helper-note">第一版使用 ima 知识库 OpenAPI 上传文件，支持 Markdown、PDF、Word、PPT、Excel、图片、TXT、Xmind、音频等文件。默认不会把 Markdown 引用的本地配图重复作为独立图片导入。官方 API 暂未提供明确的创建知识库文件夹接口，所以目前可导入到根目录或已有文件夹。</p>
+        <p class="helper-note">使用 ima 知识库 OpenAPI 上传文件，支持 Markdown、PDF、Word、PPT、Excel、图片、TXT、Xmind、音频等文件。默认保留本地文件夹层级，Markdown 引用的本地配图会内嵌而不会重复作为独立图片导入。</p>
       </section>
       <section class="action-section">
         <button class="btn-secondary" id="ima-import-save-config">保存 API 配置</button>

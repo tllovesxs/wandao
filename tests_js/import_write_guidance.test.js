@@ -61,3 +61,14 @@ test('IMA blocks target-knowledge-base actions until a usable selection exists a
   assert.match(qualityCheckSource, /NODE_TEST_DIR\s*=\s*"tests_js"/);
   assert.match(qualityCheckSource, /glob\("\*\.test\.js"\)/);
 });
+
+test('IMA batch import preserves folders and never reuses the optional single-file test path', () => {
+  const builder = sourceBetween('function buildImaImportArgs', 'async function runImaImportCommand');
+
+  assert.match(builder, /if \(sourceFile && options\.single\) args\.push\('--source-file', sourceFile\);/);
+  assert.doesNotMatch(builder, /if \(sourceFile\) args\.push\('--source-file', sourceFile\);/);
+  assert.match(builder, /document\.getElementById\('ima-import-preserve-folders'\)/);
+  assert.match(builder, /args\.push\('--flatten-folders'\);/);
+  assert.match(htmlSource, /id="ima-import-preserve-folders" checked/);
+  assert.match(htmlSource, /自动创建 ima 子文件夹/);
+});

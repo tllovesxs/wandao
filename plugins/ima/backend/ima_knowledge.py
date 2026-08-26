@@ -1160,7 +1160,10 @@ def collect_markdown_referenced_files(source_dir: Path) -> set[Path]:
             raw = next((group for group in match.groups() if group), "")
             for candidate in markdown_reference_candidates(raw):
                 resolved = resolve_local_reference(source_dir, md_path, candidate)
-                if resolved:
+                # Markdown pages linked by an index are separate import targets, not
+                # embedded resources. Keeping them out of this exclusion list avoids
+                # dropping an entire exported knowledge-base tree.
+                if resolved and resolved.suffix.lower() not in {".md", ".markdown"}:
                     referenced.add(resolved)
                     break
     return referenced
@@ -1219,6 +1222,129 @@ def is_repeated(client: ImaClient, kb_id: str, folder_id: str, name: str, media_
         if str(item.get("name") or "") == name:
             return bool(item.get("is_repeated"))
     return False
+
+
+def list_remote_folder_items(client: ImaClient, kb_id: str, folder_id: str) -> list[dict[str, Any]]:
+    """List every direct item below one remote folder without recursing."""
+
+    cursor = ""
+    items: list[dict[str, Any]] = []
+    while True:
+        payload: dict[str, Any] = {"knowledge_base_id": kb_id, "cursor": cursor, "limit": 50}
+        if folder_id:
+            payload["folder_id"] = folder_id
+        data = client.wiki("get_knowledge_list", payload)
+        items.extend(response_list(data, "knowledge_list", "info_list", "list"))
+        if data.get("is_end", True):
+            break
+        next_cursor = str(data.get("next_cursor") or "")
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+    return items
+
+
+def remote_child_folders(
+    client: ImaClient,
+    kb_id: str,
+    folder_id: str,
+    cache: dict[str, dict[str, str | None]],
+) -> dict[str, str | None]:
+    """Return direct folders by title; ``None`` marks an ambiguous duplicate."""
+
+    cache_key = folder_id or ""
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    children: dict[str, str | None] = {}
+    for item in list_remote_folder_items(client, kb_id, folder_id):
+        if not is_folder_item(item):
+            continue
+        title = item_title(item)
+        child_id = item_id(item)
+        if not child_id:
+            continue
+        if title in children and children[title] != child_id:
+            children[title] = None
+        else:
+            children[title] = child_id
+    cache[cache_key] = children
+    return children
+
+
+def ensure_remote_folder(
+    client: ImaClient,
+    args: argparse.Namespace,
+    *,
+    parent_folder_id: str,
+    title: str,
+    cache: dict[str, dict[str, str | None]],
+) -> str:
+    """Find or create one folder below ``parent_folder_id`` and return its ID."""
+
+    if not title or title in {".", ".."}:
+        raise ImaError("本地目录名称无效，无法创建 ima 文件夹")
+
+    children = remote_child_folders(client, args.knowledge_base_id, parent_folder_id, cache)
+    if title in children:
+        existing = children[title]
+        if existing:
+            return existing
+        raise ImaError(f"目标目录存在多个同名文件夹，无法安全导入：{title}")
+
+    payload: dict[str, Any] = {"knowledge_base_id": args.knowledge_base_id, "name": title}
+    if parent_folder_id:
+        payload["folder_id"] = parent_folder_id
+    client.wiki("create_folder", payload)
+    emit(
+        f"已创建 ima 文件夹：{title}",
+        event="folder.created",
+        folder={"title": title, "parentFolderId": parent_folder_id},
+    )
+
+    # The current API does not consistently return the created folder ID. Refresh
+    # the direct listing instead of issuing a second create request on a slow read.
+    cache.pop(parent_folder_id or "", None)
+    for attempt in range(3):
+        children = remote_child_folders(client, args.knowledge_base_id, parent_folder_id, cache)
+        created = children.get(title)
+        if created:
+            return created
+        if title in children:
+            raise ImaError(f"新建的 ima 文件夹名称重复，无法安全定位：{title}")
+        if attempt < 2:
+            wait_with_stop(args, 0.25)
+            cache.pop(parent_folder_id or "", None)
+    raise ImaError(f"ima 已接受创建文件夹请求，但未读取到目录：{title}")
+
+
+def import_target_folder(
+    client: ImaClient,
+    args: argparse.Namespace,
+    path: Path,
+    source_dir: Path,
+    cache: dict[str, dict[str, str | None]],
+) -> str:
+    """Resolve the destination folder for one local file, preserving its parents."""
+
+    target_folder_id = args.folder_id or ""
+    if not getattr(args, "preserve_folders", True):
+        return target_folder_id
+    try:
+        relative_parent = path.relative_to(source_dir).parent
+    except ValueError:
+        return target_folder_id
+    for part in relative_parent.parts:
+        if part and part != ".":
+            target_folder_id = ensure_remote_folder(
+                client,
+                args,
+                parent_folder_id=target_folder_id,
+                title=part,
+                cache=cache,
+            )
+    return target_folder_id
 
 
 def hmac_sha1(key: bytes | str, data: str) -> str:
@@ -1314,12 +1440,14 @@ def upload_markdown_note(
     path: Path,
     source_root: Path,
     resource_failures: list[dict[str, str]],
+    folder_id: str | None = None,
 ) -> str:
     kb_id = args.knowledge_base_id
     if not kb_id:
         raise ImaError("导入需要填写目标知识库 ID")
+    target_folder_id = args.folder_id or "" if folder_id is None else folder_id
     file_name = path.name
-    if args.skip_existing and is_repeated(client, kb_id, args.folder_id or "", file_name, 11):
+    if args.skip_existing and is_repeated(client, kb_id, target_folder_id, file_name, 11):
         return "skipped_existing"
     try:
         content = path.read_text("utf-8-sig")
@@ -1343,8 +1471,8 @@ def upload_markdown_note(
         "knowledge_base_id": kb_id,
         "note_info": {"content_id": note_id},
     }
-    if args.folder_id:
-        add_payload["folder_id"] = args.folder_id
+    if target_folder_id:
+        add_payload["folder_id"] = target_folder_id
     client.wiki("add_knowledge", add_payload)
     emit(
         f"Markdown 笔记已导入：{file_name}（内嵌图片 {embedded} 张）",
@@ -1354,14 +1482,14 @@ def upload_markdown_note(
     return note_id
 
 
-def upload_file(client: ImaClient, args: argparse.Namespace, path: Path) -> str:
+def upload_file(client: ImaClient, args: argparse.Namespace, path: Path, folder_id: str | None = None) -> str:
     kb_id = args.knowledge_base_id
     if not kb_id:
         raise ImaError("导入需要填写目标知识库 ID")
-    folder_id = args.folder_id or ""
+    target_folder_id = args.folder_id or "" if folder_id is None else folder_id
     media_type, content_type = file_media_info(path)
     file_name = path.name
-    if args.skip_existing and is_repeated(client, kb_id, folder_id, file_name, media_type):
+    if args.skip_existing and is_repeated(client, kb_id, target_folder_id, file_name, media_type):
         return "skipped_existing"
 
     create_payload = {
@@ -1391,8 +1519,8 @@ def upload_file(client: ImaClient, args: argparse.Namespace, path: Path) -> str:
             "file_name": file_name,
         },
     }
-    if folder_id:
-        add_payload["folder_id"] = folder_id
+    if target_folder_id:
+        add_payload["folder_id"] = target_folder_id
     client.wiki("add_knowledge", add_payload)
     return media_id
 
@@ -1402,7 +1530,7 @@ def import_files(client: ImaClient, args: argparse.Namespace) -> dict[str, Any]:
     if not args.knowledge_base_id:
         raise ImaError("请先填写目标知识库 ID")
     files = [Path(item["path"]) for item in scan_source_files(source_dir, include_referenced_assets=args.include_referenced_assets)]
-    if args.source_file:
+    if args.import_one and args.source_file:
         source_file = Path(args.source_file).resolve()
         files = [source_file]
     if args.import_one and files:
@@ -1418,6 +1546,7 @@ def import_files(client: ImaClient, args: argparse.Namespace) -> dict[str, Any]:
     skipped = 0
     failures: list[dict[str, str]] = []
     resource_failures: list[dict[str, str]] = []
+    folder_cache: dict[str, dict[str, str | None]] = {}
     started = time.time()
     total = len(files)
     emit(
@@ -1437,10 +1566,11 @@ def import_files(client: ImaClient, args: argparse.Namespace) -> dict[str, Any]:
                 doc={"path": relative_path, "index": index},
             )
             file_resources: list[dict[str, str]] = []
+            target_folder_id = import_target_folder(client, args, path, source_dir, folder_cache)
             if path.suffix.lower() in {".md", ".markdown"}:
-                result = upload_markdown_note(client, args, path, source_dir, file_resources)
+                result = upload_markdown_note(client, args, path, source_dir, file_resources, target_folder_id)
             else:
-                result = upload_file(client, args, path)
+                result = upload_file(client, args, path, target_folder_id)
             for item in file_resources:
                 resource_failures.append({"relativePath": relative_path, **item})
             if result == "skipped_existing":
@@ -1545,6 +1675,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         dest="include_referenced_assets",
         action="store_false",
         help="不单独上传 Markdown 引用的本地图片/附件",
+    )
+    parser.add_argument(
+        "--preserve-folders",
+        dest="preserve_folders",
+        action="store_true",
+        default=True,
+        help="保留本地目录层级，自动创建目标知识库中缺失的文件夹（默认开启）",
+    )
+    parser.add_argument(
+        "--flatten-folders",
+        dest="preserve_folders",
+        action="store_false",
+        help="将所有文件直接导入所选目标文件夹",
     )
     parser.add_argument("--import-one", action="store_true", help="导入第一篇或 source-file")
     parser.add_argument("--import-all", action="store_true", help="批量导入")

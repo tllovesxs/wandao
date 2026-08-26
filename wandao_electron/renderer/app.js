@@ -4964,7 +4964,7 @@ function buildImaImportArgs(options = {}) {
 
   if (!sourceDir) throw new Error('请选择本地文件目录');
   args.push('--source-dir', sourceDir);
-  if (sourceFile) args.push('--source-file', sourceFile);
+  if (sourceFile && options.single) args.push('--source-file', sourceFile);
   if (kbId) args.push('--knowledge-base-id', kbId);
   if (folderId) args.push('--folder-id', folderId);
   if (delay) args.push('--request-delay', delay);
@@ -4972,6 +4972,8 @@ function buildImaImportArgs(options = {}) {
   if (maxImport && parseInt(maxImport, 10) > 0) args.push('--max-import', maxImport);
   const includeAssets = document.getElementById('ima-import-include-assets');
   if (includeAssets && includeAssets.checked) args.push('--include-referenced-assets');
+  const preserveFolders = document.getElementById('ima-import-preserve-folders');
+  if (preserveFolders && !preserveFolders.checked) args.push('--flatten-folders');
   args.push('--progress-every', '1');
 
   if (options.plan) {

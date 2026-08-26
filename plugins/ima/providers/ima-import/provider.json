@@ -5,7 +5,7 @@
   "name": "ima 知识库",
   "title": "ima 知识库导入",
   "navLabel": "ima 导入",
-  "description": "扫描本地文件并批量上传到 ima 知识库根目录或已有文件夹。",
+  "description": "扫描本地文件，默认保留文件夹层级并批量上传到 ima 知识库。",
   "type": "automation",
   "group": "import",
   "trustLevel": "official",
@@ -18,6 +18,7 @@
     { "name": "knowledge_base_id", "label": "目标知识库 ID", "type": "text", "arg": "--knowledge-base-id", "required": true, "actions": ["plan", "importOne", "import"] },
     { "name": "folder_id", "label": "目标文件夹 ID（可选）", "type": "text", "arg": "--folder-id", "advanced": true, "actions": ["importOne", "import"] },
     { "name": "source_dir", "label": "本地待导入目录", "type": "directory", "arg": "--source-dir", "required": true, "history": "path", "actions": ["plan", "importOne", "import"] },
+    { "name": "flatten_folders", "label": "平铺导入（不保留本地文件夹层级）", "type": "checkbox", "arg": "--flatten-folders", "default": false, "advanced": true, "actions": ["importOne", "import"] },
     { "name": "include_referenced_assets", "label": "额外上传 Markdown 引用资源（默认图片已内嵌）", "type": "checkbox", "arg": "--include-referenced-assets", "default": false, "advanced": true, "actions": ["importOne", "import"] },
     { "name": "max_import", "label": "最多导入数量（0 为全部）", "type": "number", "arg": "--max-import", "default": 0, "min": 0, "advanced": true, "actions": ["import"] }
   ],

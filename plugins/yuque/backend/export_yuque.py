@@ -39,6 +39,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -374,6 +375,147 @@ YUQUE_CONVERTER_JS = r"""
 """
 
 
+def is_lakesheet_document(data: dict[str, Any]) -> bool:
+    """Return whether a Yuque document uses the spreadsheet payload format."""
+    doc_type = str(data.get("type") or "").strip().lower()
+    doc_format = str(data.get("format") or data.get("origin_format") or "").strip().lower()
+    return doc_type == "sheet" or doc_format == "lakesheet"
+
+
+def _lakesheet_value_text(value: Any) -> str:
+    """Best-effort text representation for a LakeSheet cell value."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return "".join(_lakesheet_value_text(item) for item in value)
+    if isinstance(value, dict):
+        for key in ("text", "plainText", "value", "content", "label", "name"):
+            if key in value:
+                text = _lakesheet_value_text(value[key])
+                if text:
+                    return text
+        runs = value.get("runs")
+        if isinstance(runs, list):
+            text = "".join(_lakesheet_value_text(item) for item in runs)
+            if text:
+                return text
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+
+def lakesheet_cell_text(cell: Any) -> str:
+    """Read the displayed value from a LakeSheet cell without serializing style data."""
+    if not isinstance(cell, dict):
+        return _lakesheet_value_text(cell)
+    if cell.get("v") is not None:
+        return _lakesheet_value_text(cell["v"])
+    for key in ("f", "formula", "value"):
+        if cell.get(key) is not None:
+            return _lakesheet_value_text(cell[key])
+    return ""
+
+
+def lakesheet_markdown_cell(value: Any) -> str:
+    text = lakesheet_cell_text(value).replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n+", "<br>", text)
+    return text.replace("|", "\\|")
+
+
+def _lakesheet_index(value: Any) -> int | None:
+    try:
+        index = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return index if index >= 0 else None
+
+
+def lakesheet_sheet_to_markdown(sheet: dict[str, Any], fallback_name: str) -> str:
+    """Convert one decoded LakeSheet tab into a compact Markdown table."""
+    name = str(sheet.get("name") or fallback_name).strip() or fallback_name
+    raw_data = sheet.get("data")
+    cells: dict[tuple[int, int], str] = {}
+    if isinstance(raw_data, dict):
+        for raw_row, raw_cells in raw_data.items():
+            row = _lakesheet_index(raw_row)
+            if row is None or not isinstance(raw_cells, dict):
+                continue
+            for raw_column, cell in raw_cells.items():
+                column = _lakesheet_index(raw_column)
+                if column is None:
+                    continue
+                text = lakesheet_markdown_cell(cell)
+                if text:
+                    cells[(row, column)] = text
+
+    if not cells:
+        return f"## {name}\n\n_（空表格）_"
+
+    rows = [row for row, _ in cells]
+    columns = [column for _, column in cells]
+    first_row, last_row = min(rows), max(rows)
+    first_column, last_column = min(columns), max(columns)
+    header = [cells.get((first_row, column), " ") or " " for column in range(first_column, last_column + 1)]
+    output = [
+        f"## {name}",
+        "",
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join("---" for _ in header) + " |",
+    ]
+    for row in range(first_row + 1, last_row + 1):
+        values = [cells.get((row, column), "") for column in range(first_column, last_column + 1)]
+        output.append("| " + " | ".join(values) + " |")
+    return "\n".join(output)
+
+
+def lakesheet_content_to_markdown(content: Any, title: str) -> str:
+    """Decode Yuque's compressed `lakesheet` JSON and render every tab as Markdown."""
+    if not isinstance(content, str) or not content:
+        raise ExportError("语雀表格内容为空，无法导出")
+    try:
+        envelope = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ExportError(f"语雀表格内容不是有效 JSON：{exc.msg}") from exc
+    if not isinstance(envelope, dict) or not isinstance(envelope.get("sheet"), str):
+        raise ExportError("语雀表格内容缺少可解码的 sheet 数据")
+
+    try:
+        compressed = envelope["sheet"].encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise ExportError("语雀表格二进制编码异常，无法解压") from exc
+    try:
+        decoded = zlib.decompress(compressed)
+    except zlib.error:
+        try:
+            decoded = zlib.decompress(compressed, -zlib.MAX_WBITS)
+        except zlib.error as exc:
+            raise ExportError("语雀表格数据解压失败") from exc
+    try:
+        payload = json.loads(decoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ExportError("语雀表格解压后的数据格式无效") from exc
+
+    if isinstance(payload, list):
+        sheets = [item for item in payload if isinstance(item, dict)]
+    elif isinstance(payload, dict):
+        candidates = payload.get("sheets") or payload.get("data") or payload.get("sheet")
+        sheets = [item for item in candidates if isinstance(item, dict)] if isinstance(candidates, list) else []
+    else:
+        sheets = []
+
+    safe_title = str(title or "未命名")
+    output = [f"# {safe_title}"]
+    if not sheets:
+        output.extend(["", "_（空表格）_"])
+    else:
+        for index, sheet in enumerate(sheets, start=1):
+            output.extend(["", lakesheet_sheet_to_markdown(sheet, f"Sheet{index}")])
+    return "\n".join(output).rstrip() + "\n"
+
+
 def fetch_doc_markdown(
     cdp: CDPClient,
     book_id: int,
@@ -399,9 +541,14 @@ def fetch_doc_markdown(
         "dataPresent: Boolean(payload?.data), "
         "topLevelKeys: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 12) : [] } }; }"
         "const data = payload.data;"
+        "const isLakeSheet = String(data.type || '').toLowerCase() === 'sheet' || "
+        "String(data.format || data.origin_format || '').toLowerCase() === 'lakesheet';"
+        "const metadata = { id: data.id, title: data.title, slug: data.slug, "
+        "content_updated_at: data.content_updated_at, word_count: data.word_count, "
+        "type: data.type, format: data.format, origin_format: data.origin_format };"
+        "if (isLakeSheet) { return { data: { ...metadata, content: data.content || data.body || '' }, isLakeSheet: true, images: [], resources: [] }; }"
         f"const conv = ({YUQUE_CONVERTER_JS})(data.content || '', {js_string(title)});"
-        "return { data: { id: data.id, title: data.title, slug: data.slug, "
-        "content_updated_at: data.content_updated_at, word_count: data.word_count }, ...conv };"
+        "return { data: metadata, ...conv };"
         "})()"
     )
     value = cdp.evaluate(expression, timeout=120)
@@ -431,6 +578,15 @@ def fetch_doc_markdown(
         raise ExportError("; ".join(parts))
     if not isinstance(value.get("data"), dict):
         raise ExportError(f"Unexpected Yuque doc response without data: {title}")
+    data = value["data"]
+    if value.get("isLakeSheet") or is_lakesheet_document(data):
+        sheet_title = str(data.get("title") or title)
+        return {
+            "data": {key: value for key, value in data.items() if key != "content"},
+            "markdown": lakesheet_content_to_markdown(data.get("content"), sheet_title),
+            "images": [],
+            "resources": [],
+        }
     return value
 
 

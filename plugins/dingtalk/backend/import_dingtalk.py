@@ -276,15 +276,21 @@ def _resolve_local_image(target: str, document_path: Path, source_root: Path) ->
 
 
 def _resource_for_path(path: Path, source_root: Path, cache: dict[str, LocalResource]) -> LocalResource:
-    raw = path.read_bytes()
+    # ``Path.resolve()`` is important here on macOS: temporary directories
+    # may be presented as /var/... while resolved image paths are under the
+    # equivalent /private/var/... location.  Normalize both operands before
+    # calculating the relative path so local Markdown images remain importable.
+    resolved_path = path.resolve()
+    resolved_root = source_root.resolve()
+    raw = resolved_path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     resource_id = f"image-{digest[:40]}"
     if resource_id not in cache:
         cache[resource_id] = LocalResource(
             resource_id=resource_id,
-            path=path,
-            relative_path=path.relative_to(source_root),
-            content_type=_file_content_type(path, path.suffix.lower().lstrip(".")),
+            path=resolved_path,
+            relative_path=resolved_path.relative_to(resolved_root),
+            content_type=_file_content_type(resolved_path, resolved_path.suffix.lower().lstrip(".")),
             size=len(raw),
         )
     return cache[resource_id]

@@ -56,6 +56,39 @@
 
 ---
 
+## 💗 特别赞助
+
+<details open>
+<summary><strong>Fluxion AI · 为 AI 辅助学习提供支持</strong></summary>
+
+<a href="https://fluxionai.space/">
+  <img src="docs/images/fluxion-ai-sponsor-banner.png" alt="Fluxion AI：统一接入与管理全球主流 AI 模型；多线路动态路由、价格与用量透明。兑换码 WANNENGDAO 可获得 3 美元 API 额度" width="100%">
+</a>
+
+> 本区为赞助信息。万能导始终完全开源免费，AI 辅助学习不绑定任何模型或 API 服务。
+
+[**Fluxion AI**](https://fluxionai.space/) 面向个人开发者、技术团队与企业，通过统一 API 接入全球主流 AI 模型，并以多线路调度提升可用性；模型质量、使用情况和费用可在一个平台集中管理。
+
+灵活的线路与计费方案带来更具竞争力的调用成本，实时价格和每笔消费均可查阅。
+
+> **兑换码：`WANNENGDAO`** — 登录后在工作台「兑换」输入，即可获得 `$3` API 额度。
+
+<a href="https://fluxionai.space/"><strong>访问 Fluxion AI</strong></a>
+&nbsp;·&nbsp;
+<a href="prompts/项目学习导师提示词.md">查看 AI 辅助学习用法</a>
+
+</details>
+
+---
+
+## 🧠 AI 辅助学习
+
+把课程资料、项目文档和源码导出到同一目录后，可将它们连同 [项目学习导师提示词](prompts/项目学习导师提示词.md) 交给支持本地文件阅读的 AI。它会结合“教学文档 + 真实代码”讲解业务流程、核心实现和技术取舍，帮助你更系统地学习项目。
+
+[查看完整提示词与使用方法 →](prompts/项目学习导师提示词.md)
+
+---
+
 ## 🖼️ 界面预览
 
 <table>

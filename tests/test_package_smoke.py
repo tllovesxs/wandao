@@ -602,8 +602,8 @@ class PackagedSmokeContractTests(unittest.TestCase):
         }
         self.assertEqual(len(expected_plugins), 17)
         expected_counts = {
-            "win32": (23, 22),
-            "darwin": (22, 21),
+            "win32": (24, 23),
+            "darwin": (23, 22),
             "linux": (18, 17),
         }
         for target_platform, (provider_count, executable_count) in expected_counts.items():
@@ -622,6 +622,7 @@ class PackagedSmokeContractTests(unittest.TestCase):
         self.assertNotIn("onenote", package_smoke.expected_providers("darwin"))
         self.assertNotIn("onenote", package_smoke.expected_providers("linux"))
         self.assertIn("dingtalk-export", package_smoke.expected_providers("darwin"))
+        self.assertIn("dingtalk-import", package_smoke.expected_providers("darwin"))
         self.assertNotIn("dingtalk-export", package_smoke.expected_providers("linux"))
 
     def test_every_ci_package_smoke_passes_an_actual_application_path(self) -> None:

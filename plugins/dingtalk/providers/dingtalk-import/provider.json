@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "id": "dingtalk-import",
+  "platform": "dingtalk",
+  "name": "钉钉文档",
+  "title": "本地文件导入钉钉文档",
+  "navLabel": "钉钉文档导入",
+  "description": "导入本地 Markdown、TXT、Word、Excel 和 XMind，默认保留目录层级并补全 Markdown 本地图片。",
+  "type": "automation",
+  "group": "import",
+  "trustLevel": "official",
+  "status": "experimental",
+  "homepage": "https://docs.dingtalk.com/",
+  "tags": ["导入", "钉钉文档", "目录", "Markdown", "图片", "Word", "Excel"],
+  "capabilities": {
+    "export": false,
+    "import": true,
+    "guide": true,
+    "login": true,
+    "scanToc": false,
+    "images": true,
+    "attachments": false,
+    "tree": true,
+    "batch": true,
+    "retryFailures": true
+  },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": false },
+  "retryFailures": { "arg": "--retry-failed", "label": "只重试上次失败项" },
+  "guide": "README.md",
+  "fields": [
+    {
+      "name": "first_import_steps",
+      "label": "首次导入步骤",
+      "type": "notice",
+      "markdown": "### 推荐按此顺序操作\n\n1. 点击“登录并保存会话”，在弹出的钉钉网页完成登录。\n2. 粘贴**目标目录链接**，点击“检测目标目录”。\n3. 选择本地待导入目录，先点击“生成导入计划”核对层级、文件类型和图片提示。\n4. 用“单篇导入测试”确认效果，再执行批量导入。\n\nMarkdown 的本地图片会作为临时资源上传并写入文档；图片必须位于本次导入目录内。PDF、PPT 等不能导入为钉钉在线文档的文件会在计划中明确列出，不会被伪装成成功。"
+    },
+    {
+      "name": "target_url",
+      "label": "钉钉目标目录链接",
+      "type": "text",
+      "arg": "--target-url",
+      "required": true,
+      "history": "url",
+      "placeholder": "https://docs.dingtalk.com/i/desktop/folders/...",
+      "actions": ["probe", "plan", "importOne", "import"]
+    },
+    {
+      "name": "source_dir",
+      "label": "本地待导入目录",
+      "type": "directory",
+      "arg": "--source-dir",
+      "required": true,
+      "history": "path",
+      "actions": ["plan", "importOne", "import"]
+    },
+    {
+      "name": "source_file",
+      "label": "单篇测试文件（可选）",
+      "type": "file",
+      "arg": "--source-file",
+      "history": "path",
+      "placeholder": "留空则导入目录中排序第一篇支持的文档",
+      "actions": ["importOne"]
+    },
+    {
+      "name": "flatten_folders",
+      "label": "平铺导入（不保留子目录）",
+      "type": "checkbox",
+      "arg": "--flatten-folders",
+      "default": false,
+      "advanced": true,
+      "actions": ["importOne", "import"]
+    },
+    {
+      "name": "no_create_root_folder",
+      "label": "直接导入目标目录（不创建同名根目录）",
+      "type": "checkbox",
+      "arg": "--no-create-root-folder",
+      "default": false,
+      "advanced": true,
+      "actions": ["importOne", "import"]
+    },
+    {
+      "name": "require_images",
+      "label": "本地图片处理失败时判定文档导入失败",
+      "type": "checkbox",
+      "arg": "--require-images",
+      "default": false,
+      "advanced": true,
+      "actions": ["importOne", "import"]
+    },
+    {
+      "name": "max_import",
+      "label": "最多导入篇数（0 为全部）",
+      "type": "number",
+      "arg": "--max-import",
+      "default": 0,
+      "min": 0,
+      "advanced": true,
+      "actions": ["import"]
+    },
+    {
+      "name": "retry_failed",
+      "label": "只重试上次失败项",
+      "type": "checkbox",
+      "arg": "--retry-failed",
+      "default": false,
+      "advanced": true,
+      "actions": ["import"]
+    },
+    {
+      "name": "request_delay",
+      "label": "请求延迟秒",
+      "type": "number",
+      "arg": "--request-delay",
+      "default": 0.3,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["plan", "importOne", "import"]
+    },
+    {
+      "name": "request_jitter",
+      "label": "请求随机浮动秒",
+      "type": "number",
+      "arg": "--request-jitter",
+      "default": 0.2,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["plan", "importOne", "import"]
+    }
+  ],
+  "actions": [
+    {
+      "id": "login",
+      "kind": "login",
+      "label": "登录并保存会话",
+      "script": "../../backend/import_dingtalk.py",
+      "args": ["--login"],
+      "includeSelection": false,
+      "track": false,
+      "secondary": true
+    },
+    {
+      "id": "probe",
+      "kind": "check",
+      "label": "检测目标目录",
+      "script": "../../backend/import_dingtalk.py",
+      "args": ["--probe"],
+      "includeSelection": false,
+      "track": false,
+      "secondary": true
+    },
+    {
+      "id": "plan",
+      "kind": "plan",
+      "label": "生成导入计划",
+      "script": "../../backend/import_dingtalk.py",
+      "args": ["--plan"],
+      "includeSelection": false,
+      "track": false,
+      "secondary": true
+    },
+    {
+      "id": "importOne",
+      "kind": "import",
+      "label": "单篇导入测试",
+      "script": "../../backend/import_dingtalk.py",
+      "args": ["--import-one", "--yes"],
+      "secondary": true,
+      "confirm": "将向目标钉钉目录创建一篇测试文档，并上传其引用的本地图片。请确认目标目录和本地文件无误后继续。",
+      "progressTitle": "单篇导入钉钉文档",
+      "progressDetail": "正在上传测试文档、图片并写入钉钉..."
+    },
+    {
+      "id": "import",
+      "kind": "import",
+      "label": "开始批量导入",
+      "script": "../../backend/import_dingtalk.py",
+      "args": ["--import-all", "--yes", "--progress-every", "1"],
+      "confirm": "将按本地目录层级在目标钉钉目录创建文档和子目录，并上传 Markdown 引用的本地图片。请先生成导入计划，确认目标目录、层级和跳过项无误后继续。",
+      "progressTitle": "本地文件导入钉钉文档",
+      "progressDetail": "正在创建目录、上传文档和图片..."
+    }
+  ]
+}

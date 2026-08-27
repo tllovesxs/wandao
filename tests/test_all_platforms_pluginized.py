@@ -13,7 +13,7 @@ PLUGINS_ROOT = REPO_ROOT / "plugins"
 EXPECTED_PLUGINS = {
     "aliyun_thoughts": {"aliyun"},
     "csdn": {"csdn-export"},
-    "dingtalk": {"dingtalk-export"},
+    "dingtalk": {"dingtalk-export", "dingtalk-import"},
     "feishu": {"feishu-export", "feishu-import"},
     "ima": {"ima-export", "ima-import"},
     "notion": {"notion"},

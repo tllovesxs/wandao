@@ -124,7 +124,7 @@ test('Feishu import tutorial pins all screenshots remotely and excludes them fro
   assert.equal(assets.reduce((total, name) => total + fs.statSync(path.join(remoteAssetRoot, name)).size, 0), 17317358);
   assert.deepEqual(new Set(Object.keys(provider.guideAssets)), new Set(imageReferences.map((match) => match[1])));
   assert.equal(Object.values(provider.guideAssets).every((asset) => asset.mime === 'image/png' && asset.bytes <= 3 * 1024 * 1024 && /^[a-f0-9]{64}$/.test(asset.sha256)), true);
-  assert.equal(plugin.version, '1.0.10');
+  assert.equal(plugin.version, '1.0.11');
 });
 
 test('guide hydration limits remote IPC concurrency and renders an offline fallback', () => {

@@ -35,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -74,6 +75,39 @@ DEFAULT_WIKI_URL = ""
 FEISHU_NATIVE_DOC_OBJ_TYPE = 22
 FEISHU_FILE_OBJ_TYPE = 12
 FEISHU_MARKDOWN_FILE_TYPES = {"md", "markdown"}
+FEISHU_OPENAPI_BASE = "https://open.feishu.cn/open-apis"
+FEISHU_OPENAPI_CONFIG_FILE = "feishu_import_config.json"
+FEISHU_OPENAPI_MEDIA_PREFIX = "feishu-media://"
+FEISHU_DOCX_BLOCK_PAGE_SIZE = 500
+FEISHU_DOCX_TEXT_FIELDS = {
+    2: "text",
+    3: "heading1",
+    4: "heading2",
+    5: "heading3",
+    6: "heading4",
+    7: "heading5",
+    8: "heading6",
+    9: "heading7",
+    10: "heading8",
+    11: "heading9",
+    12: "bullet",
+    13: "ordered",
+    14: "code",
+    15: "quote",
+    17: "todo",
+}
+FEISHU_DOCX_HEADING_PREFIXES = {
+    3: "#",
+    4: "##",
+    5: "###",
+    6: "####",
+    7: "#####",
+    8: "######",
+    9: "######",
+    10: "######",
+    11: "######",
+}
+FEISHU_DOCX_SUPPORTED_BLOCK_TYPES = frozenset((*FEISHU_DOCX_TEXT_FIELDS, 1, 22, 27, 30, 34))
 
 
 class FeishuLoginRequired(ExportError):
@@ -85,6 +119,12 @@ class FeishuPermissionDenied(ExportError):
 
 
 class FeishuMarkdownSourceInvalid(ExportError):
+    pass
+
+
+class FeishuOpenAPIBlocksUnsupported(ExportError):
+    """The browser fallback is safer than silently dropping unsupported blocks."""
+
     pass
 
 
@@ -477,6 +517,398 @@ def run_with_auth_retry(
         cdp.navigate(entry_url)
         wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=entry_url)
         return operation()
+
+
+def default_openapi_config_path() -> Path:
+    """Import and export share the same optional Feishu OpenAPI credentials."""
+
+    return default_state_path(FEISHU_OPENAPI_CONFIG_FILE)
+
+
+def feishu_openapi_credentials(args: argparse.Namespace | None) -> tuple[str, str, str] | None:
+    """Return optional OpenAPI credentials without making browser export depend on them.
+
+    Browser-session export remains the zero-configuration path.  When the
+    user has already saved the App ID / App Secret in the Feishu import page,
+    reuse that configuration for the more reliable document-block endpoint.
+    """
+
+    if args is None or bool(getattr(args, "disable_openapi_blocks", False)):
+        return None
+    if hasattr(args, "_feishu_openapi_credentials"):
+        return getattr(args, "_feishu_openapi_credentials")
+
+    explicit_id = str(getattr(args, "app_id", "") or "").strip()
+    explicit_secret = str(getattr(args, "app_secret", "") or "").strip()
+    credentials: tuple[str, str, str] | None = None
+    if explicit_id or explicit_secret:
+        if explicit_id and explicit_secret:
+            credentials = (explicit_id, explicit_secret, "当前导出配置")
+    else:
+        config_path = Path(
+            str(getattr(args, "openapi_config_file", "") or default_openapi_config_path())
+        ).expanduser()
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            config = {}
+        if isinstance(config, dict):
+            config_id = str(config.get("app_id") or "").strip()
+            config_secret = str(config.get("app_secret") or "").strip()
+            if config_id and config_secret:
+                credentials = (config_id, config_secret, "已保存的飞书导入配置")
+        if credentials is None:
+            env_id = str(os.environ.get("FEISHU_APP_ID") or "").strip()
+            env_secret = str(os.environ.get("FEISHU_APP_SECRET") or "").strip()
+            if env_id and env_secret:
+                credentials = (env_id, env_secret, "环境变量")
+
+    setattr(args, "_feishu_openapi_credentials", credentials)
+    return credentials
+
+
+def feishu_openapi_json(
+    method: str,
+    path: str,
+    *,
+    access_token: str | None = None,
+    payload: dict[str, Any] | None = None,
+    query: dict[str, str] | None = None,
+    action: str = "调用飞书 OpenAPI",
+) -> dict[str, Any]:
+    """Call the documented OpenAPI endpoint with concise, non-secret errors."""
+
+    url = FEISHU_OPENAPI_BASE + path
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        text = exc.read().decode("utf-8", errors="replace")
+        raise ExportError(f"{action} HTTP {exc.code}：{text[:800]}") from exc
+    except urllib.error.URLError as exc:
+        raise ExportError(f"{action} 网络错误：{exc}") from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ExportError(f"{action} 返回的不是 JSON：{text[:500]}") from exc
+    if not isinstance(data, dict):
+        raise ExportError(f"{action} 返回格式无效")
+    code = data.get("code", 0)
+    if code not in (0, "0", None):
+        message = str(data.get("msg") or data.get("message") or "未知错误")
+        raise ExportError(f"{action} 失败：code={code} msg={message[:500]}")
+    return data
+
+
+def get_feishu_openapi_access_token(args: argparse.Namespace | None) -> str | None:
+    if args is None:
+        return None
+    cached = getattr(args, "_feishu_openapi_access_token", None)
+    if cached:
+        return str(cached)
+    credentials = feishu_openapi_credentials(args)
+    if not credentials:
+        return None
+    app_id, app_secret, _source = credentials
+    data = feishu_openapi_json(
+        "POST",
+        "/auth/v3/tenant_access_token/internal",
+        payload={"app_id": app_id, "app_secret": app_secret},
+        action="获取飞书 OpenAPI 访问令牌",
+    )
+    token = data.get("tenant_access_token") or (data.get("data") or {}).get("tenant_access_token")
+    if not token:
+        raise ExportError("获取飞书 OpenAPI 访问令牌成功但未返回 token")
+    setattr(args, "_feishu_openapi_access_token", str(token))
+    return str(token)
+
+
+def list_feishu_docx_blocks(access_token: str, document_id: str) -> list[dict[str, Any]]:
+    """Read every Docx block page instead of relying on a virtualized DOM."""
+
+    blocks: list[dict[str, Any]] = []
+    page_token = ""
+    for _page in range(1000):
+        query = {"page_size": str(FEISHU_DOCX_BLOCK_PAGE_SIZE)}
+        if page_token:
+            query["page_token"] = page_token
+        data = feishu_openapi_json(
+            "GET",
+            f"/docx/v1/documents/{urllib.parse.quote(document_id, safe='')}/blocks",
+            access_token=access_token,
+            query=query,
+            action="读取飞书文档块",
+        )
+        inner = data.get("data") if isinstance(data.get("data"), dict) else data
+        items = inner.get("items") or inner.get("blocks") or []
+        if not isinstance(items, list):
+            raise ExportError("读取飞书文档块返回的 items 不是数组")
+        blocks.extend(item for item in items if isinstance(item, dict))
+        if not inner.get("has_more"):
+            return blocks
+        page_token = str(inner.get("page_token") or "")
+        if not page_token:
+            raise ExportError("读取飞书文档块分页缺少 page_token")
+    raise ExportError("读取飞书文档块超过 1000 页，已停止以避免无限分页")
+
+
+def _feishu_docx_code_span(text: str) -> str:
+    delimiter = "``" if "`" in text else "`"
+    return f"{delimiter}{text}{delimiter}"
+
+
+def feishu_docx_elements_to_markdown(elements: list[dict[str, Any]] | None) -> str:
+    parts: list[str] = []
+    for element in elements or []:
+        if not isinstance(element, dict) or not isinstance(element.get("text_run"), dict):
+            keys = ", ".join(sorted(element.keys())) if isinstance(element, dict) else type(element).__name__
+            raise FeishuOpenAPIBlocksUnsupported(f"文档含有暂未转换的内联元素：{keys}")
+        text_run = element["text_run"]
+        text = str(text_run.get("content") or "")
+        style = text_run.get("text_element_style")
+        style = style if isinstance(style, dict) else {}
+        if style.get("inline_code"):
+            text = _feishu_docx_code_span(text)
+        if style.get("bold"):
+            text = f"**{text}**"
+        if style.get("italic"):
+            text = f"*{text}*"
+        if style.get("strikethrough"):
+            text = f"~~{text}~~"
+        link = style.get("link") if isinstance(style.get("link"), dict) else {}
+        href = str(link.get("url") or "").strip()
+        if href and text:
+            text = f"[{text}]({href})"
+        parts.append(text)
+    return "".join(parts).strip()
+
+
+def _feishu_docx_block_text(block: dict[str, Any], host: str, images: list[str]) -> str:
+    try:
+        block_type = int(block.get("block_type"))
+    except (TypeError, ValueError) as exc:
+        raise FeishuOpenAPIBlocksUnsupported("文档块缺少有效 block_type") from exc
+    if block_type not in FEISHU_DOCX_SUPPORTED_BLOCK_TYPES:
+        raise FeishuOpenAPIBlocksUnsupported(f"文档含有暂未转换的块类型：{block_type}")
+    if block_type in {1, 34}:
+        return ""
+    if block_type == 22:
+        return "---"
+    if block_type == 27:
+        image = block.get("image") if isinstance(block.get("image"), dict) else {}
+        token = str(image.get("token") or "").strip()
+        if not token:
+            raise FeishuOpenAPIBlocksUnsupported("图片块未提供素材 token")
+        resource = FEISHU_OPENAPI_MEDIA_PREFIX + token
+        images.append(resource)
+        return f"![image]({resource})"
+    if block_type == 30:
+        sheet = block.get("sheet") if isinstance(block.get("sheet"), dict) else {}
+        token = str(sheet.get("token") or "").strip()
+        if not token:
+            raise FeishuOpenAPIBlocksUnsupported("电子表格块未提供 token")
+        return f"[飞书电子表格](https://{host}/sheets/{token})" if host else f"[飞书电子表格]({token})"
+
+    field = FEISHU_DOCX_TEXT_FIELDS.get(block_type)
+    payload = block.get(field) if field and isinstance(block.get(field), dict) else {}
+    text = feishu_docx_elements_to_markdown(payload.get("elements"))
+    if not text:
+        return ""
+    if block_type in FEISHU_DOCX_HEADING_PREFIXES:
+        return f"{FEISHU_DOCX_HEADING_PREFIXES[block_type]} {text}"
+    if block_type == 12:
+        return f"- {text}"
+    if block_type == 13:
+        style = payload.get("style") if isinstance(payload.get("style"), dict) else {}
+        sequence = style.get("sequence")
+        number = sequence if isinstance(sequence, int) and sequence > 0 else 1
+        return f"{number}. {text}"
+    if block_type == 14:
+        return f"```\n{text}\n```"
+    if block_type == 15:
+        return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+    if block_type == 17:
+        style = payload.get("style") if isinstance(payload.get("style"), dict) else {}
+        checked = bool(style.get("done") or style.get("is_done"))
+        return f"- [{'x' if checked else ' '}] {text}"
+    return text
+
+
+def feishu_docx_blocks_to_markdown(
+    blocks: list[dict[str, Any]],
+    *,
+    title: str,
+    source_url: str = "",
+) -> dict[str, Any]:
+    """Convert a fully paginated Docx block tree while refusing silent loss."""
+
+    by_id: dict[str, dict[str, Any]] = {}
+    block_order: list[str] = []
+    for block in blocks:
+        block_id = str(block.get("block_id") or "").strip()
+        if not block_id:
+            raise FeishuOpenAPIBlocksUnsupported("文档块缺少 block_id")
+        if block_id in by_id:
+            raise FeishuOpenAPIBlocksUnsupported("文档块列表包含重复 block_id")
+        by_id[block_id] = block
+        block_order.append(block_id)
+    if not by_id:
+        return {
+            "title": title,
+            "markdown": f"# {title}\n",
+            "images": [],
+            "blockCount": 0,
+            "textLength": 0,
+            "renderer": "openapi_docx",
+        }
+
+    orphaned = [
+        block_id
+        for block_id in block_order
+        if str(by_id[block_id].get("parent_id") or "").strip()
+        and str(by_id[block_id].get("parent_id") or "").strip() not in by_id
+    ]
+    if orphaned:
+        raise FeishuOpenAPIBlocksUnsupported("文档块树包含缺失的父节点")
+    roots = [
+        block_id
+        for block_id in block_order
+        if not str(by_id[block_id].get("parent_id") or "").strip()
+    ]
+    if not roots:
+        raise FeishuOpenAPIBlocksUnsupported("文档块树没有可用根节点")
+    host = urllib.parse.urlparse(source_url).netloc
+    images: list[str] = []
+    visited: set[str] = set()
+    visiting: set[str] = set()
+
+    def render_children(block: dict[str, Any], *, indent: str = "") -> list[str]:
+        rendered: list[str] = []
+        for child_id_raw in block.get("children") or []:
+            child_id = str(child_id_raw or "").strip()
+            if not child_id:
+                continue
+            if child_id not in by_id:
+                raise FeishuOpenAPIBlocksUnsupported("文档块树包含缺失的子节点")
+            text = render_node(child_id)
+            if text:
+                rendered.append("\n".join(indent + line if line else line for line in text.splitlines()))
+        return rendered
+
+    def render_node(block_id: str) -> str:
+        if block_id in visiting:
+            raise FeishuOpenAPIBlocksUnsupported("文档块树存在循环引用")
+        if block_id in visited:
+            raise FeishuOpenAPIBlocksUnsupported("文档块树存在重复子节点引用")
+        visiting.add(block_id)
+        block = by_id[block_id]
+        try:
+            block_type = int(block.get("block_type"))
+        except (TypeError, ValueError) as exc:
+            raise FeishuOpenAPIBlocksUnsupported("文档块缺少有效 block_type") from exc
+        own = _feishu_docx_block_text(block, host, images)
+        if block_type == 1:
+            parts = render_children(block)
+        elif block_type == 34:
+            quote = "\n\n".join(render_children(block))
+            parts = ["\n".join(f"> {line}" if line else ">" for line in quote.splitlines())] if quote else []
+        elif block_type in {12, 13}:
+            nested = render_children(block, indent="  ")
+            parts = [own] if own else []
+            parts.extend(nested)
+        else:
+            parts = [own] if own else []
+            parts.extend(render_children(block))
+        visiting.remove(block_id)
+        visited.add(block_id)
+        return "\n\n".join(part for part in parts if part).strip()
+
+    rendered = [render_node(root) for root in roots]
+    if len(visited) != len(by_id):
+        raise FeishuOpenAPIBlocksUnsupported("文档块树存在未连接节点")
+    body = "\n\n".join(part for part in rendered if part).strip()
+    markdown = f"# {title}\n" + (f"\n{body}\n" if body else "")
+    return {
+        "title": title,
+        "markdown": markdown,
+        "images": list(dict.fromkeys(images)),
+        "blockCount": len(blocks),
+        "textLength": len(body),
+        "renderer": "openapi_docx",
+    }
+
+
+def _emit_openapi_fallback(args: argparse.Namespace | None, key: str, message: str) -> None:
+    if args is None:
+        return
+    seen = getattr(args, "_feishu_openapi_fallback_notices", set())
+    if key in seen:
+        return
+    seen.add(key)
+    setattr(args, "_feishu_openapi_fallback_notices", seen)
+    emit(args, message, level="warn")
+
+
+def try_extract_doc_markdown_via_openapi(
+    node: dict[str, Any],
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any] | None:
+    """Use block API where available, otherwise leave browser export untouched."""
+
+    if is_markdown_file_node(node):
+        return None
+    try:
+        obj_type = int(node.get("obj_type") or FEISHU_NATIVE_DOC_OBJ_TYPE)
+    except (TypeError, ValueError):
+        return None
+    if obj_type != FEISHU_NATIVE_DOC_OBJ_TYPE:
+        return None
+    credentials = feishu_openapi_credentials(args)
+    if not credentials:
+        return None
+    try:
+        access_token = get_feishu_openapi_access_token(args)
+    except ExportError as exc:
+        _emit_openapi_fallback(args, "token", f"飞书块 API 不可用，已改用网页采集：{exc}")
+        return None
+    if not access_token:
+        return None
+    candidates = list(
+        dict.fromkeys(
+            value
+            for value in (str(node.get("wiki_token") or "").strip(), str(node.get("obj_token") or "").strip())
+            if value
+        )
+    )
+    if not candidates:
+        return None
+    last_error: ExportError | None = None
+    for document_id in candidates:
+        try:
+            blocks = list_feishu_docx_blocks(access_token, document_id)
+            result = feishu_docx_blocks_to_markdown(
+                blocks,
+                title=str(node.get("title") or "未命名"),
+                source_url=str(node.get("url") or ""),
+            )
+            result["openapiDocumentId"] = document_id
+            return result
+        except ExportError as exc:
+            last_error = exc
+    if last_error:
+        _emit_openapi_fallback(
+            args,
+            f"doc:{node.get('wiki_token') or node.get('obj_token') or node.get('title')}",
+            f"飞书块 API 未能完整读取“{node.get('title') or '未命名'}”，已改用网页采集：{last_error}",
+        )
+    return None
 
 
 FEISHU_TREE_LOADER_JS = r"""
@@ -1129,36 +1561,159 @@ async (fallbackTitle) => {
       imageList = [],
       imageNodes = new Map(),
       maxIterations = 180,
+      recoveryAnchors = [],
+      maxRecoveryAnchors = 80,
+      fallbackTitle = "",
     } = options;
     const ownerDoc = doc || document;
     const win = (ownerDoc.defaultView) || (typeof window !== "undefined" ? window : null);
-    // seen: key -> index in rendered; remounts may upgrade a block in place.
-    const seen = new Map();
-    const rendered = [];
+    // Keep the first-seen order, but insert late-observed virtual-list blocks
+    // next to their currently visible neighbours. Feishu can mount a block
+    // after the sampling pass (or report it through MutationObserver after it
+    // has already been detached), so appending every late block would put it
+    // at the end of the Markdown document.
+    const renderedByKey = new Map();
+    const order = [];
     const keyFor = (block) => block.getAttribute("data-record-id")
       || block.getAttribute("data-block-id")
       || `${block.getAttribute("data-block-type")}:${clean(block.innerText || block.textContent || "").slice(0, 80)}`;
-    const collect = () => {
-      let changed = 0;
-      for (const block of listBlocks()) {
-        const key = keyFor(block);
-        if (!key) continue;
-        const md = renderOne(block);
-        if (!md) continue;
-        if (seen.has(key)) {
-          const index = seen.get(key);
-          if (md !== rendered[index]) {
-            rendered[index] = md;
-            changed += 1;
-          }
-        } else {
-          seen.set(key, rendered.length);
-          rendered.push(md);
-          changed += 1;
+    const indexOfKey = (key) => order.indexOf(key);
+    const insertionIndex = (key, block, contextBlocks) => {
+      const context = (contextBlocks || []).map(keyFor).filter(Boolean);
+      let position = context.indexOf(key);
+      if (position < 0 && block && block.parentElement) {
+        const siblings = [...block.parentElement.children];
+        position = siblings.indexOf(block);
+        if (position >= 0) {
+          context.splice(0, context.length, ...siblings.map(keyFor).filter(Boolean));
         }
       }
+      if (position < 0) return order.length;
+      for (let i = position + 1; i < context.length; i++) {
+        const next = indexOfKey(context[i]);
+        if (next >= 0) return next;
+      }
+      for (let i = position - 1; i >= 0; i--) {
+        const previous = indexOfKey(context[i]);
+        if (previous >= 0) return previous + 1;
+      }
+      return order.length;
+    };
+    const collectOne = (block, contextBlocks) => {
+      if (!block || !block.getAttribute || !block.getAttribute("data-block-type")) return 0;
+      const key = keyFor(block);
+      if (!key) return 0;
+      const md = renderOne(block);
+      if (!md) return 0;
+      if (renderedByKey.has(key)) {
+        if (renderedByKey.get(key) !== md) {
+          renderedByKey.set(key, md);
+          return 1;
+        }
+        return 0;
+      }
+      const at = insertionIndex(key, block, contextBlocks);
+      order.splice(at, 0, key);
+      renderedByKey.set(key, md);
+      return 1;
+    };
+    const collect = (blocks = null, contextBlocks = null) => {
+      const list = blocks || listBlocks();
+      const context = contextBlocks || list;
+      let changed = 0;
+      for (const block of list) changed += collectOne(block, context);
       return changed;
     };
+    const blocksFromNode = (node) => {
+      if (!node || node.nodeType !== 1) return [];
+      const candidates = [];
+      if (node.getAttribute && node.getAttribute("data-block-type")) candidates.push(node);
+      if (node.querySelectorAll) candidates.push(...node.querySelectorAll("[data-block-type]"));
+      return candidates.filter((block, index, all) => {
+        if (all.indexOf(block) !== index) return false;
+        let parent = block.parentElement;
+        while (parent && parent !== root) {
+          if (parent.getAttribute && parent.getAttribute("data-block-type")) return false;
+          parent = parent.parentElement;
+        }
+        return true;
+      });
+    };
+    const blockFromNode = (node) => {
+      let current = node && node.nodeType === 1 ? node : node && node.parentElement;
+      while (current && current !== root) {
+        if (current.getAttribute && current.getAttribute("data-block-type")) return current;
+        current = current.parentElement;
+      }
+      return current && current.getAttribute && current.getAttribute("data-block-type") ? current : null;
+    };
+    // Observe the render root's parent so replacement of the virtual-list root
+    // is covered as well. Added and removed nodes are both sampled: a virtual
+    // list may recycle a block between two normal scroll samples.
+    let mutationObserver = null;
+    try {
+      const Observer = win && win.MutationObserver;
+      const observeTarget = (root && root.parentElement) || root || ownerDoc.body;
+      if (Observer && observeTarget) {
+        mutationObserver = new Observer((records) => {
+          try {
+            const current = listBlocks();
+            const candidates = new Map();
+            const addCandidate = (block, context) => {
+              if (!block || candidates.has(block)) return;
+              candidates.set(block, context || []);
+            };
+            for (const record of records) {
+              if (record.type === "childList") {
+                const targetBlock = blockFromNode(record.target);
+                if (targetBlock) addCandidate(targetBlock, current);
+                // Mutation records preserve the siblings from the instant a
+                // node was mounted or removed. Those neighbours let us retain
+                // document order even when the block has already been
+                // recycled before the observer callback runs.
+                const surrounding = [
+                  ...blocksFromNode(record.previousSibling),
+                  ...blocksFromNode(record.nextSibling),
+                ];
+                for (const node of [...record.addedNodes, ...record.removedNodes]) {
+                  for (const block of blocksFromNode(node)) {
+                    const attachedSiblings = block.parentElement
+                      ? [...block.parentElement.children].filter((sibling) => (
+                        sibling.getAttribute && sibling.getAttribute("data-block-type")
+                      ))
+                      : [];
+                    const context = attachedSiblings.length
+                      ? attachedSiblings
+                      : [surrounding[0], block, surrounding[1]].filter(Boolean);
+                    addCandidate(block, context);
+                  }
+                }
+              } else if (record.type === "attributes") {
+                const block = blockFromNode(record.target);
+                if (block) addCandidate(block, current);
+              } else if (record.type === "characterData") {
+                const block = blockFromNode(record.target);
+                if (block) addCandidate(block, current);
+              }
+            }
+            for (const [block, context] of candidates) collectOne(block, context.length ? context : current);
+          } catch (_) {}
+        });
+        mutationObserver.observe(observeTarget, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: [
+            "data-record-id", "data-block-id", "data-block-type",
+            "src", "data-src", "data-original", "data-image-url",
+            "data-original-src", "data-lazy-src",
+          ],
+        });
+      }
+    } catch (_) {
+      mutationObserver = null;
+    }
     // Discover every element that can currently scroll. Feishu often keeps the
     // real virtual-list scroller nested; the first document after navigate may
     // respond to window scroll while later documents only respond to an inner
@@ -1203,7 +1758,9 @@ async (fallbackTitle) => {
           const maxY = Math.max(0, (el.scrollHeight || 0) - viewport);
           if (maxY <= 0) continue;
           const before = el.scrollTop || 0;
-          const step = Math.max(240, Math.floor(viewport * 0.75));
+          // Keep enough overlap for Feishu's overscan window. A larger jump
+          // can mount and recycle a short block before the next sample.
+          const step = Math.max(180, Math.floor(viewport * 0.55));
           // Even when already at the bottom, re-assign scrollTop = maxY so
           // Feishu's lazy-mount listeners (and our test fixtures) fire again
           // after height growth.
@@ -1231,7 +1788,10 @@ async (fallbackTitle) => {
     const contentAtBottom = (scrollables) => {
       const content = scrollables.filter(containsContent);
       const pool = content.length ? content : scrollables;
-      if (!pool.length) return false;
+      // A short document may have no scrollable container at all. Once its
+      // first blocks are present, that is a valid completed state rather than
+      // an iteration-ceiling failure.
+      if (!pool.length) return listBlocks().length > 0;
       return pool.every((el) => {
         try {
           const maxY = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
@@ -1260,37 +1820,104 @@ async (fallbackTitle) => {
     // as progress — that kept the loop alive after the doc was already done.
     let scrollables = findScrollables();
     resetScroll(scrollables);
-    await sleep(220);
+    await sleep(320);
     collect();
     let stable = 0;
     let scrollIterations = 0;
     let finalScrollHeight = 0;
     let reachedBottom = false;
+    let terminatedCleanly = false;
     for (let i = 0; i < maxIterations; i++) {
       scrollIterations = i + 1;
       scrollables = findScrollables();
       const heightBefore = maxScrollHeight(scrollables);
       stepScrollables(scrollables);
-      const atBottom = contentAtBottom(scrollables);
-      await sleep(atBottom ? 180 : 280);
-      const changed = collect();
+      const atBottomBeforeSettle = contentAtBottom(scrollables);
+      await sleep(atBottomBeforeSettle ? 260 : 320);
+      // The second pass is cheap and catches text/images that arrived during
+      // the first render pass; the observer handles nodes that were already
+      // recycled before this point.
+      const changed = collect() + collect();
+      // Height can grow while the page is settling, so re-discover the
+      // scrollables and check the bottom only AFTER the second collection.
+      // Otherwise a growth event on the old bottom edge can be reported as a
+      // complete export.
+      scrollables = findScrollables();
       finalScrollHeight = maxScrollHeight(scrollables);
+      const atBottomAfterSettle = contentAtBottom(scrollables);
       const progressed = changed > 0 || finalScrollHeight > heightBefore + 2;
       if (progressed) stable = 0;
       else stable += 1;
-      if (atBottom) reachedBottom = true;
-      if (stable >= 3 && atBottom) break;
+      if (atBottomAfterSettle) reachedBottom = true;
+      if (stable >= 5 && atBottomAfterSettle) {
+        terminatedCleanly = true;
+        break;
+      }
     }
-    const settledImages = await settleImageSources(rendered, imageList, imageNodes);
+    // Feishu's native document body is virtualized. On large documents, a
+    // normal scroll sweep can still cross a region that is never mounted as a
+    // direct block (the page coalesces several programmatic scrolls). When the
+    // sidebar exposes heading anchors, use those anchors as a precise recovery
+    // index. This is deliberately conditional: ordinary documents do not pay
+    // for a second pass unless the primary Markdown is missing a TOC heading.
+    const renderedText = () => order
+      .map((key) => renderedByKey.get(key) || "")
+      .join("\n");
+    const documentTitleText = clean(fallbackTitle || "");
+    const hasRenderedText = (text) => Boolean(
+      text && (text === documentTitleText || renderedText().includes(text))
+    );
+    const normalizedAnchors = recoveryAnchors
+      .map((item) => ({
+        element: item && (item.element || item.node || item),
+        text: clean(item && item.text != null
+          ? String(item.text)
+          : (item && item.element && (item.element.innerText || item.element.textContent)) || ""),
+        href: String(item && item.href || ""),
+      }))
+      .filter((item) => item.element && item.text && item.href.startsWith("#"));
+    const initiallyMissingAnchors = normalizedAnchors.filter((item) => !hasRenderedText(item.text));
+    let recoveryAttempts = 0;
+    let recoveryLimited = false;
+    if (initiallyMissingAnchors.length) {
+      const seenHrefs = new Set();
+      for (const anchor of normalizedAnchors) {
+        if (hasRenderedText(anchor.text)) continue;
+        if (seenHrefs.has(anchor.href)) continue;
+        seenHrefs.add(anchor.href);
+        if (recoveryAttempts >= maxRecoveryAnchors) {
+          recoveryLimited = true;
+          break;
+        }
+        try {
+          if (typeof anchor.element.click === "function") anchor.element.click();
+          else continue;
+          // Feishu mounts the destination on the next render frame. A second
+          // sample catches nested text/images that arrive immediately after it.
+          await sleep(160);
+          collect();
+          await sleep(120);
+          collect();
+          recoveryAttempts += 1;
+        } catch (_) {}
+      }
+    }
+    const recoveryMissing = initiallyMissingAnchors.filter((item) => !hasRenderedText(item.text)).length;
+    try { if (mutationObserver) mutationObserver.disconnect(); } catch (_) {}
+    const finalRendered = order.map((key) => renderedByKey.get(key)).filter(Boolean);
+    const settledImages = await settleImageSources(finalRendered, imageList, imageNodes);
     resetScroll(scrollables);
     return {
-      rendered,
+      rendered: finalRendered,
       images: settledImages,
-      blockCount: rendered.length,
+      blockCount: finalRendered.length,
       scrollIterations,
       finalScrollHeight,
       reachedBottom,
-      hitIterationCeiling: scrollIterations >= maxIterations,
+      hitIterationCeiling: !terminatedCleanly,
+      tocRecoveryAttempts: recoveryAttempts,
+      tocRecoveryMissing: recoveryMissing,
+      tocRecoveryLimited: recoveryLimited,
     };
   }
 
@@ -1305,6 +1932,10 @@ async (fallbackTitle) => {
     || document.body;
   const scroller = resolveFeishuDocScroller(initialRoot, document);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const recoveryAnchorNodes = (() => {
+    const catalogue = [...document.querySelectorAll('.catalogue__list a[href^="#"], .catalogue a[href^="#"]')];
+    return catalogue.length ? catalogue : [...document.querySelectorAll('a[href^="#"]')];
+  })();
   const collected = await collectFeishuDocBlocks({
     root: initialRoot,
     scroller,
@@ -1315,6 +1946,13 @@ async (fallbackTitle) => {
     imageList: images,
     imageNodes: imageSourcesByNode,
     maxIterations: 180,
+    fallbackTitle,
+    recoveryAnchors: recoveryAnchorNodes.map((element) => ({
+      element,
+      text: clean(element.innerText || element.textContent || ""),
+      href: element.getAttribute("href") || "",
+    })),
+    maxRecoveryAnchors: 80,
   });
   const body = collected.rendered.filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
   const markdown = "# " + pageTitle + "\n\n" + body + "\n";
@@ -1326,6 +1964,9 @@ async (fallbackTitle) => {
   const result = {title: pageTitle, markdown, images: collected.images, blockCount: collected.blockCount, textLength: body.length, renderer: "native_doc"};
   result.scrollIterations = collected.scrollIterations;
   result.finalScrollHeight = collected.finalScrollHeight;
+  result.tocRecoveryAttempts = collected.tocRecoveryAttempts;
+  result.tocRecoveryMissing = collected.tocRecoveryMissing;
+  result.tocRecoveryLimited = collected.tocRecoveryLimited;
   if (scrollerHint) result.scroller = scrollerHint;
   // Only flag incomplete when we exhausted the iteration ceiling WITHOUT
   // reaching the bottom of the content scroller. A clean bottom stop means the
@@ -1624,6 +2265,19 @@ def fetch_doc_markdown(
 ) -> dict[str, Any]:
     check_stopped(args)
     throttle_request(args)
+    openapi_result = try_extract_doc_markdown_via_openapi(node, args)
+    if openapi_result is not None:
+        emit(
+            args,
+            f"飞书文档已通过官方块 API 完整读取：{node.get('title') or '未命名'}",
+            event="document.export.renderer",
+            renderer="openapi_docx",
+            stats={
+                "blockCount": openapi_result.get("blockCount"),
+                "textLength": openapi_result.get("textLength"),
+            },
+        )
+        return openapi_result
     url = node.get("url") or ""
     if not url:
         raise ExportError(f"Node has no URL: {node.get('title')}")
@@ -1732,6 +2386,81 @@ def download_blob_image(cdp: CDPClient, url: str, dest_dir: Path, timeout: int) 
     return download_image(data_url, dest_dir, [], timeout)
 
 
+def _guess_image_extension_from_bytes(
+    data: bytes,
+    content_type: str | None = None,
+    content_disposition: str | None = None,
+) -> str:
+    """Choose a useful local extension even when the media API says octet-stream."""
+
+    filename_match = re.search(
+        r"filename\*?=(?:UTF-8''|\")?[^;\"']*\.([A-Za-z0-9]{2,5})",
+        content_disposition or "",
+        flags=re.IGNORECASE,
+    )
+    if filename_match:
+        extension = filename_match.group(1).lower()
+        return "jpg" if extension == "jpeg" else extension
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "webp"
+    if data.lstrip().lower().startswith(b"<svg"):
+        return "svg"
+    return guess_extension("", content_type)
+
+
+def download_feishu_openapi_media(
+    resource: str,
+    dest_dir: Path,
+    access_token: str,
+    timeout: int,
+) -> Path:
+    """Download a Docx image using its official media token.
+
+    ``feishu-media://`` is deliberately an internal marker only.  It must
+    never be left in an exported Markdown file because Markdown renderers
+    cannot retrieve it themselves.
+    """
+
+    if not resource.startswith(FEISHU_OPENAPI_MEDIA_PREFIX):
+        raise ExportError("飞书 OpenAPI 图片资源标识无效")
+    token = resource[len(FEISHU_OPENAPI_MEDIA_PREFIX) :].strip()
+    if not token or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        raise ExportError("飞书 OpenAPI 图片素材 token 无效")
+    request = urllib.request.Request(
+        FEISHU_OPENAPI_BASE
+        + "/drive/v1/medias/"
+        + urllib.parse.quote(token, safe="")
+        + "/download",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = response.read()
+            extension = _guess_image_extension_from_bytes(
+                data,
+                response.headers.get("Content-Type"),
+                response.headers.get("Content-Disposition"),
+            )
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise ExportError(f"飞书图片下载 HTTP {exc.code}：{detail}") from exc
+    except urllib.error.URLError as exc:
+        raise ExportError(f"飞书图片下载网络错误：{exc}") from exc
+    if not data:
+        raise ExportError("飞书图片下载返回空文件")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target = dest_dir / (hashlib.sha1(resource.encode("utf-8")).hexdigest()[:12] + "." + extension)
+    if not target.exists():
+        target.write_bytes(data)
+    return target
+
+
 def localize_images(
     cdp: CDPClient,
     markdown: str,
@@ -1741,16 +2470,30 @@ def localize_images(
     keep_remote: bool,
     args: argparse.Namespace | None = None,
 ) -> tuple[str, int, list[dict[str, str]]]:
-    cdp.send("Network.enable")
-    cookies = cdp.send("Network.getAllCookies", timeout=20).get("result", {}).get("cookies", [])
+    cookies: list[dict[str, Any]] | None = None
+    openapi_access_token: str | None = None
     success = 0
     failures: list[dict[str, str]] = []
     for url in sorted(set(images)):
         check_stopped(args)
         try:
-            if url.lower().startswith("blob:"):
+            if url.startswith(FEISHU_OPENAPI_MEDIA_PREFIX):
+                if openapi_access_token is None:
+                    openapi_access_token = get_feishu_openapi_access_token(args)
+                if not openapi_access_token:
+                    raise ExportError("飞书块 API 图片缺少可用的访问令牌")
+                target = download_feishu_openapi_media(
+                    url,
+                    md_path.parent / "assets",
+                    openapi_access_token,
+                    timeout,
+                )
+            elif url.lower().startswith("blob:"):
                 target = download_blob_image(cdp, url, md_path.parent / "assets", timeout)
             elif url.lower().startswith(("http://", "https://", "data:")):
+                if cookies is None:
+                    cdp.send("Network.enable")
+                    cookies = cdp.send("Network.getAllCookies", timeout=20).get("result", {}).get("cookies", [])
                 target = download_image(url, md_path.parent / "assets", cookies, timeout)
             else:
                 continue
@@ -1767,7 +2510,10 @@ def localize_images(
                 resource={"type": "image", "url": url, "host": urllib.parse.urlparse(url).netloc},
                 error={"type": type(exc).__name__, "message": str(exc)},
             )
-            if not keep_remote:
+            # feishu-media:// is an internal marker rather than a remotely
+            # usable Markdown URL, so retaining it would leave a visibly
+            # broken image even when users chose to retain HTTP URLs.
+            if url.startswith(FEISHU_OPENAPI_MEDIA_PREFIX) or not keep_remote:
                 markdown = markdown.replace(url, "")
     return markdown, success, failures
 
@@ -1912,7 +2658,7 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
                 "entry_kind": "document",
             }
             prepare_entry_session(cdp, args, entry_url)
-            result = extract_doc_markdown_current(cdp, node, args)
+            result = try_extract_doc_markdown_via_openapi(node, args) or extract_doc_markdown_current(cdp, node, args)
             node["title"] = result.get("title") or "飞书云文档"
             tree = {
                 "spaceId": "",
@@ -2000,7 +2746,7 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                 "level": 0,
                 "entry_kind": "document",
             }
-            probe = extract_doc_markdown_current(cdp, node, args)
+            probe = try_extract_doc_markdown_via_openapi(node, args) or extract_doc_markdown_current(cdp, node, args)
             node["title"] = probe.get("title") or "飞书云文档"
             prefetched_results[start_token] = probe
             tree = {

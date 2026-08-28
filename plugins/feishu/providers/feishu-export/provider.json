@@ -5,7 +5,7 @@
   "name": "飞书",
   "title": "飞书 Wiki Markdown 导出",
   "navLabel": "飞书导出",
-  "description": "读取飞书 Wiki 目录并批量导出 Markdown、图片和目录结构。",
+  "description": "读取飞书 Wiki 目录并批量导出 Markdown、图片和目录结构；已保存 OpenAPI 凭证时优先完整读取长文档。",
   "type": "hybrid",
   "group": "export",
   "trustLevel": "official",

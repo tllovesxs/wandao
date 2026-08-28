@@ -224,6 +224,108 @@ test('collectFeishuDocBlocks upgrades a partially mounted block in place', async
   assert.deepEqual(result.rendered, ['partial text plus the rest of the sentence https://example.com/x']);
 });
 
+test('collectFeishuDocBlocks retains a block recycled between normal scroll samples', async () => {
+  const api = loadScrollApi();
+  const { document, window } = parseHTML(`<!doctype html><html><body>
+    <div class="page-scroller" data-overflow-y="auto" style="height:200px; overflow:auto">
+      <div class="root-render-unit-container"><div class="render-unit-wrapper"></div></div>
+    </div>
+  </body></html>`);
+  const scroller = document.querySelector('.page-scroller');
+  const wrapper = document.querySelector('.render-unit-wrapper');
+  Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 200 });
+  Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 800 });
+  let scrollTop = 0;
+  Object.defineProperty(scroller, 'scrollTop', {
+    configurable: true,
+    get: () => scrollTop,
+    set: (value) => { scrollTop = Math.min(Math.max(value, 0), 600); },
+  });
+  const mount = (id, text) => {
+    const block = document.createElement('div');
+    block.setAttribute('data-block-type', 'paragraph');
+    block.setAttribute('data-block-id', id);
+    block.textContent = text;
+    return block;
+  };
+  const first = mount('block-1', 'block-1');
+  const third = mount('block-3', 'block-3');
+  wrapper.append(first, third);
+  let sleepRounds = 0;
+  const sleep = async () => {
+    sleepRounds += 1;
+    if (sleepRounds === 2) {
+      // Mimic a virtual-list frame which mounts a short block and recycles it
+      // before the collector's next normal DOM sample. MutationObserver still
+      // receives the node and its preserved neighbours.
+      const second = mount('block-2', 'block-2');
+      wrapper.insertBefore(second, third);
+      wrapper.removeChild(second);
+      await Promise.resolve();
+    }
+  };
+  const currentBlocks = () => [...wrapper.children].filter((el) => el.getAttribute('data-block-type'));
+  const result = await api.collectFeishuDocBlocks({
+    root: document.querySelector('.root-render-unit-container'),
+    scroller,
+    document,
+    sleep,
+    currentBlocks,
+    renderBlock: (el) => el.textContent || '',
+    maxIterations: 30,
+  });
+  assert.deepEqual(result.rendered, ['block-1', 'block-2', 'block-3']);
+});
+
+test('collectFeishuDocBlocks recovers a missing heading through a TOC anchor', async () => {
+  const api = loadScrollApi();
+  const { document, window } = parseHTML(`<!doctype html><html><body>
+    <div class="page-scroller" data-overflow-y="auto" style="height:200px; overflow:auto">
+      <div class="root-render-unit-container"><div class="render-unit-wrapper"></div></div>
+    </div>
+    <a id="target-anchor" href="#target">Target heading</a>
+  </body></html>`);
+  const scroller = document.querySelector('.page-scroller');
+  const wrapper = document.querySelector('.render-unit-wrapper');
+  const anchor = document.querySelector('#target-anchor');
+  Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 200 });
+  Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 400 });
+  let scrollTop = 0;
+  Object.defineProperty(scroller, 'scrollTop', {
+    configurable: true,
+    get: () => scrollTop,
+    set: (value) => { scrollTop = Math.min(Math.max(value, 0), 200); },
+  });
+  const first = document.createElement('div');
+  first.setAttribute('data-block-type', 'paragraph');
+  first.setAttribute('data-block-id', 'first');
+  first.textContent = 'first';
+  wrapper.appendChild(first);
+  anchor.click = () => {
+    const target = document.createElement('div');
+    target.setAttribute('data-block-type', 'heading1');
+    target.setAttribute('data-block-id', 'target');
+    target.textContent = 'Target heading';
+    wrapper.appendChild(target);
+  };
+  const result = await api.collectFeishuDocBlocks({
+    root: document.querySelector('.root-render-unit-container'),
+    scroller,
+    document,
+    sleep: async () => {},
+    currentBlocks: () => [...wrapper.children].filter((el) => el.getAttribute('data-block-type')),
+    renderBlock: (el) => {
+      const type = el.getAttribute('data-block-type');
+      return type === 'heading1' ? `## ${el.textContent}` : el.textContent || '';
+    },
+    recoveryAnchors: [{ element: anchor, text: 'Target heading', href: '#target' }],
+    maxIterations: 20,
+  });
+  assert.deepEqual(result.rendered, ['first', '## Target heading']);
+  assert.equal(result.tocRecoveryAttempts, 1);
+  assert.equal(result.tocRecoveryMissing, 0);
+});
+
 test('resolveFeishuDocScroller skips scrollbar chrome that cannot scroll', () => {
   const api = loadScrollApi();
   const { document, window } = parseHTML(`<!doctype html><html><body>

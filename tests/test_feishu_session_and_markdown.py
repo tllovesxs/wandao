@@ -666,6 +666,83 @@ class FakeCheckpoint:
 
 
 class FeishuImageLocalizationTests(unittest.TestCase):
+    def test_download_openapi_media_uses_local_extension_and_bearer_token(self) -> None:
+        class FakeResponse:
+            headers = {"Content-Type": "application/octet-stream"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b"\x89PNG\r\n\x1a\nimage"
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(feishu.urllib.request, "urlopen", return_value=FakeResponse()) as urlopen:
+                target = feishu.download_feishu_openapi_media(
+                    "feishu-media://image-token_1",
+                    Path(directory) / "assets",
+                    "tenant-token",
+                    timeout=5,
+                )
+                request = urlopen.call_args.args[0]
+                self.assertIn("/drive/v1/medias/image-token_1/download", request.full_url)
+                self.assertEqual(request.get_header("Authorization"), "Bearer tenant-token")
+                self.assertEqual(target.suffix, ".png")
+                self.assertTrue(target.exists())
+
+    def test_localize_images_uses_openapi_media_downloader(self) -> None:
+        resource = "feishu-media://image-token"
+        cdp = FakeSessionCdp()
+        with tempfile.TemporaryDirectory() as directory:
+            md_path = Path(directory) / "document.md"
+            target = md_path.parent / "assets" / "image.png"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"image")
+            args = argparse.Namespace(_feishu_openapi_access_token="tenant-token")
+            with mock.patch.object(feishu, "download_feishu_openapi_media", return_value=target) as download:
+                markdown, success, failures = feishu.localize_images(
+                    cdp,
+                    f"![image]({resource})",
+                    [resource],
+                    md_path,
+                    timeout=5,
+                    keep_remote=True,
+                    args=args,
+                )
+
+        download.assert_called_once_with(resource, mock.ANY, "tenant-token", 5)
+        self.assertEqual(cdp.sent, [], "OpenAPI-only images must not require a browser request")
+        self.assertEqual(success, 1)
+        self.assertEqual(failures, [])
+        self.assertIn("assets/image.png", markdown)
+        self.assertNotIn(resource, markdown)
+
+    def test_localize_images_drops_failed_openapi_marker_even_when_remote_images_are_kept(self) -> None:
+        resource = "feishu-media://image-token"
+        with tempfile.TemporaryDirectory() as directory:
+            md_path = Path(directory) / "document.md"
+            args = argparse.Namespace(_feishu_openapi_access_token="tenant-token", log_callback=None)
+            with (
+                mock.patch.object(feishu, "download_feishu_openapi_media", side_effect=feishu.ExportError("denied")),
+                mock.patch.object(feishu, "emit"),
+            ):
+                markdown, success, failures = feishu.localize_images(
+                    FakeSessionCdp(),
+                    f"![image]({resource})",
+                    [resource],
+                    md_path,
+                    timeout=5,
+                    keep_remote=True,
+                    args=args,
+                )
+
+        self.assertEqual(success, 0)
+        self.assertEqual(len(failures), 1)
+        self.assertNotIn(resource, markdown)
+
     def test_localize_images_saves_browser_data_url(self) -> None:
         data_url = "data:image/png;base64,aW1hZ2U="
         cdp = FakeSessionCdp()
@@ -710,6 +787,105 @@ class FeishuImageLocalizationTests(unittest.TestCase):
             self.assertEqual(failures, [])
             self.assertNotIn(blob_url, markdown)
             self.assertEqual(len(list((md_path.parent / "assets").glob("*.png"))), 1)
+
+
+class FeishuOpenAPIBlockExportTests(unittest.TestCase):
+    def test_list_docx_blocks_reads_every_page(self) -> None:
+        pages = [
+            {"code": 0, "data": {"items": [{"block_id": "first"}], "has_more": True, "page_token": "next"}},
+            {"code": 0, "data": {"items": [{"block_id": "second"}], "has_more": False}},
+        ]
+        with mock.patch.object(feishu, "feishu_openapi_json", side_effect=pages) as call:
+            blocks = feishu.list_feishu_docx_blocks("tenant-token", "document-token")
+
+        self.assertEqual([block["block_id"] for block in blocks], ["first", "second"])
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(call.call_args_list[1].kwargs["query"]["page_token"], "next")
+
+    def test_docx_blocks_to_markdown_preserves_text_lists_and_images(self) -> None:
+        blocks = [
+            {"block_id": "root", "block_type": 1, "children": ["heading", "text", "list", "image"]},
+            {
+                "block_id": "heading",
+                "parent_id": "root",
+                "block_type": 3,
+                "heading1": {"elements": [{"text_run": {"content": "Heading"}}]},
+            },
+            {
+                "block_id": "text",
+                "parent_id": "root",
+                "block_type": 2,
+                "text": {"elements": [{"text_run": {"content": "Plain text"}}]},
+            },
+            {
+                "block_id": "list",
+                "parent_id": "root",
+                "block_type": 12,
+                "bullet": {"elements": [{"text_run": {"content": "List item"}}]},
+            },
+            {
+                "block_id": "image",
+                "parent_id": "root",
+                "block_type": 27,
+                "image": {"token": "image-token"},
+            },
+        ]
+
+        result = feishu.feishu_docx_blocks_to_markdown(
+            blocks,
+            title="Document",
+            source_url=ENTRY_URL,
+        )
+
+        self.assertIn("# Document", result["markdown"])
+        self.assertIn("# Heading", result["markdown"])
+        self.assertIn("Plain text", result["markdown"])
+        self.assertIn("- List item", result["markdown"])
+        self.assertIn("![image](feishu-media://image-token)", result["markdown"])
+        self.assertEqual(result["images"], ["feishu-media://image-token"])
+
+    def test_docx_blocks_reject_orphaned_parent_instead_of_promoting_it_to_root(self) -> None:
+        with self.assertRaisesRegex(feishu.FeishuOpenAPIBlocksUnsupported, "缺失的父节点"):
+            feishu.feishu_docx_blocks_to_markdown(
+                [
+                    {"block_id": "root", "block_type": 1, "children": []},
+                    {"block_id": "orphan", "parent_id": "missing", "block_type": 2, "text": {"elements": []}},
+                ],
+                title="Document",
+            )
+
+    def test_fetch_prefers_openapi_blocks_without_navigating_browser(self) -> None:
+        node = {"title": "Long document", "url": ENTRY_URL, "obj_type": 22}
+        cdp = FakeSessionCdp()
+        api_result = {"markdown": "# Long document\n", "images": [], "renderer": "openapi_docx"}
+
+        with (
+            mock.patch.object(feishu, "throttle_request"),
+            mock.patch.object(feishu, "try_extract_doc_markdown_via_openapi", return_value=api_result),
+            mock.patch.object(feishu, "extract_doc_markdown_current") as browser_extract,
+            mock.patch.object(feishu, "emit"),
+        ):
+            result = feishu.fetch_doc_markdown(cdp, node, argparse.Namespace(stop_event=None))
+
+        self.assertIs(result, api_result)
+        self.assertEqual(cdp.navigated, [])
+        browser_extract.assert_not_called()
+
+    def test_fetch_falls_back_to_browser_when_openapi_is_unavailable(self) -> None:
+        node = {"title": "Fallback document", "url": ENTRY_URL, "obj_type": 22}
+        cdp = FakeSessionCdp()
+        browser_result = {"markdown": "# Fallback document\n", "images": []}
+
+        with (
+            mock.patch.object(feishu, "throttle_request"),
+            mock.patch.object(feishu, "try_extract_doc_markdown_via_openapi", return_value=None),
+            mock.patch.object(feishu, "extract_doc_markdown_current", return_value=browser_result) as browser_extract,
+        ):
+            result = feishu.fetch_doc_markdown(cdp, node, argparse.Namespace(stop_event=None))
+
+        self.assertIs(result, browser_result)
+        self.assertEqual(cdp.navigated, [ENTRY_URL])
+        browser_extract.assert_called_once()
 
 
 class FeishuRelativeResourceReportingTests(unittest.TestCase):

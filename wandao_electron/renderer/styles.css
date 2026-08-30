@@ -2257,50 +2257,6 @@ button,
   background: transparent;
 }
 
-.notice-sponsor {
-  margin-top: 16px;
-  padding: 18px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface-raise);
-  color: var(--text-2);
-}
-
-.notice-sponsor summary {
-  cursor: pointer;
-  color: var(--text);
-  font-size: 16px;
-  user-select: none;
-}
-
-.notice-sponsor-banner-link {
-  display: block;
-  margin-top: 14px;
-  border-radius: var(--r-md);
-  overflow: hidden;
-}
-
-.notice-sponsor-banner {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.notice-sponsor blockquote {
-  margin: 12px 0;
-  padding: 8px 12px;
-  border-left: 4px solid var(--border-strong);
-  color: var(--text-2);
-}
-
-.notice-sponsor p + p {
-  margin-top: 10px;
-}
-
-.notice-sponsor a {
-  color: var(--brand-pressed);
-}
-
 .notice-doc-loading,
 .notice-doc-empty {
   min-height: 280px;
@@ -2745,8 +2701,12 @@ button,
     padding-left: 8px;
   }
 
-  .notice-sponsor {
-    padding: 14px;
+  .notice-list-section:nth-child(3) {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+    padding-top: 12px;
+    padding-left: 0;
   }
 
   .browser-option {

@@ -124,6 +124,20 @@ test('notice markdown resolves relative images to the safe GitHub docs scope', (
   assert.doesNotMatch(outside, /<img/);
 });
 
+test('sponsor notice keeps its tracked link and banner through Markdown rendering', () => {
+  const sponsorMarkdown = fs.readFileSync(path.join(repoRoot, 'docs', 'announcements', 'fluxion-ai-sponsor.md'), 'utf8');
+  const base = 'https://raw.githubusercontent.com/tllovesxs/wandao/main/docs/announcements/fluxion-ai-sponsor.md';
+  const html = markdownToHtml(sponsorMarkdown, {
+    resolveImageSource: (source) => new URL(source, base).href,
+    allowRemoteImage: context.__safeNoticeImageUrl,
+    remoteImageAttribute: 'data-notice-image'
+  });
+
+  assert.match(html, /href="https:\/\/fluxionai\.space\/register\?source=github&amp;campaign=wandao" data-external-link="true"/);
+  assert.match(html, /data-notice-image="https:\/\/raw\.githubusercontent\.com\/tllovesxs\/wandao\/main\/docs\/images\/fluxion-ai-sponsor-banner\.png"/);
+  assert.match(html, /兑换码 <code>WANNENGDAO<\/code>/);
+});
+
 test('guide markdown only accepts the pinned Wandao Feishu screenshot URLs', () => {
   const pinned = 'https://raw.githubusercontent.com/tllovesxs/wandao/82c027b054d9ece8449af30d79600814eb823e46/plugins/feishu/providers/feishu-import/images/20.png';
   const html = markdownToHtml(`![飞书截图](${pinned})`);

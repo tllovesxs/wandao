@@ -7,6 +7,8 @@ const vm = require('node:vm');
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'app.js'), 'utf8');
 const stylesSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'renderer', 'styles.css'), 'utf8');
+const noticeManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'docs', 'tutorial-announcements.json'), 'utf8'));
+const sponsorArticle = fs.readFileSync(path.join(repoRoot, 'docs', 'announcements', 'fluxion-ai-sponsor.md'), 'utf8');
 
 function sourceBetween(start, end, source = appSource) {
   const startIndex = source.indexOf(start);
@@ -62,15 +64,22 @@ test('all export completion entry points insert sponsor logs before structured d
   }
 });
 
-test('sponsor content is always rendered below the notice layout with safe rich log nodes', () => {
+test('sponsor content is a dedicated notice category instead of a footer on every document', () => {
   const noticePage = sourceBetween('function renderNoticeCenterPage() {', '\nfunction renderProviderModeSwitcher(');
-  assert.ok(noticePage.indexOf('</section>\n    ${renderFluxionSponsor()}') > noticePage.indexOf('class="notice-layout"'));
-  assert.match(appSource, /<details class="notice-sponsor" open>/);
-  assert.match(appSource, /Fluxion AI · 为 AI 辅助学习提供支持/);
-  assert.match(appSource, /data-notice-image=/);
+  const sponsor = noticeManifest.items.find((item) => item.id === 'fluxion-ai-sponsor');
+
+  assert.ok(noticePage.indexOf("renderNoticeListSection('赞助商', groups.sponsors") > noticePage.indexOf("renderNoticeListSection('公告', groups.announcements"));
+  assert.ok(noticePage.indexOf("renderNoticeListSection('教程', groups.tutorials") > noticePage.indexOf("renderNoticeListSection('赞助商', groups.sponsors"));
+  assert.doesNotMatch(noticePage, /renderFluxionSponsor/);
+  assert.doesNotMatch(appSource, /function renderFluxionSponsor/);
+  assert.doesNotMatch(stylesSource, /\.notice-sponsor\s*\{/);
+  assert.equal(sponsor?.type, 'sponsor');
+  assert.equal(sponsor?.path, 'docs/announcements/fluxion-ai-sponsor.md');
+  assert.match(sponsorArticle, /Fluxion AI · 为 AI 辅助学习提供支持/);
+  assert.match(sponsorArticle, /fluxion-ai-sponsor-banner\.png/);
+  assert.match(sponsorArticle, /WANNENGDAO/);
   assert.match(appSource, /presentation === 'fluxion-register'/);
   assert.match(appSource, /presentation === 'fluxion-redeem'/);
-  assert.match(stylesSource, /\.notice-sponsor\s*\{/);
   assert.match(stylesSource, /\.log-entry \.log-external-link\s*\{/);
 });
 

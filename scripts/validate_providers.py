@@ -36,7 +36,7 @@ TRUST_LEVELS = {"official", "community", "local", "experimental", "guide"}
 STATUSES = {"stable", "beta", "experimental"}
 FIELD_TYPES = {"text", "password", "directory", "file", "checkbox", "select", "number", "textarea", "notice"}
 ACTION_KINDS = {"login", "scan", "export", "import", "plan", "check", "custom"}
-NOTICE_TYPES = {"announcement", "tutorial"}
+NOTICE_TYPES = {"announcement", "sponsor", "tutorial"}
 TOC_ADAPTERS = {"yinxiang-notebooks", "zsxq-column-groups"}
 
 
@@ -420,7 +420,7 @@ def validate_notice_manifest(repo_root: Path) -> list[ValidationIssue]:
         else:
             seen.add(item_id)
         if item.get("type") not in NOTICE_TYPES:
-            issues.append(ValidationIssue(path, f"items[{index}].type 必须是 announcement 或 tutorial"))
+            issues.append(ValidationIssue(path, f"items[{index}].type 必须是 announcement、sponsor 或 tutorial"))
         for key in ("title", "summary", "date", "path"):
             if not isinstance(item.get(key), str) or not item.get(key, "").strip():
                 issues.append(ValidationIssue(path, f"items[{index}].{key} 必须是非空字符串"))

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-29",
+  "updatedAt": "2026-08-30",
   "repository": "https://github.com/tllovesxs/wandao",
   "items": [
     {
@@ -32,6 +32,20 @@
         "提示词"
       ],
       "path": "prompts/项目学习导师提示词.md"
+    },
+    {
+      "id": "fluxion-ai-sponsor",
+      "type": "sponsor",
+      "title": "Fluxion AI · 为 AI 辅助学习提供支持",
+      "summary": "统一 API 接入和管理全球主流 AI 模型，支持多线路调度、用量与费用集中管理。",
+      "date": "2026-08-30",
+      "badge": "赞助商",
+      "tags": [
+        "赞助商",
+        "AI 辅助学习",
+        "API"
+      ],
+      "path": "docs/announcements/fluxion-ai-sponsor.md"
     },
     {
       "id": "wandao-ai-project-learning",

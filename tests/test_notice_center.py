@@ -15,16 +15,26 @@ class NoticeCenterTests(unittest.TestCase):
 
         self.assertEqual(
             [item["id"] for item in items],
-            ["provider-co-creation-invite", "project-learning-ai-prompt", "wandao-ai-project-learning"],
+            ["provider-co-creation-invite", "project-learning-ai-prompt", "fluxion-ai-sponsor", "wandao-ai-project-learning"],
         )
         self.assertTrue(items[0]["pinned"])
         self.assertEqual(items[0]["type"], "announcement")
         self.assertEqual(items[1]["type"], "announcement")
         self.assertEqual(items[1]["badge"], "AI 学习")
-        self.assertEqual(items[2]["type"], "tutorial")
-        self.assertEqual(items[2]["title"], "用万能导 + Codex 辅助学习代码项目")
-        self.assertEqual(items[2]["date"], "2026-08-29")
-        self.assertEqual(items[2]["path"], "docs/tutorials/wandao-ai-project-learning.md")
+        self.assertEqual(items[2]["type"], "sponsor")
+        self.assertEqual(items[2]["badge"], "赞助商")
+        self.assertEqual(items[2]["path"], "docs/announcements/fluxion-ai-sponsor.md")
+        self.assertEqual(items[3]["type"], "tutorial")
+        self.assertEqual(items[3]["title"], "用万能导 + Codex 辅助学习代码项目")
+        self.assertEqual(items[3]["date"], "2026-08-29")
+        self.assertEqual(items[3]["path"], "docs/tutorials/wandao-ai-project-learning.md")
+
+    def test_fluxion_sponsor_is_a_standalone_markdown_notice(self) -> None:
+        sponsor = (REPO_ROOT / "docs" / "announcements" / "fluxion-ai-sponsor.md").read_text(encoding="utf-8")
+        self.assertIn("# Fluxion AI · 为 AI 辅助学习提供支持", sponsor)
+        self.assertIn("../images/fluxion-ai-sponsor-banner.png", sponsor)
+        self.assertIn("WANNENGDAO", sponsor)
+        self.assertIn("https://fluxionai.space/register?source=github&campaign=wandao", sponsor)
 
     def test_ai_project_learning_tutorial_keeps_expected_structure_and_original_images(self) -> None:
         tutorial = (REPO_ROOT / "docs" / "tutorials" / "wandao-ai-project-learning.md").read_text(encoding="utf-8")

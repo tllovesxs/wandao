@@ -13,10 +13,8 @@ const GITHUB_REPO_URL = 'https://github.com/tllovesxs/wandao';
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/tllovesxs/wandao/main/';
 const GITHUB_BLOB_BASE = 'https://github.com/tllovesxs/wandao/blob/main/';
 const NOTICE_CENTER_MANIFEST_URL = `${GITHUB_RAW_BASE}docs/tutorial-announcements.json`;
-const FLUXION_SITE_URL = 'https://fluxionai.space/';
 const FLUXION_REGISTER_URL = 'https://fluxionai.space/register?source=github&campaign=wandao';
 const FLUXION_REDEEM_MESSAGE = '兑换码：WANNENGDAO — 登录后在工作台「兑换」输入，即可获得 $3 API 额度。';
-const FLUXION_SPONSOR_BANNER_URL = `${GITHUB_RAW_BASE}docs/images/fluxion-ai-sponsor-banner.png`;
 const DEFAULT_BROWSER_DOWNLOAD_URL = 'https://www.google.com/chrome/';
 let pluginCatalogState = { status: 'idle', plugins: [], query: '', error: '', offline: false, experimentalError: '', updatedAt: '' };
 let pluginCatalogRequestId = 0;
@@ -25,7 +23,7 @@ let pluginBulkUpdateRunning = false;
 let customPluginMessageCleanup = null;
 const FALLBACK_NOTICE_CENTER = {
   version: 1,
-  updatedAt: '2026-07-28',
+  updatedAt: '2026-08-30',
   repository: GITHUB_REPO_URL,
   items: [
     {
@@ -51,6 +49,18 @@ const FALLBACK_NOTICE_CENTER = {
       tags: ['公告', 'AI', '项目学习', '提示词'],
       path: 'prompts/项目学习导师提示词.md',
       body: '# AI 辅助学习：项目学习导师提示词\n\n把万能导导出的教学文档和源码项目放在一起，再把项目学习导师提示词发给 AI，可以让 AI 结合真实代码和课程资料讲解项目。\n\n## 使用方式\n\n1. 用万能导导出你有权限访问的教学文档。\n2. 把 Markdown 文档放到源码项目旁边。\n3. 用 AI 编程工具打开整个项目目录。\n4. 复制 `prompts/项目学习导师提示词.md` 的内容给 AI。\n5. 按章节、功能或技术点继续提问。'
+    },
+    {
+      id: 'fluxion-ai-sponsor',
+      type: 'sponsor',
+      pinned: false,
+      title: 'Fluxion AI · 为 AI 辅助学习提供支持',
+      summary: '统一 API 接入和管理全球主流 AI 模型，支持多线路调度、用量与费用集中管理。',
+      date: '2026-08-30',
+      badge: '赞助商',
+      tags: ['赞助商', 'AI 辅助学习', 'API'],
+      path: 'docs/announcements/fluxion-ai-sponsor.md',
+      body: '# Fluxion AI · 为 AI 辅助学习提供支持\n\n[![Fluxion AI：统一接入与管理全球主流 AI 模型；多线路动态路由、价格与用量透明。兑换码 WANNENGDAO 可获得 3 美元 API 额度](../images/fluxion-ai-sponsor-banner.png)](https://fluxionai.space/register?source=github&campaign=wandao)\n\n> 本区为赞助信息。万能导始终完全开源免费，AI 辅助学习不绑定任何模型或 API 服务。\n\n[**Fluxion AI**](https://fluxionai.space/register?source=github&campaign=wandao) 面向个人开发者、技术团队与企业，通过统一 API 接入全球主流 AI 模型，并以多线路调度提升可用性；模型质量、使用情况和费用可在一个平台集中管理。\n\n灵活的线路与计费方案带来更具竞争力的调用成本，实时价格和每笔消费均可查阅。\n\n## 兑换福利\n\n登录后在工作台「兑换」输入兑换码 `WANNENGDAO`，即可获得 $3 API 额度。\n\n[访问 Fluxion AI](https://fluxionai.space/register?source=github&campaign=wandao)'
     }
   ]
 };
@@ -2284,20 +2294,23 @@ function normalizeNoticeManifest(raw) {
   return {
     ...manifest,
     items: items
-      .map((item, index) => ({
-        id: String(item.id || `notice-${index}`),
-        type: item.type === 'tutorial' ? 'tutorial' : 'announcement',
-        pinned: Boolean(item.pinned),
-        title: String(item.title || '未命名内容'),
-        summary: String(item.summary || ''),
-        date: String(item.date || manifest.updatedAt || ''),
-        badge: String(item.badge || ''),
-        tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
-        path: item.path ? String(item.path) : '',
-        url: item.url ? String(item.url) : '',
-        htmlUrl: item.htmlUrl ? String(item.htmlUrl) : '',
-        body: item.body ? String(item.body) : ''
-      }))
+      .map((item, index) => {
+        const noticeType = String(item.type || '');
+        return {
+          id: String(item.id || `notice-${index}`),
+          type: noticeType === 'tutorial' || noticeType === 'sponsor' ? noticeType : 'announcement',
+          pinned: Boolean(item.pinned),
+          title: String(item.title || '未命名内容'),
+          summary: String(item.summary || ''),
+          date: String(item.date || manifest.updatedAt || ''),
+          badge: String(item.badge || ''),
+          tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+          path: item.path ? String(item.path) : '',
+          url: item.url ? String(item.url) : '',
+          htmlUrl: item.htmlUrl ? String(item.htmlUrl) : '',
+          body: item.body ? String(item.body) : ''
+        };
+      })
       .sort((a, b) => {
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
         return String(b.date).localeCompare(String(a.date)) || a.title.localeCompare(b.title, 'zh-Hans-CN');
@@ -2310,14 +2323,15 @@ function noticeItems() {
 }
 
 function noticeGroups(items = noticeItems()) {
-  const announcements = items.filter((item) => item.type !== 'tutorial');
+  const announcements = items.filter((item) => item.type === 'announcement');
+  const sponsors = items.filter((item) => item.type === 'sponsor');
   const tutorials = items.filter((item) => item.type === 'tutorial');
-  return { announcements, tutorials };
+  return { announcements, sponsors, tutorials };
 }
 
 function defaultNoticeId(items = noticeItems()) {
   const groups = noticeGroups(items);
-  return groups.announcements[0]?.id || groups.tutorials[0]?.id || items[0]?.id || '';
+  return groups.announcements[0]?.id || groups.tutorials[0]?.id || groups.sponsors[0]?.id || items[0]?.id || '';
 }
 
 async function readRemoteText(url) {
@@ -2403,6 +2417,7 @@ async function loadNoticeCenter(force = false) {
 function noticeKindLabel(item) {
   if (item.pinned) return '置顶公告';
   if (item.type === 'tutorial') return '教程';
+  if (item.type === 'sponsor') return item.badge || '赞助商';
   return item.badge || '公告';
 }
 
@@ -3029,20 +3044,6 @@ async function hydrateNoticeImages(container) {
   await Promise.all(Array.from({ length: workerCount }, () => loadNext()));
 }
 
-function renderFluxionSponsor() {
-  return `
-    <details class="notice-sponsor" open>
-      <summary><strong>Fluxion AI · 为 AI 辅助学习提供支持</strong></summary>
-      <a class="notice-sponsor-banner-link" href="${escapeHtml(FLUXION_SITE_URL)}" data-external-link="true">
-        <img class="notice-sponsor-banner" alt="Fluxion AI：统一接入与管理全球主流 AI 模型；多线路动态路由、价格与用量透明。兑换码 WANNENGDAO 可获得 3 美元 API 额度" data-notice-image="${escapeHtml(FLUXION_SPONSOR_BANNER_URL)}" loading="lazy">
-      </a>
-      <blockquote>本区为赞助信息。万能导始终完全开源免费，AI 辅助学习不绑定任何模型或 API 服务。</blockquote>
-      <p><a href="${escapeHtml(FLUXION_SITE_URL)}" data-external-link="true"><strong>Fluxion AI</strong></a> 面向个人开发者、技术团队与企业，通过统一 API 接入全球主流 AI 模型，并以多线路调度提升可用性；模型质量、使用情况和费用可在一个平台集中管理。</p>
-      <p>灵活的线路与计费方案带来更具竞争力的调用成本，实时价格和每笔消费均可查阅。</p>
-    </details>
-  `;
-}
-
 function renderNoticeDocBody(selected) {
   const selectedId = selected?.id || '';
   const bodyMatchesSelection = noticeCenterState.selectedBodyId === selectedId;
@@ -3118,6 +3119,7 @@ function renderNoticeCenterPage() {
     <section class="notice-layout">
       <aside class="notice-list">
         ${renderNoticeListSection('公告', groups.announcements, '暂无公告。')}
+        ${renderNoticeListSection('赞助商', groups.sponsors, '暂无赞助商信息。')}
         ${renderNoticeListSection('教程', groups.tutorials, '暂无教程。')}
       </aside>
       <article class="notice-document">
@@ -3139,7 +3141,6 @@ function renderNoticeCenterPage() {
         </div>
       </article>
     </section>
-    ${renderFluxionSponsor()}
   `;
   bindNoticeCenterActions(contentArea);
   hydrateNoticeImages(contentArea);

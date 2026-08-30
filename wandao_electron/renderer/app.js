@@ -13,6 +13,10 @@ const GITHUB_REPO_URL = 'https://github.com/tllovesxs/wandao';
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/tllovesxs/wandao/main/';
 const GITHUB_BLOB_BASE = 'https://github.com/tllovesxs/wandao/blob/main/';
 const NOTICE_CENTER_MANIFEST_URL = `${GITHUB_RAW_BASE}docs/tutorial-announcements.json`;
+const FLUXION_SITE_URL = 'https://fluxionai.space/';
+const FLUXION_REGISTER_URL = 'https://fluxionai.space/register?source=github&campaign=wandao';
+const FLUXION_REDEEM_MESSAGE = '兑换码：WANNENGDAO — 登录后在工作台「兑换」输入，即可获得 $3 API 额度。';
+const FLUXION_SPONSOR_BANNER_URL = `${GITHUB_RAW_BASE}docs/images/fluxion-ai-sponsor-banner.png`;
 const DEFAULT_BROWSER_DOWNLOAD_URL = 'https://www.google.com/chrome/';
 let pluginCatalogState = { status: 'idle', plugins: [], query: '', error: '', offline: false, experimentalError: '', updatedAt: '' };
 let pluginCatalogRequestId = 0;
@@ -651,11 +655,32 @@ function formatLogTime(value) {
   return formatUserDateTime(value);
 }
 
-function createLogEntryElement(message, type = 'info', time = new Date().toISOString()) {
+function createLogEntryElement(message, type = 'info', time = new Date().toISOString(), presentation = '') {
   const entry = document.createElement('div');
   entry.className = `log-entry ${type}`;
   const timestamp = formatLogTime(time);
-  entry.textContent = `[${timestamp}] ${message}`;
+  entry.appendChild(document.createTextNode(`[${timestamp}] `));
+
+  // 广告日志只渲染预定义的安全结构，不解析普通日志中的 Markdown 或 HTML。
+  if (presentation === 'fluxion-register' && message === FLUXION_REGISTER_URL) {
+    const link = document.createElement('a');
+    link.className = 'log-external-link';
+    link.href = FLUXION_REGISTER_URL;
+    link.textContent = FLUXION_REGISTER_URL;
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      window.electronAPI.openExternal(FLUXION_REGISTER_URL);
+    });
+    entry.appendChild(link);
+  } else if (presentation === 'fluxion-redeem' && message === FLUXION_REDEEM_MESSAGE) {
+    const label = document.createElement('strong');
+    label.textContent = '兑换码：';
+    const code = document.createElement('code');
+    code.textContent = 'WANNENGDAO';
+    entry.append(label, code, document.createTextNode(' — 登录后在工作台「兑换」输入，即可获得 $3 API 额度。'));
+  } else {
+    entry.appendChild(document.createTextNode(message));
+  }
   return entry;
 }
 
@@ -672,16 +697,16 @@ function trimRenderedLogEntries(logContent) {
   }
 }
 
-function renderLogEntry(message, type = 'info', time = new Date().toISOString()) {
+function renderLogEntry(message, type = 'info', time = new Date().toISOString(), presentation = '') {
   const logContent = document.getElementById('log-content');
   if (!logContent) return;
-  logContent.appendChild(createLogEntryElement(message, type, time));
+  logContent.appendChild(createLogEntryElement(message, type, time, presentation));
   trimRenderedLogEntries(logContent);
   logContent.scrollTop = logContent.scrollHeight;
 }
 
 function renderUserLogEntry(entry) {
-  renderLogEntry(entry.message, entry.type, entry.time);
+  renderLogEntry(entry.message, entry.type, entry.time, entry.presentation || '');
 }
 
 function renderDetailedLogEntry(entry) {
@@ -714,7 +739,7 @@ function renderLogPanel() {
       const event = entry.event ? `[${entry.event}] ` : '';
       fragment.appendChild(createLogEntryElement(`${source}${event}${entry.message}`, entry.type, entry.time));
     } else {
-      fragment.appendChild(createLogEntryElement(entry.message, entry.type, entry.time));
+      fragment.appendChild(createLogEntryElement(entry.message, entry.type, entry.time, entry.presentation || ''));
     }
   });
   logContent.appendChild(fragment);
@@ -727,16 +752,36 @@ function toggleLogViewMode() {
   renderLogPanel();
 }
 
-function appendUserLog(message, type = 'info') {
+function appendUserLog(message, type = 'info', presentation = '') {
   const text = normalizeLogMessage(message);
   const entry = {
     time: new Date().toISOString(),
     type,
-    message: text
+    message: text,
+    presentation
   };
   userLogEntries.push(entry);
   trimLogStore(userLogEntries);
   if (logViewMode === 'user') renderUserLogEntry(entry);
+}
+
+function isExportAction(action) {
+  if (action && typeof action === 'object') {
+    return String(action.kind || '').toLowerCase() === 'export'
+      || String(action.actionName || '').trim() === '导出';
+  }
+  return String(action || '').trim().toLowerCase() === 'export'
+    || String(action || '').trim() === '导出';
+}
+
+function appendExportSuccessSponsorLogs(outcome, action) {
+  if (outcome !== 'completed' || !isExportAction(action)) return;
+  appendUserLog(FLUXION_REGISTER_URL, 'success', 'fluxion-register');
+  appendUserLog(FLUXION_REDEEM_MESSAGE, 'success', 'fluxion-redeem');
+}
+
+function isSponsorLogEntry(entry) {
+  return entry?.presentation === 'fluxion-register' || entry?.presentation === 'fluxion-redeem';
 }
 
 function compactLogSummary(message, maxLength = 220) {
@@ -893,7 +938,9 @@ async function copyDeveloperReport() {
     }
   }
 
-  const userLines = userLogEntries.map((entry) => `[${formatUserDateTime(entry.time)}] [${entry.type}] ${entry.message}`);
+  const userLines = userLogEntries
+    .filter((entry) => !isSponsorLogEntry(entry))
+    .map((entry) => `[${formatUserDateTime(entry.time)}] [${entry.type}] ${entry.message}`);
   const detailLines = detailLogEntries.map(formatDeveloperDetailEntry);
   const report = [
     '# 万能导错误报告',
@@ -1712,6 +1759,7 @@ async function resumeTask(task) {
         return;
       }
       log(outcome === 'partial' ? '历史任务继续执行部分完成，请查看失败项' : '历史任务继续执行完成', outcome === 'partial' ? 'warn' : 'success');
+      appendExportSuccessSponsorLogs(outcome, task.action);
       if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
       finishProgressForTaskResult(result, '历史任务继续执行完成', { provider: task.providerId, mode: task.action });
     } else if (outcome === 'stopped') {
@@ -2895,6 +2943,106 @@ function renderTaskCenterPage() {
   bindWorkbenchActions(contentArea);
 }
 
+async function requestNoticeImage(imageUrl) {
+  const safeUrl = safeNoticeImageUrl(imageUrl);
+  if (!safeUrl) {
+    return { success: false, errorMessage: '公告图片地址不在允许的 GitHub 文档范围内' };
+  }
+  try {
+    const result = await window.electronAPI.fetchRemoteImage(safeUrl);
+    if (!result?.success || !result.dataUrl) {
+      throw new Error(result?.error || '公告图片读取失败');
+    }
+    return { success: true, result };
+  } catch (error) {
+    return { success: false, errorMessage: error?.message || String(error) };
+  }
+}
+
+function replaceWithNoticeImageFallback(image, imageUrl, errorMessage) {
+  const placeholder = document.createElement('div');
+  placeholder.className = 'guide-image-fallback';
+  placeholder.setAttribute('role', 'status');
+  placeholder.title = errorMessage || '公告图片读取失败';
+
+  const title = document.createElement('strong');
+  title.textContent = image.alt ? `${image.alt}暂时无法加载` : '公告图片暂时无法加载';
+  placeholder.appendChild(title);
+
+  const detail = document.createElement('span');
+  detail.textContent = '请检查网络连接，公告文字仍可继续阅读。';
+  placeholder.appendChild(detail);
+
+  const retryButton = document.createElement('button');
+  retryButton.type = 'button';
+  retryButton.className = 'guide-image-retry';
+  retryButton.title = '重新加载这张图片';
+  retryButton.setAttribute('aria-label', '重新加载这张公告图片');
+  const retryIcon = document.createElement('span');
+  retryIcon.className = 'guide-image-retry-icon';
+  retryIcon.textContent = '\u21bb';
+  retryIcon.setAttribute('aria-hidden', 'true');
+  retryButton.appendChild(retryIcon);
+  retryButton.addEventListener('click', async () => {
+    retryButton.disabled = true;
+    retryButton.classList.add('is-loading');
+    const outcome = await requestNoticeImage(imageUrl);
+    if (outcome.success) {
+      image.src = outcome.result.dataUrl;
+      placeholder.replaceWith(image);
+      return;
+    }
+    placeholder.title = outcome.errorMessage;
+    retryButton.disabled = false;
+    retryButton.classList.remove('is-loading');
+  });
+  placeholder.appendChild(retryButton);
+
+  const openButton = document.createElement('button');
+  openButton.type = 'button';
+  openButton.className = 'guide-image-fallback-link';
+  openButton.textContent = '在 GitHub 查看原图';
+  openButton.addEventListener('click', () => window.electronAPI.openExternal(imageUrl));
+  placeholder.appendChild(openButton);
+  image.replaceWith(placeholder);
+}
+
+async function hydrateNoticeImages(container) {
+  const images = Array.from(container?.querySelectorAll?.('img[data-notice-image]') || []);
+  const pending = images.map((image) => ({
+    image,
+    imageUrl: image.dataset.noticeImage || ''
+  }));
+  const loadNext = async () => {
+    while (pending.length) {
+      const { image, imageUrl } = pending.shift();
+      const outcome = await requestNoticeImage(imageUrl);
+      if (outcome.success) {
+        image.src = outcome.result.dataUrl;
+        image.removeAttribute('data-notice-image');
+      } else if (image.isConnected) {
+        replaceWithNoticeImageFallback(image, imageUrl, outcome.errorMessage);
+      }
+    }
+  };
+  const workerCount = Math.min(3, pending.length);
+  await Promise.all(Array.from({ length: workerCount }, () => loadNext()));
+}
+
+function renderFluxionSponsor() {
+  return `
+    <details class="notice-sponsor" open>
+      <summary><strong>Fluxion AI · 为 AI 辅助学习提供支持</strong></summary>
+      <a class="notice-sponsor-banner-link" href="${escapeHtml(FLUXION_SITE_URL)}" data-external-link="true">
+        <img class="notice-sponsor-banner" alt="Fluxion AI：统一接入与管理全球主流 AI 模型；多线路动态路由、价格与用量透明。兑换码 WANNENGDAO 可获得 3 美元 API 额度" data-notice-image="${escapeHtml(FLUXION_SPONSOR_BANNER_URL)}" loading="lazy">
+      </a>
+      <blockquote>本区为赞助信息。万能导始终完全开源免费，AI 辅助学习不绑定任何模型或 API 服务。</blockquote>
+      <p><a href="${escapeHtml(FLUXION_SITE_URL)}" data-external-link="true"><strong>Fluxion AI</strong></a> 面向个人开发者、技术团队与企业，通过统一 API 接入全球主流 AI 模型，并以多线路调度提升可用性；模型质量、使用情况和费用可在一个平台集中管理。</p>
+      <p>灵活的线路与计费方案带来更具竞争力的调用成本，实时价格和每笔消费均可查阅。</p>
+    </details>
+  `;
+}
+
 function renderNoticeDocBody(selected) {
   const selectedId = selected?.id || '';
   const bodyMatchesSelection = noticeCenterState.selectedBodyId === selectedId;
@@ -2922,7 +3070,11 @@ function renderNoticeDocBody(selected) {
       </div>
     `;
   }
-  return markdownToHtml(source);
+  return markdownToHtml(source, {
+    resolveImageSource: (imageSource) => resolveNoticeImageSource(imageSource, selected),
+    allowRemoteImage: safeNoticeImageUrl,
+    remoteImageAttribute: 'data-notice-image'
+  });
 }
 
 function noticeSourceStatusText(status) {
@@ -2987,8 +3139,10 @@ function renderNoticeCenterPage() {
         </div>
       </article>
     </section>
+    ${renderFluxionSponsor()}
   `;
   bindNoticeCenterActions(contentArea);
+  hydrateNoticeImages(contentArea);
   if (noticeCenterState.status === 'idle') {
     loadNoticeCenter(false);
   } else if (
@@ -3398,11 +3552,7 @@ function renderAppView(viewId) {
 }
 
 function markdownInline(value) {
-  let text = escapeHtml(value);
-  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-  text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" data-external-link="true">$1</a>');
-  return text;
+  return escapeHtml(value);
 }
 
 function safeRemoteGuideImageUrl(value) {
@@ -3423,85 +3573,95 @@ function safeGuideImagePath(value) {
   return imagePath;
 }
 
-function markdownToHtml(markdown) {
-  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
-  const html = [];
-  let inCode = false;
-  let codeLines = [];
-  let listType = '';
-
-  const closeList = () => {
-    if (listType) {
-      html.push(`</${listType}>`);
-      listType = '';
-    }
-  };
-
-  const openList = (type, start = 1) => {
-    if (listType === type) return;
-    closeList();
-    const startAttribute = type === 'ol' && start > 1 ? ` start="${start}"` : '';
-    html.push(`<${type}${startAttribute}>`);
-    listType = type;
-  };
-
-  lines.forEach((line) => {
-    if (line.trim().startsWith('```')) {
-      if (inCode) {
-        html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
-        codeLines = [];
-        inCode = false;
-      } else {
-        closeList();
-        inCode = true;
-      }
-      return;
-    }
-    if (inCode) {
-      codeLines.push(line);
-      return;
-    }
-    const trimmed = line.trim();
-    if (!trimmed) {
-      closeList();
-      return;
-    }
-    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
-    if (heading) {
-      closeList();
-      const level = Math.min(4, heading[1].length + 1);
-      html.push(`<h${level}>${markdownInline(heading[2])}</h${level}>`);
-      return;
-    }
-    const image = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-    if (image) {
-      const imagePath = safeGuideImagePath(image[2]);
-      if (imagePath) {
-        closeList();
-        html.push(`<img class="guide-image" alt="${escapeHtml(image[1])}" data-guide-image="${escapeHtml(imagePath)}" loading="lazy">`);
-        return;
-      }
-    }
-    const ordered = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
-    if (ordered) {
-      openList('ol', Number(ordered[1]));
-      html.push(`<li>${markdownInline(ordered[2])}</li>`);
-      return;
-    }
-    const bullet = trimmed.match(/^[-*]\s+(.+)$/);
-    if (bullet) {
-      openList('ul');
-      html.push(`<li>${markdownInline(bullet[1])}</li>`);
-      return;
-    }
-    closeList();
-    html.push(`<p>${markdownInline(trimmed)}</p>`);
-  });
-  closeList();
-  if (inCode) {
-    html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+function safeNoticeImageUrl(value) {
+  const rawUrl = String(value || '').trim();
+  if (!rawUrl || typeof URL === 'undefined') return '';
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return '';
   }
-  return html.join('\n');
+  if (url.protocol !== 'https:' || url.hostname !== 'raw.githubusercontent.com') return '';
+  if (!url.pathname.startsWith('/tllovesxs/wandao/main/docs/')) return '';
+  if (!/\.(?:png|jpe?g|gif|webp)$/i.test(url.pathname)) return '';
+  return url.href;
+}
+
+function resolveNoticeImageSource(source, item) {
+  const baseUrl = noticeRawUrl(item);
+  if (!baseUrl || typeof URL === 'undefined') return '';
+  try {
+    return new URL(String(source || '').trim(), baseUrl).href;
+  } catch {
+    return '';
+  }
+}
+
+function renderMarkdownImage(token, options = {}) {
+  const source = token.attrGet('src') || '';
+  const resolvedSource = typeof options.resolveImageSource === 'function'
+    ? options.resolveImageSource(source)
+    : source;
+  const allowRemoteImage = typeof options.allowRemoteImage === 'function'
+    ? options.allowRemoteImage
+    : safeRemoteGuideImageUrl;
+  const remoteUrl = allowRemoteImage(resolvedSource);
+  const remoteAttribute = options.remoteImageAttribute || 'data-guide-image';
+  const localAttribute = options.localImageAttribute || 'data-guide-image';
+  const alt = token.content || token.attrGet('alt') || '';
+  if (remoteUrl) {
+    return `<img class="guide-image" alt="${escapeHtml(alt)}" ${remoteAttribute}="${escapeHtml(remoteUrl)}" loading="lazy">`;
+  }
+  const imagePath = safeGuideImagePath(resolvedSource);
+  if (!imagePath) return '';
+  return `<img class="guide-image" alt="${escapeHtml(alt)}" ${localAttribute}="${escapeHtml(imagePath)}" loading="lazy">`;
+}
+
+function markdownToHtml(markdown, options = {}) {
+  const markdownItFactory = typeof window !== 'undefined' ? window.markdownit : null;
+  if (typeof markdownItFactory !== 'function') {
+    return String(markdown || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim() ? `<p>${escapeHtml(line.trim())}</p>` : '')
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  const renderer = markdownItFactory({
+    html: false,
+    breaks: false,
+    linkify: false,
+    typographer: false
+  });
+  renderer.core.ruler.push('wandao-safe-links', (state) => {
+    state.tokens.forEach((blockToken) => {
+      if (blockToken.type !== 'inline' || !Array.isArray(blockToken.children)) return;
+      blockToken.children.forEach((token, index) => {
+        if (token.type !== 'link_open') return;
+        const href = token.attrGet('href') || '';
+        if (/^https:\/\//i.test(href) || /^#[A-Za-z][A-Za-z0-9_.:-]*$/.test(href)) return;
+        token.hidden = true;
+        for (let closeIndex = index + 1; closeIndex < blockToken.children.length; closeIndex += 1) {
+          const closeToken = blockToken.children[closeIndex];
+          if (closeToken.type === 'link_close' && closeToken.level === token.level) {
+            closeToken.hidden = true;
+            break;
+          }
+        }
+      });
+    });
+  });
+  const defaultLinkOpen = renderer.renderer.rules.link_open
+    || ((tokens, index, renderOptions, _env, self) => self.renderToken(tokens, index, renderOptions));
+  renderer.renderer.rules.link_open = (tokens, index, renderOptions, env, self) => {
+    const token = tokens[index];
+    const href = token.attrGet('href') || '';
+    if (/^https:\/\//i.test(href)) token.attrSet('data-external-link', 'true');
+    return defaultLinkOpen(tokens, index, renderOptions, env, self);
+  };
+  renderer.renderer.rules.image = (tokens, index) => renderMarkdownImage(tokens[index], options);
+  return renderer.render(String(markdown || ''));
 }
 
 function valueAtPath(source, pathExpression) {
@@ -4108,7 +4268,10 @@ function initializeManifestProviderHandlers(provider, actions, fields) {
           log(`${action.label || provider.title}\u5df2\u505c\u6b62\uff0c\u5df2\u5b8c\u6210\u9879\u76ee\u4f1a\u5728\u4e0b\u6b21\u7ee7\u7eed\u65f6\u8df3\u8fc7\u3002`, 'warn');
           finishProgress('stopped', `${action.label || '\u4efb\u52a1'}\u5df2\u505c\u6b62`);
         } else if (result.success) {
+          const actionMode = action.actionName || action.label || '执行';
+          const outcome = taskResultStatus(result, { provider: provider.id, mode: actionMode });
           log(`完成：${action.label || provider.title}`, 'success');
+          appendExportSuccessSponsorLogs(outcome, action);
           if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
           applyActionUpdates(provider, action, result.data || {});
           if (action.kind === 'scan' || action.scanToc || action.id === 'scan') {
@@ -6207,6 +6370,7 @@ async function handleExport(toolId) {
     } else if (result.success) {
       const outcome = taskResultStatus(result, { provider: toolId, mode: actionName });
       log(outcome === 'paused' ? `${actionName}因频率限制安全暂停，可稍后继续。` : `${actionName}完成`, outcome === 'paused' ? 'warn' : 'success');
+      appendExportSuccessSponsorLogs(outcome, actionName);
       if (result.data) {
         log(JSON.stringify(result.data, null, 2), 'success');
       }

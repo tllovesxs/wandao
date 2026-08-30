@@ -11,6 +11,10 @@ const bridgeSource = fs.readFileSync(path.join(repoRoot, 'wandao_electron', 'ren
 
 test('Tauri exposes and registers the restricted provider guide image command', () => {
   assert.match(commandsSource, /pub async fn read_provider_guide_image/);
+  assert.match(commandsSource, /pub async fn fetch_remote_image/);
+  assert.match(commandsSource, /MAX_REMOTE_IMAGE_BYTES/);
+  assert.match(commandsSource, /RedirectUrlPolicy::RemoteDocsImage/);
+  assert.match(commandsSource, /is_allowed_remote_image_target/);
   assert.match(commandsSource, /fetch_remote_guide_image\(&provider_id, remote_url, &spec\)\.await/);
   assert.match(commandsSource, /RedirectUrlPolicy::RemoteGuideImage/);
   assert.match(commandsSource, /CONTENT_TYPE/);
@@ -22,6 +26,7 @@ test('Tauri exposes and registers the restricted provider guide image command', 
   assert.match(providersSource, /82c027b054d9ece8449af30d79600814eb823e46/);
   assert.match(providersSource, /pub fn remote_guide_asset_spec/);
   assert.match(bridgeSource, /readProviderGuideImage:\s*\(providerId, relativePath\)\s*=>\s*invokeCommand\('read_provider_guide_image'/);
+  assert.match(bridgeSource, /fetchRemoteImage:\s*\(url\)\s*=>\s*invokeCommand\('fetch_remote_image'/);
 });
 
 test('provider guide rendering hydrates image placeholders after inserting Markdown', () => {
@@ -33,4 +38,13 @@ test('provider guide rendering hydrates image placeholders after inserting Markd
   assert.match(appSource, /safeRemoteGuideImageUrl\(outcome\.result\?\.fallbackUrl \|\| imagePath\)/);
   assert.match(appSource, /className = 'guide-image-retry'/);
   assert.match(appSource, /await requestGuideImage\(providerId, imagePath\)/);
+});
+
+test('notice center hydrates safe GitHub images through Tauri instead of remote img URLs', () => {
+  assert.match(appSource, /async function requestNoticeImage\(imageUrl\)/);
+  assert.match(appSource, /window\.electronAPI\.fetchRemoteImage\(safeUrl\)/);
+  assert.match(appSource, /async function hydrateNoticeImages\(container\)/);
+  assert.match(appSource, /hydrateNoticeImages\(contentArea\)/);
+  assert.match(appSource, /resolveImageSource: \(imageSource\) => resolveNoticeImageSource\(imageSource, selected\)/);
+  assert.match(appSource, /remoteImageAttribute: 'data-notice-image'/);
 });

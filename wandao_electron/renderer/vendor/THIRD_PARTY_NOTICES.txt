@@ -1,0 +1,9 @@
+Wandao bundles the browser build of markdown-it 15.0.1.
+
+markdown-it, mdurl, linkify-it, punycode.js and uc.micro are distributed under
+the MIT License. entities is distributed under the BSD 2-Clause License.
+argparse is distributed under the PSF-2.0 License.
+
+The complete markdown-it license text is included in markdown-it.LICENSE.txt.
+The corresponding package license texts are available in the locked npm
+dependencies listed in ../package-lock.json.

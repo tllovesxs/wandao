@@ -41,6 +41,7 @@ const EXPERIMENTAL_REGISTRY_URL: &str =
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/tllovesxs/wandao/releases/latest";
 const RELEASES_URL: &str = "https://github.com/tllovesxs/wandao/releases";
 const MAX_REMOTE_TEXT_BYTES: usize = 1024 * 1024;
+const MAX_REMOTE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PLUGIN_DOWNLOAD_BYTES: usize = 128 * 1024 * 1024;
 
@@ -392,6 +393,37 @@ pub async fn fetch_remote_text(url: String) -> Result<Value, String> {
         Ok(bytes) => json!({
             "success": true,
             "content": String::from_utf8_lossy(&bytes)
+        }),
+        Err(error) => json!({"success": false, "error": error}),
+    })
+}
+
+#[tauri::command]
+pub async fn fetch_remote_image(url: String) -> Result<Value, String> {
+    let parsed = match url::Url::parse(url.trim()) {
+        Ok(url) if is_allowed_remote_image_target(&url) => url,
+        _ => {
+            return Ok(json!({
+                "success": false,
+                "error": "只允许读取万能导 GitHub 仓库 docs 目录中的图片"
+            }));
+        }
+    };
+    let mime = mime_guess::from_path(parsed.path())
+        .first_raw()
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let result = fetch_limited(
+        parsed.as_str(),
+        MAX_REMOTE_IMAGE_BYTES,
+        "Wandao-Docs-Images",
+        RedirectUrlPolicy::RemoteDocsImage,
+    )
+    .await;
+    Ok(match result {
+        Ok(bytes) => json!({
+            "success": true,
+            "dataUrl": format!("data:{mime};base64,{}", BASE64.encode(bytes))
         }),
         Err(error) => json!({"success": false, "error": error}),
     })
@@ -1438,10 +1470,29 @@ fn is_allowed_remote_text_target(url: &url::Url) -> bool {
     ) && url.path().starts_with("/tllovesxs/wandao/")
 }
 
+fn is_allowed_remote_image_target(url: &url::Url) -> bool {
+    if url.scheme() != "https"
+        || url.host_str() != Some("raw.githubusercontent.com")
+        || !url.path().starts_with("/tllovesxs/wandao/main/docs/")
+    {
+        return false;
+    }
+    Path::new(url.path())
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp"
+            )
+        })
+}
+
 #[derive(Clone, Copy)]
 enum RedirectUrlPolicy {
     SecureTransport { allow_local_http: bool },
     RemoteText,
+    RemoteDocsImage,
     RemoteGuideImage,
 }
 
@@ -1455,6 +1506,7 @@ impl RedirectUrlPolicy {
                         && matches!(url.host_str(), Some("127.0.0.1" | "localhost")))
             }
             Self::RemoteText => is_allowed_remote_text_target(url),
+            Self::RemoteDocsImage => is_allowed_remote_image_target(url),
             Self::RemoteGuideImage => is_allowed_remote_guide_image_url("feishu-import", url),
         }
     }
@@ -1916,6 +1968,38 @@ mod tests {
         ));
         assert!(!is_allowed_remote_text_url(
             "http://github.com/tllovesxs/wandao/main/README.md"
+        ));
+    }
+
+    #[test]
+    fn remote_images_are_restricted_to_the_wandao_docs_directory() {
+        assert!(is_allowed_remote_image_target(
+            &url::Url::parse(
+                "https://raw.githubusercontent.com/tllovesxs/wandao/main/docs/images/example.png"
+            )
+            .unwrap()
+        ));
+        assert!(is_allowed_remote_image_target(
+            &url::Url::parse(
+                "https://raw.githubusercontent.com/tllovesxs/wandao/main/docs/images/example.jpeg"
+            )
+            .unwrap()
+        ));
+        assert!(!is_allowed_remote_image_target(
+            &url::Url::parse(
+                "https://raw.githubusercontent.com/tllovesxs/wandao/main/plugins/feishu/images/example.png"
+            )
+            .unwrap()
+        ));
+        assert!(!is_allowed_remote_image_target(
+            &url::Url::parse("https://example.test/tllovesxs/wandao/main/docs/example.png")
+                .unwrap()
+        ));
+        assert!(!is_allowed_remote_image_target(
+            &url::Url::parse(
+                "https://raw.githubusercontent.com/tllovesxs/wandao/main/docs/example.svg"
+            )
+            .unwrap()
         ));
     }
 

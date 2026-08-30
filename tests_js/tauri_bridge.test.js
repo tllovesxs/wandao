@@ -43,11 +43,11 @@ test('Tauri bridge exposes all Electron-compatible commands', () => {
     }
   });
   try {
-    assert.equal(loaded.bridge.COMMAND_NAMES.length, 33);
+    assert.equal(loaded.bridge.COMMAND_NAMES.length, 34);
     for (const command of loaded.bridge.COMMAND_NAMES) {
       assert.match(command, /^[a-z][a-z0-9_]*$/);
     }
-    assert.equal(Object.keys(loaded.window.electronAPI).length, 38);
+    assert.equal(Object.keys(loaded.window.electronAPI).length, 39);
   } finally {
     loaded.restore();
   }
@@ -86,6 +86,7 @@ test('command adapters preserve the renderer API and send Tauri camelCase argume
       pluginContext: { dataDir: 'C:\\data' }
     });
     await api.readProviderGuideImage('feishu-export', 'images/guide.png');
+    await api.fetchRemoteImage('https://raw.githubusercontent.com/tllovesxs/wandao/main/docs/images/example.png');
     await api.setPluginEnabled('feishu', true);
     await api.writeFile('C:\\out\\result.json', '{}');
 
@@ -115,6 +116,12 @@ test('command adapters preserve the renderer API and send Tauri camelCase argume
         args: {
           providerId: 'feishu-export',
           relativePath: 'images/guide.png'
+        }
+      },
+      {
+        command: 'fetch_remote_image',
+        args: {
+          url: 'https://raw.githubusercontent.com/tllovesxs/wandao/main/docs/images/example.png'
         }
       },
       {

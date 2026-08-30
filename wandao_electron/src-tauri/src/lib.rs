@@ -62,6 +62,7 @@ pub fn run() {
             commands::select_browser_file,
             commands::save_file,
             commands::fetch_remote_text,
+            commands::fetch_remote_image,
             commands::run_python_command,
             commands::stop_python_process,
             commands::get_python_process_state,

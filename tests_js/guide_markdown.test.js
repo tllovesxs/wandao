@@ -7,9 +7,12 @@ const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
 const desktopRequire = createRequire(path.join(repoRoot, 'wandao_electron', 'package.json'));
+const markdownit = desktopRequire('markdown-it');
 const { parseHTML } = desktopRequire('linkedom');
 const appPath = path.join(repoRoot, 'wandao_electron', 'renderer', 'app.js');
 const cssPath = path.join(repoRoot, 'wandao_electron', 'renderer', 'styles.css');
+const indexPath = path.join(repoRoot, 'wandao_electron', 'renderer', 'index.html');
+const markdownBundlePath = path.join(repoRoot, 'wandao_electron', 'renderer', 'vendor', 'markdown-it.umd.min.js');
 const appSource = fs.readFileSync(appPath, 'utf8');
 const cssSource = fs.readFileSync(cssPath, 'utf8');
 
@@ -24,9 +27,10 @@ function sourceBetween(start, end) {
 const markdownSource = [
   sourceBetween('function markdownInline(value) {', '\nfunction valueAtPath('),
   sourceBetween('function escapeHtml(value) {', '\nfunction imaConfigPath('),
-  'globalThis.__markdownToHtml = markdownToHtml;'
+  'globalThis.__markdownToHtml = markdownToHtml;',
+  'globalThis.__safeNoticeImageUrl = safeNoticeImageUrl;'
 ].join('\n');
-const context = {};
+const context = { URL, window: { markdownit } };
 vm.runInNewContext(markdownSource, context);
 const markdownToHtml = context.__markdownToHtml;
 
@@ -54,13 +58,13 @@ async function flushAsyncClick() {
 }
 
 test('guide markdown renders ordered steps as an ordered list', () => {
-  assert.equal(markdownToHtml('1. 第一步\n2. 第二步'), '<ol>\n<li>第一步</li>\n<li>第二步</li>\n</ol>');
+  assert.match(markdownToHtml('1. 第一步\n2. 第二步'), /^<ol>\n<li>第一步<\/li>\n<li>第二步<\/li>\n<\/ol>\n$/);
 });
 
 test('guide markdown preserves a step number after an intervening image', () => {
   const html = markdownToHtml('1. 第一步\n![截图](./images/1.png)\n2. 第二步');
-  assert.match(html, /<ol>\n<li>第一步<\/li>\n<\/ol>/);
-  assert.match(html, /<ol start=\"2\">\n<li>第二步<\/li>\n<\/ol>/);
+  assert.match(html, /<ol>\n<li>第一步\n<img class="guide-image"/);
+  assert.match(html, /<li>第二步<\/li>\n<\/ol>/);
 });
 
 test('guide markdown renders a local image placeholder without allowing raw HTML', () => {
@@ -74,6 +78,50 @@ test('guide markdown renders a local image placeholder without allowing raw HTML
   const escaped = markdownToHtml('![<script>](./images/1.png&quot; onerror=&quot;alert(1))');
   assert.doesNotMatch(escaped, /<img/);
   assert.match(escaped, /&lt;script&gt;/);
+  assert.doesNotMatch(escaped, /<[^>]+onerror=/i);
+});
+
+test('guide markdown supports tables, blockquotes, nested lists, inline code and safe links', () => {
+  const html = markdownToHtml([
+    '# 标题',
+    '',
+    '> 这是说明',
+    '',
+    '| 参数 | 说明 |',
+    '| --- | --- |',
+    '| `key` | **值** |',
+    '',
+    '- 一级',
+    '  - 二级',
+    '',
+    '[官方文档](https://example.com/docs)'
+  ].join('\n'));
+  assert.match(html, /<h1>标题<\/h1>/);
+  assert.match(html, /<blockquote>\n<p>这是说明<\/p>\n<\/blockquote>/);
+  assert.match(html, /<table>/);
+  assert.match(html, /<code>key<\/code>/);
+  assert.match(html, /<strong>值<\/strong>/);
+  assert.match(html, /<ul>\n<li>一级\n<ul>\n<li>二级<\/li>/);
+  assert.match(html, /href="https:\/\/example\.com\/docs" data-external-link="true"/);
+  assert.doesNotMatch(markdownToHtml('[不安全链接](http://example.com)'), /<a/);
+  assert.doesNotMatch(markdownToHtml('[脚本链接](javascript:alert(1))'), /<a/);
+  assert.doesNotMatch(html, /<script>/);
+});
+
+test('notice markdown resolves relative images to the safe GitHub docs scope', () => {
+  const base = 'https://raw.githubusercontent.com/tllovesxs/wandao/main/docs/tutorials/fluxion-ai-getting-started.md';
+  const html = markdownToHtml('![教程截图](../images/fluxion-ai-getting-started/01.png)', {
+    resolveImageSource: (source) => new URL(source, base).href,
+    allowRemoteImage: context.__safeNoticeImageUrl,
+    remoteImageAttribute: 'data-notice-image'
+  });
+  assert.match(html, /data-notice-image="https:\/\/raw\.githubusercontent\.com\/tllovesxs\/wandao\/main\/docs\/images\/fluxion-ai-getting-started\/01\.png"/);
+
+  const outside = markdownToHtml('![外部图片](https://example.com/image.png)', {
+    allowRemoteImage: context.__safeNoticeImageUrl,
+    remoteImageAttribute: 'data-notice-image'
+  });
+  assert.doesNotMatch(outside, /<img/);
 });
 
 test('guide markdown only accepts the pinned Wandao Feishu screenshot URLs', () => {
@@ -94,6 +142,13 @@ test('guide images are constrained to the tutorial panel width', () => {
   assert.match(cssSource, /\.guide-image-fallback\s*\{/);
   assert.match(cssSource, /\.guide-image-retry\s*\{/);
   assert.match(cssSource, /\.guide-image-fallback-link\s*\{/);
+});
+
+test('desktop renderer bundles Markdown-it before the application code', () => {
+  const indexHtml = fs.readFileSync(indexPath, 'utf8');
+  const bundle = fs.readFileSync(markdownBundlePath, 'utf8');
+  assert.ok(indexHtml.indexOf('<script src="vendor/markdown-it.umd.min.js"></script>') < indexHtml.indexOf('<script src="app.js"></script>'));
+  assert.match(bundle, /markdownit/);
 });
 const tutorialRoot = path.join(repoRoot, 'plugins', 'feishu', 'providers', 'feishu-import');
 const tutorialPath = path.join(tutorialRoot, 'README.md');

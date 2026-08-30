@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-28",
+  "updatedAt": "2026-08-29",
   "repository": "https://github.com/tllovesxs/wandao",
   "items": [
     {
@@ -32,6 +32,22 @@
         "提示词"
       ],
       "path": "prompts/项目学习导师提示词.md"
+    },
+    {
+      "id": "wandao-ai-project-learning",
+      "type": "tutorial",
+      "title": "用万能导 + Codex 辅助学习代码项目",
+      "summary": "用万能导把课程文档导出为 Markdown，与源码放进同一个 Codex 项目，通过项目学习导师提示词理解业务流程、核心代码和技术取舍。",
+      "date": "2026-08-29",
+      "badge": "AI 学习",
+      "tags": [
+        "教程",
+        "AI 辅助学习",
+        "Codex",
+        "API Key",
+        "Markdown"
+      ],
+      "path": "docs/tutorials/wandao-ai-project-learning.md"
     }
   ]
 }

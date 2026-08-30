@@ -46,5 +46,8 @@
     "@tauri-apps/cli": "2.11.4",
     "linkedom": "0.18.13"
   },
-  "type": "commonjs"
+  "type": "commonjs",
+  "dependencies": {
+    "markdown-it": "15.0.1"
+  }
 }

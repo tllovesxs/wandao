@@ -1063,7 +1063,7 @@ function canResumeTask(task) {
   if (status === 'running' || status === 'stopping') return false;
   if (status !== 'completed' && status !== 'partial') return true;
   const provider = TOOLS[task.providerId] || {};
-  return Boolean(providerRetryFailureArg(provider) && taskDocumentFailureCount(task) > 0);
+  return Boolean(providerRetryFailureArg(provider) && taskFailureCount(task) > 0);
 }
 
 function resumeTaskDisabledReason(task) {
@@ -1072,13 +1072,7 @@ function resumeTaskDisabledReason(task) {
   const status = taskDisplayStatus(task);
   if (status === 'running' || status === 'stopping') return '任务正在运行或停止中，不能重复启动。';
   if (status !== 'completed' && status !== 'partial') return '';
-  const documentFailures = taskDocumentFailureCount(task);
-  const resourceFailures = taskResourceFailureCount(task);
-  if (documentFailures <= 0) {
-    return resourceFailures > 0
-      ? `任务有 ${resourceFailures} 个资源警告，但当前不会将资源问题误作可重试文档；请打开报告处理。`
-      : '任务已完成且没有失败项。';
-  }
+  if (taskFailureCount(task) <= 0) return '任务已完成且没有失败项。';
   const provider = TOOLS[task.providerId] || {};
   if (!providerRetryFailureArg(provider)) return '该平台暂未声明失败项重试能力，请复制报告后重新执行或反馈给开发者。';
   return '';
@@ -1089,12 +1083,12 @@ function resumeTaskArgs(task) {
   const retryArg = providerRetryFailureArg(provider);
   const helper = window.WandaoTaskResume?.buildResumeArgs;
   if (typeof helper === 'function') {
-    return helper(task, retryArg, taskDocumentFailureCount(task), provider);
+    return helper(task, retryArg, taskFailureCount(task), provider);
   }
   const args = Array.isArray(task?.args) ? [...task.args] : [];
   const interrupted = ['stopped', 'interrupted'].includes(String(task?.status || '').toLowerCase());
   if ((interrupted || taskHasDeferredDocuments(task)) && retryArg) return args.filter((arg) => arg !== retryArg);
-  if (retryArg && taskDocumentFailureCount(task) > 0 && !args.includes(retryArg)) {
+  if (retryArg && taskFailureCount(task) > 0 && !args.includes(retryArg)) {
     args.push(retryArg);
   }
   return args;
@@ -1102,13 +1096,13 @@ function resumeTaskArgs(task) {
 
 function taskResumeActionLabel(task) {
   const status = taskDisplayStatus(task);
-  const documentFailures = taskDocumentFailureCount(task);
+  const retryableFailures = taskFailureCount(task);
   if (taskHasDeferredDocuments(task)) {
     const count = (task.report?.deferred || task.resultData?.deferred || []).length;
     return `继续任务（${count} 篇待处理）`;
   }
-  if ((status === 'completed' || status === 'partial') && documentFailures > 0) {
-    return `重试失败文档${documentFailures > 1 ? `（${documentFailures}）` : ''}`;
+  if ((status === 'completed' || status === 'partial') && retryableFailures > 0) {
+    return `重试失败项${retryableFailures > 1 ? `（${retryableFailures}）` : ''}`;
   }
   return '继续任务';
 }
@@ -1432,7 +1426,7 @@ function renderTaskResultCard(task = latestFinishedTask()) {
   const canResume = canResumeTask(task);
   const resumeReason = resumeTaskDisabledReason(task);
   const resourceNotice = resourceFailures > 0
-    ? `<p class="task-result-resource-note">资源警告：${resourceFailures} 个图片或附件未完成。不会把它们误作“失败文档”自动重试，请打开报告处理。</p>`
+    ? `<p class="task-result-resource-note">资源警告：${resourceFailures} 个图片或附件未完成。${canResume ? '可仅重试失败项。' : '请打开报告处理。'}</p>`
     : '';
   const documentNotice = documentFailures > 0
     ? `<p class="task-result-document-note">文档失败：${documentFailures} 个。${canResume ? '可仅重试失败文档。' : '请查看报告后重新执行。'}</p>`
@@ -1677,19 +1671,19 @@ async function resumeTask(task) {
   const args = resumeTaskArgs(task);
   const provider = TOOLS[task.providerId] || {};
   const retryArg = providerRetryFailureArg(provider);
-  const documentFailures = taskDocumentFailureCount(task);
+  const retryableFailures = taskFailureCount(task);
   const shouldRetry = window.WandaoTaskResume?.shouldRetryFailureItems;
   const retryingFailures = typeof shouldRetry === 'function'
-    ? shouldRetry(task, retryArg, documentFailures, provider)
+    ? shouldRetry(task, retryArg, retryableFailures, provider)
     : Boolean(
       retryArg
       && !['stopped', 'interrupted'].includes(String(task?.status || '').toLowerCase())
       && !taskHasDeferredDocuments(task)
-      && documentFailures > 0
+      && retryableFailures > 0
       && args.includes(retryArg)
     );
   const confirmDetail = retryingFailures
-    ? `将只重试上次报告中的失败文档，共 ${documentFailures} 个。`
+    ? `将只重试上次报告中的失败项，共 ${retryableFailures} 个。`
     : '将按历史命令重新执行，适合增量任务或中断后继续。';
   if (!confirm(`继续任务：${task.title || task.script}\n${confirmDetail}\n\n确认继续吗？`)) {
     return;

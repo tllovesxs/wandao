@@ -189,17 +189,19 @@ test('manifest-provider actions treat code 130 as stopped before the failure bra
   assert.match(handler, /if \(isStoppedResult\(result\)\) \{[\s\S]*finishProgress\('stopped',[\s\S]*\} else if \(result\.success\) \{/);
 });
 
-test('resource warnings are not converted into retry-failed document commands', () => {
+test('resource failures are retried when the provider supports failed-item retry', () => {
   const appJs = fs.readFileSync('wandao_electron/renderer/app.js', 'utf8');
   const canResume = appJs.slice(appJs.indexOf('function canResumeTask'), appJs.indexOf('function resumeTaskDisabledReason'));
   const resumeArgs = appJs.slice(appJs.indexOf('function resumeTaskArgs'), appJs.indexOf('async function performTaskHistoryLoad'));
   const resumeTaskHandler = appJs.slice(appJs.indexOf('async function resumeTask'), appJs.indexOf('function latestResumableTask'));
+  const resultCard = appJs.slice(appJs.indexOf('function renderTaskResultCard'), appJs.indexOf('async function handleTaskAction'));
 
-  assert.match(canResume, /taskDocumentFailureCount\(task\)/);
-  assert.doesNotMatch(canResume, /taskFailureCount\(task\)/);
-  assert.match(resumeArgs, /taskDocumentFailureCount\(task\)/);
-  assert.match(resumeTaskHandler, /const documentFailures = taskDocumentFailureCount\(task\)/);
-  assert.match(resumeTaskHandler, /失败文档，共 \$\{documentFailures\} 个/);
+  assert.match(canResume, /taskFailureCount\(task\)/);
+  assert.match(resumeArgs, /taskFailureCount\(task\)/);
+  assert.match(resumeTaskHandler, /const retryableFailures = taskFailureCount\(task\)/);
+  assert.match(resumeTaskHandler, /失败项，共 \$\{retryableFailures\} 个/);
+  assert.match(resultCard, /图片或附件未完成。\$\{canResume \? '可仅重试失败项。'/);
+  assert.doesNotMatch(resultCard, /不会把它们误作“失败文档”自动重试/);
 });
 
 test('resource diagnostics are not duplicated after reports are finalized', () => {

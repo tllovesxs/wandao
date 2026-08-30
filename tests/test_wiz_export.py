@@ -29,8 +29,8 @@ class WizExportRegressionTests(unittest.TestCase):
         )
 
     def test_helper_version_is_bumped_for_diagnostic_protocol(self) -> None:
-        self.assertIn("version === 7", export_wiz.WIZ_HELPER_JS)
-        self.assertIn("version: 7", export_wiz.WIZ_HELPER_JS)
+        self.assertIn("version === 8", export_wiz.WIZ_HELPER_JS)
+        self.assertIn("version: 8", export_wiz.WIZ_HELPER_JS)
 
     def test_extract_dom_editor_html_requires_matching_title(self) -> None:
         editor_html = """
@@ -362,7 +362,7 @@ class WizExportRegressionTests(unittest.TestCase):
         self.assertEqual(result, payload)
         fallback.assert_called_once_with("https://img0.baidu.com/image.png")
 
-    def test_collaboration_external_image_uses_browser_network_fallback(self) -> None:
+    def test_collaboration_external_image_does_not_use_wiz_browser_credentials(self) -> None:
         args = argparse.Namespace(request_delay=0, request_jitter=0)
         doc = export_wiz.WizDoc("kb", "doc", "笔记", "/", "note", "", 0, 0, {})
         payload = {"base64": "aW1hZ2U=", "contentType": "image/png"}
@@ -375,15 +375,16 @@ class WizExportRegressionTests(unittest.TestCase):
                 args,
             )
             with (
-                patch.object(saver, "fetch_base64", side_effect=RuntimeError("CORS")),
-                patch.object(saver, "fetch_image_via_browser", return_value=payload) as fallback,
-                patch.object(saver, "fetch_cache_base64", return_value=None) as cache,
+                patch.object(saver, "fetch_external_base64", return_value=payload) as external,
+                patch.object(saver, "fetch_base64") as authenticated_fetch,
+                patch.object(saver, "fetch_base64_via_browser") as browser_fallback,
             ):
                 result = saver.save_collab_image("https://img0.baidu.com/image.png")
 
         self.assertEqual(result, "笔记_assets/001-image.png")
-        fallback.assert_called_once_with("https://img0.baidu.com/image.png")
-        cache.assert_not_called()
+        external.assert_called_once_with("https://img0.baidu.com/image.png")
+        authenticated_fetch.assert_not_called()
+        browser_fallback.assert_not_called()
 
     def test_wiz_upgrade_page_is_not_valid_note_content(self) -> None:
         html = """

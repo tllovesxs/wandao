@@ -86,13 +86,18 @@ class CheckpointProviderArgsTests(unittest.TestCase):
             "plugins/aliyun_thoughts/backend/export_aliyun_thoughts.py": "checkpoint.fail_item(item_key, f\"{len(img_errors)} 个图片或附件下载失败\")",
             "plugins/feishu/backend/export_feishu.py": "checkpoint.fail_item(item_key, f\"{len(img_errors)} 个图片下载失败\")",
             "plugins/yuque/backend/export_yuque.py": "checkpoint.fail_item(item_key, f\"{len(resource_errors)} 个图片或附件下载失败\")",
-            "plugins/wiz/backend/export_wiz.py": "checkpoint.fail_item(item_key, f\"{len(img_failures)} 个图片下载失败\")",
             "plugins/youdao/backend/export_youdao.py": "checkpoint.fail_item(item_key, f\"{resource_failures_in_doc} 个图片或附件下载失败\")",
         }
         for filename, marker in expected_markers.items():
             with self.subTest(script=filename):
                 source = (REPO_ROOT / filename).read_text(encoding="utf-8")
                 self.assertIn(marker, source)
+
+        # Wiz Markdown remains complete when only a remote image is
+        # unavailable, so retry-failed does not re-export the full document.
+        wiz_source = (REPO_ROOT / "plugins/wiz/backend/export_wiz.py").read_text(encoding="utf-8")
+        self.assertIn("checkpoint.fail_resource(resource_key, str(error))", wiz_source)
+        self.assertIn('metadata={"docGuid": doc.doc_guid, "imageFailureCount": len(img_failures)}', wiz_source)
 
         # Group exports use a cursor.  A timed-out image must remain a resource
         # warning, otherwise the desktop's generic retry action narrows a

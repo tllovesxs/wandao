@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "notion-import",
+  "platform": "notion",
+  "name": "Notion",
+  "title": "Notion 页面导入指南",
+  "navLabel": "Notion 导入",
+  "description": "将本地 Markdown 文件导入到 Notion。由于 Notion API 限制，推荐使用官方复制粘贴方式。本插件提供自动化指引。",
+  "type": "guide",
+  "group": "import",
+  "trustLevel": "official",
+  "status": "experimental",
+  "homepage": "https://www.notion.so/",
+  "tags": ["导入", "Notion", "Markdown"],
+  "capabilities": {
+    "export": false,
+    "import": true,
+    "guide": true,
+    "login": false,
+    "scanToc": false,
+    "images": false,
+    "attachments": false,
+    "tree": false,
+    "batch": false,
+    "retryFailures": false
+  },
+  "fields": [
+    {
+      "name": "guide_notice",
+      "type": "notice",
+      "markdown": "Notion 目前不提供直接的 Markdown 导入 API。推荐方式：\n\n1. **复制粘贴**：打开 Markdown 文件，全选复制，在 Notion 页面中粘贴（Notion 会自动识别 Markdown 格式）\n2. **拖拽文件**：将 .md 文件直接拖入 Notion 页面\n3. **使用第三方工具**：如 notion-enhancer、notion-importer 等\n\n本插件提供详细的操作指引。"
+    }
+  ],
+  "actions": [
+    {
+      "id": "guide",
+      "kind": "guide",
+      "label": "查看导入指引",
+      "script": "../../backend/guide_notion_import.py",
+      "includeSelection": false
+    }
+  ]
+}

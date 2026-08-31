@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "id": "notion-export",
+  "platform": "notion",
+  "name": "Notion",
+  "title": "Notion 页面 Markdown 导出",
+  "navLabel": "Notion 导出",
+  "description": "导出 Notion 页面为 Markdown，支持目录批量导出、图片本地化和断点续跑。仅处理您有权限访问的内容。",
+  "type": "automation",
+  "group": "export",
+  "trustLevel": "official",
+  "status": "experimental",
+  "defaults": { "output": "exports/notion" },
+  "homepage": "https://www.notion.so/",
+  "tags": ["导出", "Notion", "Markdown", "图片", "知识库"],
+  "capabilities": {
+    "export": true,
+    "import": false,
+    "guide": false,
+    "login": true,
+    "scanToc": false,
+    "images": true,
+    "attachments": false,
+    "tree": true,
+    "batch": true,
+    "retryFailures": true
+  },
+  "checkpoint": { "supported": true, "strategy": "items", "resourceTracking": true },
+  "fields": [
+    {
+      "name": "access_notice",
+      "type": "notice",
+      "markdown": "请确保您已登录 Notion 并有权限访问目标页面。插件会打开浏览器供您完成登录或安全验证，不会提取您的 Cookie 或 Token。"
+    },
+    {
+      "name": "page_url",
+      "label": "Notion 页面链接",
+      "type": "text",
+      "arg": "--page-url",
+      "required": true,
+      "history": "url",
+      "placeholder": "https://www.notion.so/workspace/Page-Name-abc123...",
+      "actions": ["export"]
+    },
+    {
+      "name": "output",
+      "label": "输出目录",
+      "type": "directory",
+      "arg": "--output",
+      "required": true,
+      "history": "path",
+      "actions": ["export"]
+    },
+    {
+      "name": "download_images",
+      "label": "下载图片到本地",
+      "type": "checkbox",
+      "arg": "--download-images",
+      "falseArg": "--no-download-images",
+      "default": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "incremental",
+      "label": "跳过已导出的页面",
+      "type": "checkbox",
+      "arg": "--incremental",
+      "default": false,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "verification_wait_seconds",
+      "label": "登录或安全验证等待秒数",
+      "type": "number",
+      "arg": "--verification-wait-seconds",
+      "default": 300,
+      "min": 30,
+      "step": 10,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "request_delay",
+      "label": "请求延迟秒",
+      "type": "number",
+      "arg": "--request-delay",
+      "default": 0.8,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["export"]
+    },
+    {
+      "name": "request_jitter",
+      "label": "随机浮动秒",
+      "type": "number",
+      "arg": "--request-jitter",
+      "default": 0.2,
+      "min": 0,
+      "step": 0.1,
+      "advanced": true,
+      "actions": ["export"]
+    }
+  ],
+  "actions": [
+    {
+      "id": "login",
+      "kind": "login",
+      "label": "登录并保存会话",
+      "script": "../../backend/export_notion.py",
+      "args": ["--login"],
+      "includeSelection": false,
+      "track": false,
+      "secondary": true
+    },
+    {
+      "id": "export",
+      "kind": "export",
+      "label": "开始导出",
+      "script": "../../backend/export_notion.py",
+      "args": ["--progress-every", "1"],
+      "includeSelection": false,
+      "progressTitle": "Notion 页面导出",
+      "progressDetail": "正在触发导出并处理 Markdown..."
+    }
+  ]
+}

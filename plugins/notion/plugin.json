@@ -3,13 +3,24 @@
   "schemaVersion": 1,
   "id": "notion",
   "name": "Notion",
-  "description": "Notion 官方 Markdown 导出与迁移教程。",
+  "description": "将 Notion 页面导出为 Markdown，支持目录批量导出、图片本地化和断点续跑。",
   "version": "1.0.0",
   "publisher": "Wandao Official",
   "homepage": "https://www.notion.so/",
   "license": "AGPL-3.0-only",
-  "core": { "minVersion": "1.2.9" },
+  "core": { "minVersion": "1.4.1" },
   "platforms": ["win32", "darwin", "linux"],
-  "entrypoints": { "providers": ["providers/notion/provider.json"] },
-  "permissions": []
+  "entrypoints": {
+    "providers": [
+      "providers/notion-export/provider.json",
+      "providers/notion-import/provider.json"
+    ]
+  },
+  "permissions": [
+    "browser-automation",
+    "credentials",
+    "filesystem:write",
+    "network",
+    "process"
+  ]
 }

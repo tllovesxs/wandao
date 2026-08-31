@@ -1,1 +1,1 @@
-"""Official Wandao guide plugin for Notion."""
+"""Notion plugin for Wandao - Export and import Notion pages."""

@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "google-docs-export",
+  "platform": "google-docs",
+  "name": "Google 文档",
+  "title": "Google Docs Markdown 导出",
+  "navLabel": "Google Docs 导出",
+  "description": "将一篇用户有权访问的 Google Docs 文档导出为 Markdown，并保存其中的图片和附件。",
+  "type": "automation",
+  "group": "export",
+  "trustLevel": "official",
+  "status": "experimental",
+  "defaults": {
+    "output": "exports/google-docs"
+  },
+  "guide": "README.md",
+  "homepage": "https://docs.google.com/",
+  "tags": [
+    "导出",
+    "Google Docs",
+    "Markdown",
+    "图片",
+    "附件",
+    "单篇"
+  ],
+  "capabilities": {
+    "export": true,
+    "import": false,
+    "guide": true,
+    "login": true,
+    "scanToc": true,
+    "images": true,
+    "attachments": true,
+    "tree": true,
+    "batch": false,
+    "retryFailures": false
+  },
+  "toc": {
+    "itemsPath": "nodes",
+    "idKey": "nodeId",
+    "exportIdKey": "exportId",
+    "titleKey": "title",
+    "parentIdKey": "parentNodeId",
+    "selectableKey": "selectable",
+    "selectionArg": "--node-id",
+    "note": "只建立 root 和当前 Google Docs 文档两个节点，不遍历 Google Drive 文件夹。"
+  },
+  "fields": [
+    {
+      "name": "source_url",
+      "label": "Google Docs 文档链接",
+      "type": "text",
+      "arg": "--source-url",
+      "required": true,
+      "history": "url",
+      "placeholder": "https://docs.google.com/document/d/文档ID/edit",
+      "actions": [
+        "scan",
+        "export"
+      ]
+    },
+    {
+      "name": "output",
+      "label": "输出目录",
+      "type": "directory",
+      "arg": "--output",
+      "required": true,
+      "default": "exports/google-docs",
+      "history": "path",
+      "actions": [
+        "export"
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "login",
+      "kind": "login",
+      "label": "登录并保存会话",
+      "script": "../../backend/export_google_docs.py",
+      "args": [
+        "--login"
+      ],
+      "includeSelection": false,
+      "track": false,
+      "secondary": true
+    },
+    {
+      "id": "scan",
+      "kind": "scan",
+      "label": "读取文档",
+      "script": "../../backend/export_google_docs.py",
+      "args": [
+        "--scan-toc"
+      ],
+      "includeSelection": false,
+      "secondary": true
+    },
+    {
+      "id": "export",
+      "kind": "export",
+      "label": "开始导出",
+      "script": "../../backend/export_google_docs.py",
+      "args": [
+        "--progress-every",
+        "1"
+      ],
+      "includeSelection": false,
+      "progressTitle": "Google Docs 导出",
+      "progressDetail": "正在读取文档并保存资源..."
+    }
+  ]
+}

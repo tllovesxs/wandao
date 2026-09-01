@@ -1,0 +1,11 @@
+{
+  "kind": "wandao.result",
+  "schemaVersion": 1,
+  "provider": "google-docs-export",
+  "mode": "export",
+  "totalDocs": 1,
+  "successCount": 1,
+  "failureCount": 0,
+  "failures": [],
+  "resourceFailures": []
+}

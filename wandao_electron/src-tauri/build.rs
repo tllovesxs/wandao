@@ -13,6 +13,7 @@ const BUNDLED_PLUGIN_IDS: &[&str] = &[
     "csdn",
     "dingtalk",
     "feishu",
+    "google-docs",
     "ima",
     "notion",
     "obsidian",

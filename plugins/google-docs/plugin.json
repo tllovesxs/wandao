@@ -1,0 +1,17 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "google-docs",
+  "name": "Google 文档",
+  "description": "通过独立浏览器将用户有权访问的单篇 Google Docs 文档导出为 Markdown，并保存图片和附件。",
+  "version": "0.1.0",
+  "publisher": "Wandao Official",
+  "homepage": "https://docs.google.com/",
+  "license": "AGPL-3.0-only",
+  "core": { "minVersion": "1.4.4" },
+  "platforms": ["win32", "darwin", "linux"],
+  "entrypoints": {
+    "providers": ["providers/google-docs-export/provider.json"]
+  },
+  "permissions": ["browser-automation", "filesystem:write", "network", "process"]
+}

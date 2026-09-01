@@ -1,0 +1,8 @@
+{
+  "title": "项目资源演示",
+  "document_id": "fixture-document-id",
+  "nodes": [
+    {"nodeId": "root", "exportId": "root", "title": "项目资源演示", "parentNodeId": "", "selectable": false, "type": "root"},
+    {"nodeId": "fixture-document-id", "exportId": "fixture-document-id", "title": "项目资源演示", "parentNodeId": "root", "selectable": true, "type": "document"}
+  ]
+}

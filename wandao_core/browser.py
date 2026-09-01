@@ -347,15 +347,17 @@ def find_chrome(explicit_path: str | None = None) -> str | None:
     return None
 
 
-def start_chrome(port: int, profile_dir: Path, url: str, browser_path: str | None = None) -> subprocess.Popen[Any]:
+def start_chrome(port: int, profile_dir: Path, url: str, browser_path: str | None = None, *, breakaway: bool = False) -> subprocess.Popen[Any]:
     chrome = find_chrome(browser_path)
     if not chrome:
         raise ExportError("未找到 Chrome、Edge 或 Chromium，请先在万能导设置中选择自动化浏览器。")
     profile_dir.mkdir(parents=True, exist_ok=True)
+    creation_flags = 0x01000000 if breakaway and os.name == "nt" else 0
     return subprocess.Popen(
         [chrome, f"--remote-debugging-port={port}", f"--user-data-dir={profile_dir}", "--no-first-run", "--disable-popup-blocking", url],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        creationflags=creation_flags,
     )
 
 

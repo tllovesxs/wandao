@@ -61,6 +61,11 @@
       "channel": "experimental",
       "approvedBy": "community",
       "approvedAt": "2026-07-14"
+    },
+    "google-docs": {
+      "channel": "experimental",
+      "approvedBy": "riverdream681-gif",
+      "approvedAt": "2026-09-01"
     }
   }
 }

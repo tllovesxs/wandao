@@ -34,6 +34,7 @@ PROVIDER_ID = "google-docs-export"
 DOCS_HOST = "docs.google.com"
 DRIVE_HOSTS = {"drive.google.com", "drive.usercontent.google.com"}
 ENTRY_URL = "https://docs.google.com/"
+LOGIN_URL = "https://accounts.google.com/"
 DEFAULT_PORT = 9265
 DEFAULT_PROFILE = ".google-docs-chrome-profile"
 MAX_RESOURCE_BYTES = 32 * 1024 * 1024
@@ -440,17 +441,24 @@ def export_document_model(document: ExportedDocument, output: Path, title: str, 
 def page_for_google_docs(port: int, preferred_url: str = "") -> dict[str, Any] | None:
     pages = http_json(f"http://127.0.0.1:{port}/json/list", timeout=5)
     preferred = urllib.parse.urlsplit(preferred_url)
+    preferred_host = (preferred.hostname or "").lower().rstrip(".")
     preferred_path = preferred.path.rstrip("/")
+    allowed_hosts = {DOCS_HOST, "accounts.google.com", "myaccount.google.com"}
     candidates = []
     for page in pages:
         if page.get("type") != "page":
             continue
         page_url = urllib.parse.urlsplit(str(page.get("url") or ""))
-        if (page_url.hostname or "").lower().rstrip(".") != DOCS_HOST:
+        host = (page_url.hostname or "").lower().rstrip(".")
+        if host not in allowed_hosts:
             continue
-        if preferred.path and page_url.path.rstrip("/") == preferred_path:
+        if preferred_host and host == preferred_host and page_url.path.rstrip("/") == preferred_path:
             return page
         candidates.append(page)
+    if preferred_host:
+        preferred_candidates = [page for page in candidates if (urllib.parse.urlsplit(str(page.get("url") or "")).hostname or "").lower().rstrip(".") == preferred_host]
+        if preferred_candidates:
+            return preferred_candidates[0]
     return candidates[0] if candidates else None
 
 
@@ -475,7 +483,7 @@ def connect_google_docs_browser(args: argparse.Namespace, initial_url: str = ENT
         args.port = port
     if not chrome_debug_available(port):
         profile = Path(args.profile_dir).expanduser().resolve() if args.profile_dir else default_profile_path()
-        process = start_chrome(port, profile, initial_url, getattr(args, "browser_path", "") or None)
+        process = start_chrome(port, profile, initial_url, getattr(args, "browser_path", "") or None, breakaway=True)
         wait_for_debug_port(port, timeout=30)
     page = page_for_google_docs(port, initial_url)
     if not page:
@@ -572,24 +580,79 @@ def download_exported_html(cdp: CDPClient, source: GoogleDocsSource, args: argpa
         except OSError:
             pass
 
+def login_state_is_complete(state: dict[str, Any] | None) -> bool:
+    if not isinstance(state, dict):
+        return False
+    parsed = urllib.parse.urlsplit(str(state.get("url") or ""))
+    host = (parsed.hostname or "").lower().rstrip(".")
+    ready_state = str(state.get("readyState") or "").lower()
+    title = str(state.get("title") or "")
+    body_text = str(state.get("bodyText") or state.get("text") or "")
+    if parsed.scheme.lower() != "https" or host not in {DOCS_HOST, "accounts.google.com", "myaccount.google.com"}:
+        return False
+    if ready_state not in {"interactive", "complete"}:
+        return False
+    if re.search(r"Sign in|登录|登入|Choose an account|选择账号|You need access|Request access|需要访问权限|请求访问", body_text, re.I):
+        return False
+    return bool(title.strip() or body_text.strip())
+
+
+def wait_for_login_confirmation(cdp: CDPClient, args: argparse.Namespace, confirmation_reader: Any | None = None) -> bool:
+    """Keep the login task alive until the UI explicitly confirms completion."""
+    reader = confirmation_reader
+    if reader is None:
+        # The renderer sends a newline when the user clicks its confirmation
+        # button.  input() is intentionally prompt-free so stdout stays JSON/log safe.
+        def reader() -> str:
+            return input()
+
+    check_stopped(args)
+    try:
+        confirmation = reader()
+    except (EOFError, OSError) as exc:
+        raise GoogleDocsError("登录确认通道已关闭，请重新点击“登录并保存会话”。") from exc
+    if confirmation is None:
+        raise GoogleDocsError("尚未收到登录确认。")
+    return True
+
+
+def verify_login_session(cdp: CDPClient, args: argparse.Namespace) -> dict[str, Any]:
+    """Navigate to the Docs origin and verify that the confirmed session works."""
+    cdp.navigate(ENTRY_URL)
+    deadline = time.time() + max(30, int(args.wait_seconds))
+    last_state: dict[str, Any] = {}
+    while time.time() < deadline:
+        check_stopped(args)
+        try:
+            state = cdp.evaluate("({url: location.href, readyState: document.readyState, title: document.title, bodyText: document.body ? document.body.innerText : ''})", timeout=10) or {}
+        except ExportError as exc:
+            raise GoogleDocsError("登录浏览器已关闭或连接中断，请重新点击“登录并保存会话”。") from exc
+        if isinstance(state, dict):
+            last_state = state
+            if login_state_is_complete(state):
+                return state
+        time.sleep(0.5)
+    if last_state and re.search(r"Sign in|登录|登入|Choose an account|选择账号|You need access|Request access|需要访问权限|请求访问", str(last_state.get("bodyText") or ""), re.I):
+        raise GoogleDocsError("未检测到可用的 Google 登录态，请先完成登录后再确认。")
+    raise GoogleDocsError("登录确认后无法验证 Google Docs 页面，请重试。")
+
+
+def should_close_started_browser_after_login() -> bool:
+    return False
+
 def run_login(args: argparse.Namespace) -> dict[str, Any]:
     cdp = None
     process = None
     try:
-        cdp, process = connect_google_docs_browser(args, ENTRY_URL)
-        emit(args, "请在插件打开的浏览器中完成 Google 登录。", event="auth.login.started")
-        deadline = time.time() + max(30, int(args.wait_seconds))
-        while time.time() < deadline:
-            check_stopped(args)
-            state = cdp.evaluate("({url: location.href, text: document.body ? document.body.innerText : ''})", timeout=10) or {}
-            text = str(state.get("text") or "") if isinstance(state, dict) else ""
-            if not re.search(r"Sign in|登录|登入|Choose an account|选择账号", text, re.I):
-                result = finalize_report({"platform": PLUGIN_ID, "totalDocs": 0, "successCount": 0, "failures": [], "resourceFailures": []}, provider=PROVIDER_ID, mode="login")
-                emit(args, "Google 登录会话已准备完成。", event="auth.login.completed", level="success")
-                print(json.dumps(result, ensure_ascii=False, indent=2))
-                return result
-            time.sleep(1)
-        raise GoogleDocsError("登录等待超时，请稍后重试。")
+        cdp, process = connect_google_docs_browser(args, LOGIN_URL)
+        cdp.navigate(LOGIN_URL)
+        emit(args, "请在插件打开的浏览器中完成 Google 登录；完成后点击“我已完成登录，保存凭证”。", event="auth.login.started")
+        wait_for_login_confirmation(cdp, args)
+        verify_login_session(cdp, args)
+        result = finalize_report({"platform": PLUGIN_ID, "totalDocs": 0, "successCount": 0, "failures": [], "resourceFailures": []}, provider=PROVIDER_ID, mode="login")
+        emit(args, "Google 登录会话已准备完成。", event="auth.login.completed", level="success")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return result
     finally:
         if cdp:
             cdp.close()

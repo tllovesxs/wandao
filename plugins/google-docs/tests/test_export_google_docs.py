@@ -48,6 +48,8 @@ class GoogleDocsPluginTests(unittest.TestCase):
         self.assertTrue(provider["capabilities"]["attachments"])
         self.assertFalse(provider["capabilities"]["batch"])
         self.assertFalse(provider["capabilities"]["retryFailures"])
+        export_action = next(action for action in provider["actions"] if action["id"] == "export")
+        self.assertNotEqual(export_action.get("includeSelection"), False)
 
     def test_accepts_only_google_docs_document_urls(self):
         source = backend.parse_google_docs_url(
@@ -67,14 +69,114 @@ class GoogleDocsPluginTests(unittest.TestCase):
                 with self.assertRaises(backend.ExportError):
                     backend.parse_google_docs_url(url)
 
-    def test_builds_minimal_root_and_document_nodes(self):
+    def test_builds_minimal_root_and_document_nodes_without_headings(self):
         source = backend.GoogleDocsSource("fixture-document-id", "https://docs.google.com/document/d/fixture-document-id/edit")
-        nodes = backend.build_document_nodes(source, "项目资源演示")
+        document = backend.parse_exported_html("<p>没有标题的正文</p>", "项目资源演示")
+        nodes = backend.build_document_nodes(source, document)
         self.assertEqual(nodes[0]["nodeId"], "root")
         self.assertEqual(nodes[0]["selectable"], False)
         self.assertEqual(nodes[1]["nodeId"], "fixture-document-id")
         self.assertEqual(nodes[1]["parentNodeId"], "root")
         self.assertEqual(nodes[1]["selectable"], True)
+
+    def test_builds_selectable_heading_outline_with_hierarchy(self):
+        source = backend.GoogleDocsSource("fixture-document-id", "https://docs.google.com/document/d/fixture-document-id/edit")
+        document = backend.parse_exported_html((FIXTURES / "heading-outline.html").read_text(encoding="utf-8"))
+        nodes = backend.build_document_nodes(source, document)
+        headings = nodes[1:]
+        self.assertEqual([node["title"] for node in headings], [
+            "第一部分", "环境部署", "Windows", "使用说明", "第二部分", "跳级小节", "使用说明",
+        ])
+        self.assertTrue(all(node["selectable"] for node in headings))
+        self.assertEqual(headings[0]["parentNodeId"], "root")
+        self.assertEqual(headings[1]["parentNodeId"], headings[0]["nodeId"])
+        self.assertEqual(headings[2]["parentNodeId"], headings[1]["nodeId"])
+        self.assertEqual(headings[3]["parentNodeId"], headings[0]["nodeId"])
+        self.assertEqual(headings[4]["parentNodeId"], "root")
+        self.assertEqual(headings[5]["parentNodeId"], headings[4]["nodeId"])
+        self.assertEqual(headings[6]["parentNodeId"], headings[4]["nodeId"])
+        self.assertEqual(len({node["nodeId"] for node in headings}), len(headings))
+        self.assertEqual(
+            [node["nodeId"] for node in headings],
+            [node["nodeId"] for node in backend.build_document_nodes(source, document)[1:]],
+        )
+
+    def test_selected_heading_exports_its_subtree_with_ancestor_context(self):
+        source = backend.GoogleDocsSource("fixture-document-id", "https://docs.google.com/document/d/fixture-document-id/edit")
+        document = backend.parse_exported_html((FIXTURES / "heading-outline.html").read_text(encoding="utf-8"))
+        nodes = backend.build_document_nodes(source, document)
+        environment = next(node for node in nodes if node["title"] == "环境部署")
+        markdown, images, attachments = backend.render_selected_markdown(document, source, [environment["exportId"]])
+        self.assertIn("# 第一部分", markdown)
+        self.assertNotIn("第一部分直属正文", markdown)
+        self.assertIn("## 环境部署", markdown)
+        self.assertIn("### Windows", markdown)
+        self.assertNotIn("第一处使用说明", markdown)
+        self.assertNotIn("第二部分", markdown)
+        self.assertNotIn("文档开头的脱敏说明", markdown)
+        self.assertEqual(len(images), 1)
+        self.assertEqual(attachments, [])
+
+    def test_parent_and_child_selection_does_not_duplicate_sections(self):
+        source = backend.GoogleDocsSource("fixture-document-id", "https://docs.google.com/document/d/fixture-document-id/edit")
+        document = backend.parse_exported_html((FIXTURES / "heading-outline.html").read_text(encoding="utf-8"))
+        nodes = backend.build_document_nodes(source, document)
+        first_part = next(node for node in nodes if node["title"] == "第一部分")
+        environment = next(node for node in nodes if node["title"] == "环境部署")
+        markdown, _, _ = backend.render_selected_markdown(
+            document,
+            source,
+            [first_part["exportId"], environment["exportId"]],
+        )
+        self.assertEqual(markdown.count("## 环境部署"), 1)
+        self.assertEqual(markdown.count("### Windows"), 1)
+        self.assertIn("第一部分直属正文", markdown)
+        self.assertNotIn("第二部分", markdown)
+
+    def test_all_heading_selection_preserves_preamble_and_full_document(self):
+        source = backend.GoogleDocsSource("fixture-document-id", "https://docs.google.com/document/d/fixture-document-id/edit")
+        document = backend.parse_exported_html((FIXTURES / "heading-outline.html").read_text(encoding="utf-8"))
+        nodes = backend.build_document_nodes(source, document)
+        selected = [node["exportId"] for node in nodes if node["selectable"]]
+        markdown, images, attachments = backend.render_selected_markdown(document, source, selected)
+        expected, expected_images, expected_attachments = backend.render_markdown(document)
+        self.assertEqual(markdown, expected)
+        self.assertEqual(images, expected_images)
+        self.assertEqual(attachments, expected_attachments)
+
+    def test_unknown_heading_selection_requires_rescan(self):
+        source = backend.GoogleDocsSource("fixture-document-id", "https://docs.google.com/document/d/fixture-document-id/edit")
+        document = backend.parse_exported_html((FIXTURES / "heading-outline.html").read_text(encoding="utf-8"))
+        with self.assertRaisesRegex(backend.GoogleDocsError, "重新读取"):
+            backend.render_selected_markdown(document, source, ["missing-heading"])
+
+    def test_nested_heading_containers_keep_outline_and_selection_in_sync(self):
+        source = backend.GoogleDocsSource("fixture-document-id", "https://docs.google.com/document/d/fixture-document-id/edit")
+        document = backend.parse_exported_html(
+            "<html><head><title>嵌套示例</title></head><body><div><h1>父标题</h1><p>父正文</p><h2>子标题</h2><p>子正文</p></div></body></html>"
+        )
+        child = next(node for node in backend.build_document_nodes(source, document) if node["title"] == "子标题")
+        markdown, _, _ = backend.render_selected_markdown(document, source, [child["exportId"]])
+        self.assertIn("# 父标题", markdown)
+        self.assertNotIn("父正文", markdown)
+        self.assertIn("## 子标题", markdown)
+        self.assertIn("子正文", markdown)
+
+    def test_list_before_heading_does_not_break_heading_selection(self):
+        source = backend.GoogleDocsSource("fixture-document-id", "https://docs.google.com/document/d/fixture-document-id/edit")
+        document = backend.parse_exported_html(
+            "<html><head><title>列表示例</title></head><body><h1>父标题</h1><ul><li>列表项</li></ul><h2>子标题</h2><p>子正文</p></body></html>"
+        )
+        child = next(node for node in backend.build_document_nodes(source, document) if node["title"] == "子标题")
+        markdown, _, _ = backend.render_selected_markdown(document, source, [child["exportId"]])
+        self.assertIn("# 父标题", markdown)
+        self.assertNotIn("列表项", markdown)
+        self.assertIn("## 子标题", markdown)
+        self.assertIn("子正文", markdown)
+
+    def test_repeated_node_id_arguments_are_collected(self):
+        args = backend.parse_args(["--node-id", "heading-1", "--node-id", "heading-2"])
+        self.assertEqual(args.node_id, ["heading-1", "heading-2"])
 
     def test_parses_html_and_converts_supported_markdown(self):
         html = (FIXTURES / "document-with-resources.html").read_text(encoding="utf-8")
@@ -191,6 +293,29 @@ class GoogleDocsPluginTests(unittest.TestCase):
             self.assertEqual(result["attachmentCount"], 1)
             self.assertEqual(result["attachmentSuccessCount"], 1)
             self.assertEqual(result["resourceFailures"], [])
+
+    def test_selected_child_export_omits_parent_body_and_parent_resources(self):
+        source = backend.GoogleDocsSource("fixture-document-id", "https://docs.google.com/document/d/fixture-document-id/edit")
+        document = backend.parse_exported_html((FIXTURES / "heading-outline.html").read_text(encoding="utf-8"))
+        windows = next(node for node in backend.build_document_nodes(source, document) if node["title"] == "Windows")
+        with tempfile.TemporaryDirectory() as temp:
+            result = backend.export_document_model(
+                document,
+                Path(temp),
+                document.title,
+                source=source,
+                selected_node_ids=[windows["exportId"]],
+                resource_files={"assets/source-image.png": (FIXTURES / "assets" / "source-image.png").read_bytes()},
+            )
+            markdown = Path(result["output"]).read_text(encoding="utf-8")
+            self.assertIn("# 第一部分", markdown)
+            self.assertIn("## 环境部署", markdown)
+            self.assertIn("### Windows", markdown)
+            self.assertIn("Windows 正文", markdown)
+            self.assertNotIn("环境部署正文", markdown)
+            self.assertNotIn("assets/image-001", markdown)
+            self.assertEqual(result["imageCount"], 0)
+            self.assertFalse((Path(result["documentDir"]) / "assets").exists())
 
     def test_decodes_data_image_without_leaving_base64_in_markdown(self):
         encoded = base64.b64encode((FIXTURES / "assets" / "source-image.png").read_bytes()).decode("ascii")

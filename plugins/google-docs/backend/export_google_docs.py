@@ -43,6 +43,10 @@ MIME_EXTENSIONS = {
     "image/webp": ".webp", "image/svg+xml": ".svg", "application/pdf": ".pdf",
     "text/plain": ".txt", "text/markdown": ".md", "application/zip": ".zip",
 }
+BLOCK_TAGS = {
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "section",
+    "article", "blockquote", "ul", "ol", "li",
+}
 
 
 class GoogleDocsError(ExportError):
@@ -80,6 +84,15 @@ class AttachmentRef:
 class ExportedDocument:
     root: DocumentNode
     title: str
+
+
+@dataclass(frozen=True)
+class HeadingEntry:
+    index: int
+    node_id: str
+    title: str
+    level: int
+    parent_node_id: str
 
 
 class DocumentHtmlParser(HTMLParser):
@@ -143,13 +156,6 @@ def resolve_output_path(value: str) -> Path:
     return output.resolve()
 
 
-def build_document_nodes(source: GoogleDocsSource, title: str) -> list[dict[str, Any]]:
-    return [
-        {"nodeId": "root", "exportId": "root", "title": title, "parentNodeId": "", "selectable": False, "type": "root"},
-        {"nodeId": source.document_id, "exportId": source.document_id, "title": title, "parentNodeId": "root", "selectable": True, "type": "document"},
-    ]
-
-
 def walk(node: DocumentNode) -> Iterable[DocumentNode]:
     for child in node.children:
         if isinstance(child, DocumentNode):
@@ -159,6 +165,59 @@ def walk(node: DocumentNode) -> Iterable[DocumentNode]:
 
 def text_content(node: DocumentNode) -> str:
     return "".join(text_content(child) if isinstance(child, DocumentNode) else child for child in node.children)
+
+
+def collect_heading_entries(source: GoogleDocsSource, document: ExportedDocument) -> list[HeadingEntry]:
+    entries: list[HeadingEntry] = []
+    ancestors: list[HeadingEntry] = []
+    for node in walk(document.root):
+        if node.tag not in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            continue
+        title = normalize_text(text_content(node)).strip()
+        if not title:
+            continue
+        level = int(node.tag[1])
+        while ancestors and ancestors[-1].level >= level:
+            ancestors.pop()
+        index = len(entries) + 1
+        node_id = f"{source.document_id}:heading:{index}"
+        entry = HeadingEntry(
+            index=index,
+            node_id=node_id,
+            title=title,
+            level=level,
+            parent_node_id=ancestors[-1].node_id if ancestors else "root",
+        )
+        entries.append(entry)
+        ancestors.append(entry)
+    return entries
+
+
+def build_document_nodes(source: GoogleDocsSource, document: ExportedDocument) -> list[dict[str, Any]]:
+    nodes = [
+        {"nodeId": "root", "exportId": "", "title": document.title, "parentNodeId": "", "selectable": False, "type": "root"},
+    ]
+    headings = collect_heading_entries(source, document)
+    if not headings:
+        nodes.append({
+            "nodeId": source.document_id,
+            "exportId": source.document_id,
+            "title": document.title,
+            "parentNodeId": "root",
+            "selectable": True,
+            "type": "document",
+        })
+        return nodes
+    nodes.extend({
+        "nodeId": entry.node_id,
+        "exportId": entry.node_id,
+        "title": entry.title,
+        "parentNodeId": entry.parent_node_id,
+        "selectable": True,
+        "type": "heading",
+        "level": entry.level,
+    } for entry in headings)
+    return nodes
 
 
 def find_title(root: DocumentNode) -> str:
@@ -262,8 +321,25 @@ def inline_markdown(node: DocumentNode, images: list[ImageRef], attachments: lis
     return "".join(parts)
 
 
-def render_block(node: DocumentNode, images: list[ImageRef], attachments: list[AttachmentRef], list_depth: int = 0) -> list[str]:
+def heading_marker(index: int) -> str:
+    return f"<!--wandao-heading:{index}-->"
+
+
+def has_block_children(node: DocumentNode) -> bool:
+    return any(isinstance(child, DocumentNode) and child.tag in BLOCK_TAGS for child in node.children)
+
+
+def render_block(
+    node: DocumentNode,
+    images: list[ImageRef],
+    attachments: list[AttachmentRef],
+    list_depth: int = 0,
+    *,
+    include_heading_markers: bool = False,
+    heading_counter: list[int] | None = None,
+) -> list[str]:
     output: list[str] = []
+    counter = heading_counter if heading_counter is not None else [0]
     for child in node.children:
         if isinstance(child, str):
             value = normalize_text(child).strip()
@@ -274,22 +350,46 @@ def render_block(node: DocumentNode, images: list[ImageRef], attachments: list[A
         if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             value = inline_markdown(child, images, attachments).strip()
             if value:
+                counter[0] += 1
+                if include_heading_markers:
+                    output.append(heading_marker(counter[0]))
                 output.extend([f"{'#' * int(tag[1])} {value}", ""])
-        elif tag in {"p", "div", "section", "article", "blockquote"}:
+        elif tag in {"p", "blockquote"}:
             value = inline_markdown(child, images, attachments).strip()
             if value:
                 output.extend([value, ""])
             else:
-                output.extend(render_block(child, images, attachments, list_depth))
+                output.extend(render_block(
+                    child,
+                    images,
+                    attachments,
+                    list_depth,
+                    include_heading_markers=include_heading_markers,
+                    heading_counter=counter,
+                ))
+        elif tag in {"div", "section", "article"}:
+            if has_block_children(child):
+                output.extend(render_block(
+                    child,
+                    images,
+                    attachments,
+                    list_depth,
+                    include_heading_markers=include_heading_markers,
+                    heading_counter=counter,
+                ))
+            else:
+                value = inline_markdown(child, images, attachments).strip()
+                if value:
+                    output.extend([value, ""])
         elif tag in {"ul", "ol"}:
             ordered = tag == "ol"
-            counter = 1
+            list_counter = 1
             for item in child.children:
                 if isinstance(item, DocumentNode) and item.tag == "li":
                     value = inline_markdown(item, images, attachments).strip()
-                    marker = f"{counter}." if ordered else "-"
+                    marker = f"{list_counter}." if ordered else "-"
                     output.append(f"{'  ' * list_depth}{marker} {value}".rstrip())
-                    counter += 1
+                    list_counter += 1
             output.append("")
         elif tag == "li":
             value = inline_markdown(child, images, attachments).strip()
@@ -300,11 +400,18 @@ def render_block(node: DocumentNode, images: list[ImageRef], attachments: list[A
         elif tag == "a" and is_attachment_node(child):
             output.extend([inline_markdown(child, images, attachments), ""])
         elif tag not in {"head", "title", "meta", "script", "style"}:
-            output.extend(render_block(child, images, attachments, list_depth))
+            output.extend(render_block(
+                child,
+                images,
+                attachments,
+                list_depth,
+                include_heading_markers=include_heading_markers,
+                heading_counter=counter,
+            ))
     return output
 
 
-def render_markdown(document: ExportedDocument) -> tuple[str, list[ImageRef], list[AttachmentRef]]:
+def render_markdown(document: ExportedDocument, *, include_heading_markers: bool = False) -> tuple[str, list[ImageRef], list[AttachmentRef]]:
     images: list[ImageRef] = []
     attachments: list[AttachmentRef] = []
     body_root = DocumentNode("body")
@@ -319,9 +426,9 @@ def render_markdown(document: ExportedDocument) -> tuple[str, list[ImageRef], li
             if isinstance(child, DocumentNode) and child.tag in {"head", "title", "meta", "script", "style"}:
                 continue
             body_root.children.append(child)
-    body = render_block(body_root, images, attachments)
+    body = render_block(body_root, images, attachments, include_heading_markers=include_heading_markers)
     title_line = f"# {normalize_text(document.title).strip()}"
-    if body and body[0] == title_line:
+    if body and body[0] == title_line and not include_heading_markers:
         body = body[1:]
         if body and not body[0].strip():
             body = body[1:]
@@ -335,6 +442,95 @@ def render_markdown(document: ExportedDocument) -> tuple[str, list[ImageRef], li
     for ref in attachments:
         rendered = rendered.replace(f"__ATTACHMENT_{ref.index}__", f"[{ref.name}](attachments/attachment-{ref.index:03d}{resource_extension(ref.source)})")
     return rendered, images, attachments
+
+
+def expand_selected_heading_ids(entries: list[HeadingEntry], selected_ids: set[str]) -> set[str]:
+    expanded: set[str] = set()
+    for index, entry in enumerate(entries):
+        if entry.node_id not in selected_ids:
+            continue
+        expanded.add(entry.node_id)
+        for descendant in entries[index + 1:]:
+            if descendant.level <= entry.level:
+                break
+            expanded.add(descendant.node_id)
+    return expanded
+
+
+def selected_heading_context(entries: list[HeadingEntry], included_ids: set[str]) -> set[str]:
+    by_id = {entry.node_id: entry for entry in entries}
+    context: set[str] = set()
+    for node_id in included_ids:
+        parent_id = by_id[node_id].parent_node_id
+        while parent_id != "root":
+            if parent_id not in included_ids:
+                context.add(parent_id)
+            parent_id = by_id[parent_id].parent_node_id
+    return context
+
+
+def split_marked_heading_sections(markdown: str, expected_count: int) -> tuple[str, dict[int, str]]:
+    parts = re.split(r"(?m)^<!--wandao-heading:(\d+)-->\n", markdown)
+    prefix = parts[0]
+    sections = {int(parts[index]): parts[index + 1] for index in range(1, len(parts), 2)}
+    if len(sections) != expected_count:
+        raise GoogleDocsError("Google Docs 标题结构在渲染时发生变化，请重新读取文档。")
+    return prefix, sections
+
+
+def section_heading_line(section: str) -> str:
+    return next((line for line in section.splitlines() if re.match(r"^#{1,6}\s+", line)), "")
+
+
+def selected_resource_refs(
+    markdown: str,
+    images: list[ImageRef],
+    attachments: list[AttachmentRef],
+) -> tuple[list[ImageRef], list[AttachmentRef]]:
+    selected_images = [ref for ref in images if f"assets/image-{ref.index:03d}" in markdown]
+    selected_attachments = [ref for ref in attachments if f"attachments/attachment-{ref.index:03d}" in markdown]
+    return selected_images, selected_attachments
+
+
+def render_selected_markdown(
+    document: ExportedDocument,
+    source: GoogleDocsSource,
+    selected_node_ids: Iterable[str] | None,
+) -> tuple[str, list[ImageRef], list[AttachmentRef]]:
+    selected_ids = {str(value).strip() for value in (selected_node_ids or []) if str(value).strip()}
+    if not selected_ids:
+        return render_markdown(document)
+    entries = collect_heading_entries(source, document)
+    if not entries:
+        if selected_ids == {source.document_id}:
+            return render_markdown(document)
+        raise GoogleDocsError("文档目录已经变化，请重新读取文档后再选择导出。")
+    known_ids = {entry.node_id for entry in entries}
+    if not selected_ids <= known_ids:
+        raise GoogleDocsError("文档目录已经变化，请重新读取文档后再选择导出。")
+    included_ids = expand_selected_heading_ids(entries, selected_ids)
+    if included_ids == known_ids:
+        return render_markdown(document)
+
+    marked, images, attachments = render_markdown(document, include_heading_markers=True)
+    _prefix, sections = split_marked_heading_sections(marked, len(entries))
+    context_ids = selected_heading_context(entries, included_ids)
+    title_line = f"# {normalize_text(document.title).strip()}"
+    body_parts: list[str] = []
+    for entry in entries:
+        section = sections[entry.index].strip()
+        if entry.node_id in included_ids:
+            if entry.index == 1 and section_heading_line(section) == title_line:
+                section = re.sub(r"^#{1,6}\s+[^\n]+\n*", "", section, count=1)
+            if section:
+                body_parts.append(section)
+        elif entry.node_id in context_ids:
+            heading_line = section_heading_line(section)
+            if heading_line and not (entry.index == 1 and heading_line == title_line):
+                body_parts.append(heading_line)
+    selected_markdown = title_line + "\n\n" + "\n\n".join(body_parts).strip() + "\n"
+    selected_images, selected_attachments = selected_resource_refs(selected_markdown, images, attachments)
+    return selected_markdown, selected_images, selected_attachments
 
 def make_progress_payload(current: int, total: int, images_found: int, images_saved: int, attachments_found: int, attachments_saved: int, message: str) -> dict[str, Any]:
     return {
@@ -393,8 +589,15 @@ def save_attachment(ref: AttachmentRef, target_dir: Path, source_url: str, resou
     return relative
 
 
-def export_document_model(document: ExportedDocument, output: Path, title: str, *, source_url: str = ENTRY_URL, resource_files: dict[str, bytes] | None = None, progress_callback: Any | None = None) -> dict[str, Any]:
-    markdown, images, attachments = render_markdown(document)
+def export_document_model(document: ExportedDocument, output: Path, title: str, *, source_url: str = ENTRY_URL, source: GoogleDocsSource | None = None, selected_node_ids: Iterable[str] | None = None, resource_files: dict[str, bytes] | None = None, progress_callback: Any | None = None) -> dict[str, Any]:
+    selected = [str(value) for value in (selected_node_ids or []) if str(value).strip()]
+    if selected and source is None:
+        raise GoogleDocsError("按目录导出时缺少 Google Docs 文档来源。")
+    markdown, images, attachments = (
+        render_selected_markdown(document, source, selected)
+        if selected and source is not None
+        else render_markdown(document)
+    )
     document_dir = output / sanitize_filename(title, fallback="Google Docs 文档")
     document_dir.mkdir(parents=True, exist_ok=True)
     image_paths: dict[int, str] = {}
@@ -731,7 +934,7 @@ def scan_document(args: argparse.Namespace) -> dict[str, Any]:
         result = finalize_report({
             "platform": PLUGIN_ID, "totalDocs": 1, "successCount": 1,
             "failures": [], "resourceFailures": [], "title": document.title,
-            "nodes": build_document_nodes(source, document.title),
+            "nodes": build_document_nodes(source, document),
             "imagesFound": len(images), "attachmentsFound": len(attachments),
         }, provider=PROVIDER_ID, mode="scan")
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -757,14 +960,22 @@ def export_document(args: argparse.Namespace) -> dict[str, Any]:
         html_content, title = download_exported_html(cdp, source, args)
         document = parse_exported_html(html_content, title)
         emit_progress(args, make_progress_payload(0, 1, 0, 0, 0, 0, "正在读取正文"))
-        result_data = export_document_model(document, output, document.title, source_url=source.canonical_url, progress_callback=lambda payload: emit_progress(args, payload))
+        result_data = export_document_model(
+            document,
+            output,
+            document.title,
+            source_url=source.canonical_url,
+            source=source,
+            selected_node_ids=args.node_id,
+            progress_callback=lambda payload: emit_progress(args, payload),
+        )
         emit_progress(args, make_progress_payload(1, 1, result_data["imageCount"], result_data["imageSuccessCount"], result_data["attachmentCount"], result_data["attachmentSuccessCount"], "正在生成 Markdown"))
         report_path = Path(result_data["documentDir"]) / "00-导出报告.json"
         report = finalize_report({
             "platform": PLUGIN_ID, "totalDocs": 1, "successCount": 1, "exportedDocs": 1,
             "failures": [], "resourceFailures": result_data["resourceFailures"],
             "output": result_data["output"], "title": document.title,
-            "nodes": build_document_nodes(source, document.title),
+            "nodes": build_document_nodes(source, document),
             "imageCount": result_data["imageCount"], "imageSuccessCount": result_data["imageSuccessCount"],
             "attachmentCount": result_data["attachmentCount"], "attachmentSuccessCount": result_data["attachmentSuccessCount"],
             "elapsedSeconds": round(time.time() - started, 2),
@@ -788,7 +999,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--source-url", default="", help="Google Docs document URL")
     parser.add_argument("--output", default=str(default_data_dir() / "exports" / "google-docs"), help="Output directory")
     parser.add_argument("--download-dir", default=str(default_data_dir() / "downloads" / "google-docs"), help="Plugin-owned temporary browser download directory")
-    parser.add_argument("--node-id", default="", help="Optional single document node id")
+    parser.add_argument("--node-id", action="append", default=[], help="Selected heading node id; repeat for multiple headings")
     parser.add_argument("--progress-every", type=int, default=1, help="Progress message interval")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Dedicated browser debugging port")
     parser.add_argument("--profile-dir", default=str(default_profile_path()), help="Dedicated browser profile directory")

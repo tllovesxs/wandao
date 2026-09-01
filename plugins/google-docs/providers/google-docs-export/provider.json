@@ -43,7 +43,7 @@
     "parentIdKey": "parentNodeId",
     "selectableKey": "selectable",
     "selectionArg": "--node-id",
-    "note": "只建立 root 和当前 Google Docs 文档两个节点，不遍历 Google Drive 文件夹。"
+    "note": "按正文 h1-h6 标题建立层级；勾选标题会导出该标题及其全部下级章节。"
   },
   "fields": [
     {
@@ -105,7 +105,7 @@
         "--progress-every",
         "1"
       ],
-      "includeSelection": false,
+      "includeSelection": true,
       "progressTitle": "Google Docs 导出",
       "progressDetail": "正在读取文档并保存资源..."
     }

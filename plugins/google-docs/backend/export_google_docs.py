@@ -136,6 +136,13 @@ def default_profile_path() -> Path:
     return Path(override).expanduser().resolve() if override else default_data_dir() / DEFAULT_PROFILE
 
 
+def resolve_output_path(value: str) -> Path:
+    output = Path(value).expanduser()
+    if not output.is_absolute():
+        output = default_data_dir() / output
+    return output.resolve()
+
+
 def build_document_nodes(source: GoogleDocsSource, title: str) -> list[dict[str, Any]]:
     return [
         {"nodeId": "root", "exportId": "root", "title": title, "parentNodeId": "", "selectable": False, "type": "root"},
@@ -738,7 +745,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--browser-path", default="", help="Chrome/Edge/Chromium executable path")
     parser.add_argument("--wait-seconds", type=int, default=300, help="Seconds to wait for login or page loading")
     parser.add_argument("--close-started-chrome", action="store_true", help="Close a browser started by this action")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.output = str(resolve_output_path(args.output))
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

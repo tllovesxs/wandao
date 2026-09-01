@@ -26,6 +26,15 @@ backend = load_backend()
 
 
 class GoogleDocsPluginTests(unittest.TestCase):
+    def test_relative_output_is_resolved_inside_plugin_data_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.dict("os.environ", {"WANDAO_PLUGIN_DATA_DIR": temp}, clear=False):
+                args = backend.parse_args(["--output", "exports/google-docs"])
+        self.assertEqual(
+            Path(args.output),
+            Path(temp).resolve() / "exports" / "google-docs",
+        )
+
     def test_manifest_and_provider_files_are_consistent(self):
         manifest = json.loads((PLUGIN_ROOT / "plugin.json").read_text(encoding="utf-8"))
         provider_path = PLUGIN_ROOT / manifest["entrypoints"]["providers"][0]

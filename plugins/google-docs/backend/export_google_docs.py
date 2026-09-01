@@ -548,6 +548,63 @@ def read_page_state(cdp: CDPClient, args: argparse.Namespace) -> dict[str, Any]:
     raise GoogleDocsError("Google Docs 页面加载或登录等待超时。")
 
 
+def decode_downloaded_html(payload: bytes) -> str:
+    text = payload.decode("utf-8-sig", errors="replace")
+    prefix = text.lstrip()[:4096]
+    if not re.search(r"<(?:!doctype\s+html|html|head|body)\b", prefix, re.I):
+        raise GoogleDocsError("Google Docs 下载结果既不是合法 ZIP，也不是 HTML。")
+    title_match = re.search(r"<title\b[^>]*>(.*?)</title\s*>", text, re.I | re.S)
+    page_title = html.unescape(re.sub(r"<[^>]+>", "", title_match.group(1))).strip() if title_match else ""
+    if re.search(r"Sign[\s-]*in|Choose an account|登录|登入|选择账号", page_title, re.I):
+        raise GoogleDocsError("Google Docs 导出返回了登录页面，请重新登录后再试。")
+    if re.search(r"You need access|Access required|Access denied|Request access|需要访问权限|请求访问|无权访问", page_title, re.I):
+        raise GoogleDocsError("当前账号没有权限导出这篇 Google Docs 文档。")
+    return text
+
+
+def read_downloaded_html(path: Path) -> str:
+    payload = path.read_bytes()
+    if not payload:
+        raise GoogleDocsError("Google Docs 下载结果为空。")
+    if zipfile.is_zipfile(io.BytesIO(payload)):
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            html_names = [name for name in archive.namelist() if name.lower().endswith((".html", ".htm"))]
+            if not html_names:
+                raise GoogleDocsError("Google Docs HTML 导出包中没有 HTML 正文。")
+            html_name = next((name for name in html_names if Path(name).name.lower() == "index.html"), html_names[0])
+            return decode_downloaded_html(archive.read(html_name))
+    if payload.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        raise GoogleDocsError("Google Docs HTML 压缩包下载不完整或已经损坏。")
+    return decode_downloaded_html(payload)
+
+
+def snapshot_downloads(download_dir: Path) -> dict[str, tuple[int, int]]:
+    snapshot: dict[str, tuple[int, int]] = {}
+    for path in download_dir.iterdir():
+        if path.is_file():
+            stat = path.stat()
+            snapshot[path.name] = (stat.st_size, stat.st_mtime_ns)
+    return snapshot
+
+
+def find_stable_download(
+    download_dir: Path,
+    before: dict[str, tuple[int, int]],
+    previous: dict[str, tuple[int, int]],
+) -> tuple[Path | None, dict[str, tuple[int, int]]]:
+    before_names = set(before)
+    current = snapshot_downloads(download_dir)
+    candidates = {
+        name: signature
+        for name, signature in current.items()
+        if name not in before_names and not name.endswith(".crdownload")
+    }
+    stable = [name for name, signature in candidates.items() if previous.get(name) == signature]
+    if len(stable) == 1:
+        return download_dir / stable[0], current
+    return None, current
+
+
 def download_exported_html(cdp: CDPClient, source: GoogleDocsSource, args: argparse.Namespace) -> tuple[str, str]:
     """Use the browser's authenticated Google Docs HTML export path.
 
@@ -557,30 +614,23 @@ def download_exported_html(cdp: CDPClient, source: GoogleDocsSource, args: argpa
     state = read_page_state(cdp, args)
     download_dir = Path(args.download_dir).expanduser().resolve()
     download_dir.mkdir(parents=True, exist_ok=True)
-    before = {path.name for path in download_dir.iterdir() if path.is_file()}
+    before = snapshot_downloads(download_dir)
     export_url = f"https://{DOCS_HOST}/document/d/{source.document_id}/export?format=html"
     cdp.send("Page.setDownloadBehavior", {"behavior": "allow", "downloadPath": str(download_dir)})
     cdp.navigate(export_url)
     deadline = time.time() + max(30, int(args.wait_seconds))
     downloaded: Path | None = None
+    previous = before
     while time.time() < deadline:
         check_stopped(args)
-        candidates = [path for path in download_dir.iterdir() if path.is_file() and path.name not in before and not path.name.endswith(".crdownload")]
-        if candidates:
-            downloaded = max(candidates, key=lambda path: path.stat().st_mtime)
+        downloaded, previous = find_stable_download(download_dir, before, previous)
+        if downloaded:
             break
         time.sleep(0.5)
     if downloaded is None:
         raise GoogleDocsError("Google Docs HTML 导出下载超时或被拒绝。")
     try:
-        with zipfile.ZipFile(downloaded) as archive:
-            html_names = [name for name in archive.namelist() if name.lower().endswith((".html", ".htm"))]
-            if not html_names:
-                raise GoogleDocsError("Google Docs HTML 导出包中没有 HTML 正文。")
-            html_name = next((name for name in html_names if Path(name).name.lower() == "index.html"), html_names[0])
-            return archive.read(html_name).decode("utf-8", errors="replace"), str(state.get("title") or "Google Docs 文档")
-    except zipfile.BadZipFile as exc:
-        raise GoogleDocsError("Google Docs 导出结果不是有效的 HTML 压缩包。") from exc
+        return read_downloaded_html(downloaded), str(state.get("title") or "Google Docs 文档")
     finally:
         try:
             downloaded.unlink()

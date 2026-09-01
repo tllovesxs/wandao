@@ -4,6 +4,7 @@ import json
 import tempfile
 import sys
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -84,6 +85,88 @@ class GoogleDocsPluginTests(unittest.TestCase):
         self.assertEqual(len(image_refs), 1)
         self.assertEqual(len(attachment_refs), 1)
         self.assertNotIn("data:image", markdown)
+
+    def test_reads_plain_html_download(self):
+        source = FIXTURES / "plain-export.html"
+        self.assertEqual(
+            backend.read_downloaded_html(source),
+            source.read_text(encoding="utf-8"),
+        )
+
+    def test_reads_html_from_valid_zip_download(self):
+        expected = (FIXTURES / "plain-export.html").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as temp:
+            archive_path = Path(temp) / "export.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("index.html", expected)
+            self.assertEqual(backend.read_downloaded_html(archive_path), expected)
+
+    def test_rejects_google_login_page_download(self):
+        with self.assertRaisesRegex(backend.GoogleDocsError, "登录"):
+            backend.read_downloaded_html(FIXTURES / "login-page.html")
+
+    def test_rejects_google_access_denied_page_download(self):
+        with self.assertRaisesRegex(backend.GoogleDocsError, "权限"):
+            backend.read_downloaded_html(FIXTURES / "access-denied.html")
+
+    def test_rejects_page_titled_you_need_access(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "access.html"
+            path.write_text(
+                "<html><head><title>You need access</title></head><body></body></html>",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(backend.GoogleDocsError, "权限"):
+                backend.read_downloaded_html(path)
+
+    def test_document_text_is_not_mistaken_for_google_error_page(self):
+        html = """<!doctype html><html><head><title>操作说明</title></head>
+        <body><p>Sign in 后如果看到 You need access，请联系文档所有者。</p></body></html>"""
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "instructions.html"
+            path.write_bytes(html.encode("utf-8"))
+            self.assertEqual(backend.read_downloaded_html(path), html)
+
+    def test_rejects_empty_download(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "empty.html"
+            path.write_bytes(b"")
+            with self.assertRaisesRegex(backend.GoogleDocsError, "为空"):
+                backend.read_downloaded_html(path)
+
+    def test_rejects_truncated_zip_download(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "truncated.zip"
+            path.write_bytes(b"PK\x03\x04incomplete")
+            with self.assertRaisesRegex(backend.GoogleDocsError, "不完整|损坏"):
+                backend.read_downloaded_html(path)
+
+    def test_download_candidate_must_be_stable_across_two_observations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            download_dir = Path(temp)
+            before = backend.snapshot_downloads(download_dir)
+            downloaded = download_dir / "export.html"
+            downloaded.write_text("<html><body>first</body></html>", encoding="utf-8")
+            candidate, observed = backend.find_stable_download(download_dir, before, {})
+            self.assertIsNone(candidate)
+            downloaded.write_text("<html><body>finished</body></html>", encoding="utf-8")
+            candidate, observed = backend.find_stable_download(download_dir, before, observed)
+            self.assertIsNone(candidate)
+            candidate, _ = backend.find_stable_download(download_dir, before, observed)
+            self.assertEqual(candidate, downloaded)
+
+    def test_download_candidate_ignores_old_and_partial_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            download_dir = Path(temp)
+            old = download_dir / "old.zip"
+            old.write_bytes(b"old")
+            before = backend.snapshot_downloads(download_dir)
+            partial = download_dir / "export.zip.crdownload"
+            partial.write_bytes(b"partial")
+            candidate, observed = backend.find_stable_download(download_dir, before, {})
+            self.assertIsNone(candidate)
+            candidate, _ = backend.find_stable_download(download_dir, before, observed)
+            self.assertIsNone(candidate)
 
     def test_saves_fixture_resources_to_assets_and_attachments(self):
         html = (FIXTURES / "document-with-resources.html").read_text(encoding="utf-8")

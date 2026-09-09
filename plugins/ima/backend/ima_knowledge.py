@@ -613,7 +613,10 @@ def _is_remote_image_url(url: str, *, allow_unknown_suffix: bool = False) -> boo
     return allow_unknown_suffix or suffix in IMAGE_URL_SUFFIXES
 
 
-def remote_image_urls(markdown: str) -> list[str]:
+def remote_image_urls(
+    markdown: str,
+    resource_failures: list[dict[str, str]] | None = None,
+) -> list[str]:
     """Return remote image URLs without attempting to fetch arbitrary links."""
 
     result: list[str] = []
@@ -621,7 +624,19 @@ def remote_image_urls(markdown: str) -> list[str]:
 
     def add(raw: str, *, allow_unknown_suffix: bool = False) -> None:
         url = _clean_remote_url(raw)
-        if url and url not in seen and _is_remote_image_url(url, allow_unknown_suffix=allow_unknown_suffix):
+        if not url or url in seen:
+            return
+        try:
+            is_image = _is_remote_image_url(url, allow_unknown_suffix=allow_unknown_suffix)
+        except ValueError as exc:
+            # A malformed image URL must not abort the whole document export.
+            # Keep the original Markdown reference and report it as a resource
+            # failure so callers can surface a partial export warning.
+            seen.add(url)
+            if resource_failures is not None and allow_unknown_suffix:
+                _resource_failure(resource_failures, url, exc)
+            return
+        if is_image:
             seen.add(url)
             result.append(url)
 
@@ -646,7 +661,10 @@ def data_image_urls(markdown: str) -> list[str]:
 
 
 def _resource_failure(resource_failures: list[dict[str, str]], url: str, exc: Exception) -> None:
-    host = urllib.parse.urlparse(url).netloc or "unknown-host"
+    try:
+        host = urllib.parse.urlparse(url).netloc or "unknown-host"
+    except ValueError:
+        host = "invalid-url"
     resource_failures.append({"type": "image", "host": host, "error": str(exc)})
 
 
@@ -658,7 +676,7 @@ def localize_markdown_images(
     """Download remote Markdown images and rewrite them to sibling local assets."""
 
     failures = resource_failures if resource_failures is not None else []
-    urls = [*remote_image_urls(markdown), *data_image_urls(markdown)]
+    urls = [*remote_image_urls(markdown, failures), *data_image_urls(markdown)]
     if not urls:
         return markdown, 0
 

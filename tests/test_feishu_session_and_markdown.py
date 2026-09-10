@@ -899,6 +899,49 @@ class FeishuOpenAPIBlockExportTests(unittest.TestCase):
         self.assertEqual(result["unsupportedBlockTypes"], [31])
         self.assertEqual(result["renderer"], "openapi_docx_partial")
 
+    def test_docx_blocks_keep_unknown_inline_elements_in_api_export(self) -> None:
+        result = feishu.feishu_docx_blocks_to_markdown(
+            [
+                {"block_id": "root", "block_type": 1, "children": ["text"]},
+                {
+                    "block_id": "text",
+                    "parent_id": "root",
+                    "block_type": 2,
+                    "text": {
+                        "elements": [
+                            {"text_run": {"content": "before "}},
+                            {"mention_doc": {"title": "linked document", "token": "secret-token"}},
+                            {"undefined": {"content": "unknown inline text"}},
+                            {"text_run": {"content": " after"}},
+                        ]
+                    },
+                },
+            ],
+            title="Document",
+        )
+
+        self.assertIn("before", result["markdown"])
+        self.assertIn("linked document", result["markdown"])
+        self.assertIn("unknown inline text", result["markdown"])
+        self.assertIn("after", result["markdown"])
+        self.assertEqual(result["renderer"], "openapi_docx_partial")
+        self.assertIn("mention_doc", result["unsupportedInlineElements"])
+
+    def test_docx_blocks_keep_media_blocks_without_tokens_in_api_export(self) -> None:
+        result = feishu.feishu_docx_blocks_to_markdown(
+            [
+                {"block_id": "root", "block_type": 1, "children": ["sheet", "image"]},
+                {"block_id": "sheet", "parent_id": "root", "block_type": 30, "sheet": {}},
+                {"block_id": "image", "parent_id": "root", "block_type": 27, "image": {}},
+            ],
+            title="Document",
+        )
+
+        self.assertIn("飞书电子表格块未提供 token", result["markdown"])
+        self.assertIn("飞书图片块未提供素材 token", result["markdown"])
+        self.assertEqual(result["renderer"], "openapi_docx_partial")
+        self.assertEqual(result["unsupportedBlockTypes"], [30, 27])
+
     def test_docx_blocks_reject_orphaned_parent_instead_of_promoting_it_to_root(self) -> None:
         with self.assertRaisesRegex(feishu.FeishuOpenAPIBlocksUnsupported, "缺失的父节点"):
             feishu.feishu_docx_blocks_to_markdown(

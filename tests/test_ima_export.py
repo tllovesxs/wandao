@@ -77,6 +77,23 @@ class ImaExportTests(unittest.TestCase):
             self.assertIn("![图](测试笔记_assets/image-001.png)", path.read_text(encoding="utf-8"))
             self.assertEqual((Path(temporary) / "测试笔记_assets" / "image-001.png").read_bytes(), b"png")
 
+    def test_malformed_image_url_does_not_fail_note_export(self) -> None:
+        client = FakeImaClient(
+            {"media_type": 11, "notebook_ext_info": {"notebook_id": "note-1"}},
+            {"content": "正文\n\n![内网图](https://[10.0.0.1/image.png)"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            status, path, warning = module.save_media_entry(
+                client,
+                module.KnowledgeEntry("kb", "知识库", "media", "测试笔记", "", [], False, 11),
+                Path(temporary),
+            )
+
+            self.assertEqual(status, "exported_note")
+            self.assertEqual(warning, "1 张图片下载失败（invalid-url）")
+            assert path is not None
+            self.assertIn("https://[10.0.0.1/image.png", path.read_text(encoding="utf-8"))
+
     def test_markdown_file_export_localizes_images(self) -> None:
         client = FakeImaClient(
             {

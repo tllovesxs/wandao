@@ -667,6 +667,11 @@ class FakeCheckpoint:
         self.closed = True
 
 
+class FailedCheckpoint(FakeCheckpoint):
+    def item_status(self, _key: str) -> str:
+        return "failed"
+
+
 class FeishuImageLocalizationTests(unittest.TestCase):
     def test_download_openapi_media_uses_local_extension_and_bearer_token(self) -> None:
         class FakeResponse:
@@ -1016,6 +1021,77 @@ class FeishuRelativeResourceReportingTests(unittest.TestCase):
         self.assertEqual(checkpoint.failed_tasks[0][1], "failed")
         self.assertEqual(checkpoint.completed_tasks, [])
         self.assertTrue(checkpoint.closed)
+
+    def test_retry_failed_reprocesses_existing_markdown_in_incremental_mode(self) -> None:
+        node = {
+            "wiki_token": "wiki-token",
+            "parent_wiki_token": "",
+            "title": "README.md",
+            "obj_token": "file-token",
+            "obj_type": 12,
+            "file_type": "md",
+            "has_child": False,
+            "sort_id": 1,
+            "url": ENTRY_URL,
+        }
+        tree = {
+            "spaceId": "space-id",
+            "space": {"space_name": "Knowledge base"},
+            "rootList": ["wiki-token"],
+            "childMap": {},
+            "nodes": {"wiki-token": node},
+        }
+        extracted = {
+            "title": "README.md",
+            "markdown": "# README\n\n正文\n",
+            "images": [],
+            "renderer": "markdown_file",
+        }
+        checkpoint = FailedCheckpoint()
+        cdp = FakeSessionCdp()
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            existing_path = output / "README.md"
+            existing_path.write_text("旧内容\n", encoding="utf-8")
+            args = argparse.Namespace(
+                wiki_url=ENTRY_URL,
+                output=str(output),
+                wait_login=False,
+                selected_doc_ids=None,
+                incremental=True,
+                update_existing=False,
+                resume=True,
+                retry_failed=True,
+                download_timeout=5,
+                keep_remote_images=True,
+                progress_every=1,
+                request_delay=0,
+                request_jitter=0,
+                close_started_chrome=False,
+                stop_event=None,
+                log_callback=None,
+            )
+            with (
+                mock.patch.object(feishu, "connect_wiki_browser", return_value=(cdp, None)),
+                mock.patch.object(feishu, "prepare_entry_session", return_value={}),
+                mock.patch.object(feishu, "load_wiki_tree", return_value=tree),
+                mock.patch.object(feishu, "fetch_doc_markdown", return_value=extracted),
+                mock.patch.object(
+                    feishu,
+                    "localize_images",
+                    return_value=(extracted["markdown"], 0, []),
+                ),
+                mock.patch.object(feishu, "scan_exported_docs", return_value={"wiki-token": existing_path}),
+                mock.patch.object(feishu, "open_checkpoint_from_args", return_value=checkpoint),
+                mock.patch.object(feishu, "emit"),
+            ):
+                report = feishu.export_wiki(args)
+
+        self.assertEqual(report["exportedDocs"], 1)
+        self.assertEqual(report["skippedDocs"], 0)
+        self.assertEqual(report["outcome"], "completed")
+        self.assertEqual(len(checkpoint.completed_items), 1)
 
 
 if __name__ == "__main__":

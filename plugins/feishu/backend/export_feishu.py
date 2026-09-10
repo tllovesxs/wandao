@@ -1976,6 +1976,7 @@ async (fallbackTitle) => {
       tocRecoveryAttempts: recoveryAttempts,
       tocRecoveryMissing: recoveryMissing,
       tocRecoveryLimited: recoveryLimited,
+      incomplete: recoveryMissing > 0 || recoveryLimited,
     };
   }
 
@@ -2030,7 +2031,11 @@ async (fallbackTitle) => {
   // reaching the bottom of the content scroller. A clean bottom stop means the
   // document was fully collected; hitting the ceiling by itself used to cause
   // false "内容可能不完整" reports on fully-exported docs.
-  if (collected.hitIterationCeiling && !collected.reachedBottom) result.incomplete = true;
+  if (
+    (collected.hitIterationCeiling && !collected.reachedBottom)
+    || collected.tocRecoveryMissing > 0
+    || collected.tocRecoveryLimited
+  ) result.incomplete = true;
   return result;
 }
 """
@@ -2898,7 +2903,12 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
             if checkpoint and getattr(args, "resume", False) and not args.update_existing and checkpoint.item_status(item_key) == "completed":
                 skipped += 1
                 continue
-            if args.incremental and token in existing and not args.update_existing:
+            if (
+                args.incremental
+                and token in existing
+                and not args.update_existing
+                and not getattr(args, "retry_failed", False)
+            ):
                 if checkpoint:
                     checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"doc": doc, "skippedExisting": True})
                 skipped += 1

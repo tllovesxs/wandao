@@ -1885,9 +1885,28 @@ async (fallbackTitle) => {
     let finalScrollHeight = 0;
     let reachedBottom = false;
     let terminatedCleanly = false;
-    for (let i = 0; i < maxIterations; i++) {
+    const maxIterationBudget = 2000;
+    let iterationBudget = Math.max(1, maxIterations);
+    const estimateIterationBudget = (items) => {
+      let estimate = iterationBudget;
+      for (const el of items) {
+        try {
+          const viewport = el.clientHeight || (win && win.innerHeight) || 600;
+          const maxY = Math.max(0, (el.scrollHeight || 0) - viewport);
+          const step = Math.max(180, Math.floor(viewport * 0.55));
+          estimate = Math.max(estimate, Math.ceil(maxY / step) + 20);
+        } catch (_) {}
+      }
+      return Math.min(maxIterationBudget, estimate);
+    };
+    for (let i = 0; i < iterationBudget; i++) {
       scrollIterations = i + 1;
       scrollables = findScrollables();
+      // Large Feishu virtual lists can report hundreds of thousands of pixels
+      // of scrollable content. The historical fixed ceiling of 180 iterations
+      // stopped such documents halfway through even though the scroller had
+      // not reached its bottom.
+      iterationBudget = estimateIterationBudget(scrollables);
       const heightBefore = maxScrollHeight(scrollables);
       stepScrollables(scrollables);
       const atBottomBeforeSettle = contentAtBottom(scrollables);
@@ -1973,6 +1992,7 @@ async (fallbackTitle) => {
       finalScrollHeight,
       reachedBottom,
       hitIterationCeiling: !terminatedCleanly,
+      iterationBudget,
       tocRecoveryAttempts: recoveryAttempts,
       tocRecoveryMissing: recoveryMissing,
       tocRecoveryLimited: recoveryLimited,
@@ -2023,6 +2043,7 @@ async (fallbackTitle) => {
   const result = {title: pageTitle, markdown, images: collected.images, blockCount: collected.blockCount, textLength: body.length, renderer: "native_doc"};
   result.scrollIterations = collected.scrollIterations;
   result.finalScrollHeight = collected.finalScrollHeight;
+  result.iterationBudget = collected.iterationBudget;
   result.tocRecoveryAttempts = collected.tocRecoveryAttempts;
   result.tocRecoveryMissing = collected.tocRecoveryMissing;
   result.tocRecoveryLimited = collected.tocRecoveryLimited;

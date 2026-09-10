@@ -525,3 +525,52 @@ test('collectFeishuDocBlocks stops cleanly at bottom without false incomplete', 
   assert.equal(result.hitIterationCeiling, false);
   assert.ok(result.scrollIterations < 40, `should stop near bottom, got ${result.scrollIterations}`);
 });
+
+test('collectFeishuDocBlocks expands the budget for long virtualized documents', async () => {
+  const api = loadScrollApi();
+  const { document } = parseHTML(`<!doctype html><html><body>
+    <div class="page-scroller" data-overflow-y="auto" style="height:200px; overflow:auto">
+      <div class="root-render-unit-container"><div class="render-unit-wrapper"></div></div>
+    </div>
+  </body></html>`);
+  const scroller = document.querySelector('.page-scroller');
+  const wrapper = document.querySelector('.render-unit-wrapper');
+  Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 200 });
+  let scrollHeight = 10000;
+  let scrollTop = 0;
+  Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => scrollHeight });
+  Object.defineProperty(scroller, 'scrollTop', {
+    configurable: true,
+    get: () => scrollTop,
+    set: (value) => {
+      scrollTop = Math.min(Math.max(value, 0), scrollHeight - 200);
+      if (scrollTop >= scrollHeight - 200 && wrapper.childElementCount < 2) {
+        const block = document.createElement('div');
+        block.setAttribute('data-block-type', 'paragraph');
+        block.setAttribute('data-block-id', 'last');
+        block.textContent = 'last';
+        wrapper.appendChild(block);
+      }
+    },
+  });
+  const first = document.createElement('div');
+  first.setAttribute('data-block-type', 'paragraph');
+  first.setAttribute('data-block-id', 'first');
+  first.textContent = 'first';
+  wrapper.appendChild(first);
+
+  const result = await api.collectFeishuDocBlocks({
+    root: document.querySelector('.root-render-unit-container'),
+    scroller,
+    document,
+    sleep: async () => {},
+    currentBlocks: () => [...wrapper.children].filter((el) => el.getAttribute('data-block-type')),
+    renderBlock: (el) => el.textContent || '',
+    maxIterations: 5,
+  });
+
+  assert.deepEqual(result.rendered, ['first', 'last']);
+  assert.equal(result.reachedBottom, true);
+  assert.equal(result.hitIterationCeiling, false);
+  assert.ok(result.iterationBudget > 5);
+});

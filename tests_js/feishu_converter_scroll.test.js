@@ -326,6 +326,46 @@ test('collectFeishuDocBlocks recovers a missing heading through a TOC anchor', a
   assert.equal(result.tocRecoveryMissing, 0);
 });
 
+test('collectFeishuDocBlocks marks unresolved TOC content as incomplete', async () => {
+  const api = loadScrollApi();
+  const { document } = parseHTML(`<!doctype html><html><body>
+    <div class="page-scroller" data-overflow-y="auto" style="height:200px; overflow:auto">
+      <div class="root-render-unit-container"><div class="render-unit-wrapper"></div></div>
+    </div>
+    <a id="missing-anchor" href="#missing">Missing heading</a>
+  </body></html>`);
+  const scroller = document.querySelector('.page-scroller');
+  const wrapper = document.querySelector('.render-unit-wrapper');
+  const anchor = document.querySelector('#missing-anchor');
+  Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 200 });
+  Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 400 });
+  let scrollTop = 0;
+  Object.defineProperty(scroller, 'scrollTop', {
+    configurable: true,
+    get: () => scrollTop,
+    set: (value) => { scrollTop = Math.min(Math.max(value, 0), 200); },
+  });
+  const first = document.createElement('div');
+  first.setAttribute('data-block-type', 'paragraph');
+  first.setAttribute('data-block-id', 'first');
+  first.textContent = 'first';
+  wrapper.appendChild(first);
+
+  const result = await api.collectFeishuDocBlocks({
+    root: document.querySelector('.root-render-unit-container'),
+    scroller,
+    document,
+    sleep: async () => {},
+    currentBlocks: () => [...wrapper.children].filter((el) => el.getAttribute('data-block-type')),
+    renderBlock: (el) => el.textContent || '',
+    recoveryAnchors: [{ element: anchor, text: 'Missing heading', href: '#missing' }],
+    maxIterations: 20,
+  });
+
+  assert.equal(result.tocRecoveryMissing, 1);
+  assert.equal(result.incomplete, true);
+});
+
 test('resolveFeishuDocScroller skips scrollbar chrome that cannot scroll', () => {
   const api = loadScrollApi();
   const { document, window } = parseHTML(`<!doctype html><html><body>

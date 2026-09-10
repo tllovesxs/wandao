@@ -672,12 +672,49 @@ def _feishu_docx_code_span(text: str) -> str:
     return f"{delimiter}{text}{delimiter}"
 
 
-def feishu_docx_elements_to_markdown(elements: list[dict[str, Any]] | None) -> str:
+def _feishu_docx_unknown_inline_text(element: Any) -> str:
+    """Keep readable fields from a newer Feishu inline element."""
+
+    chunks: list[str] = []
+    seen: set[str] = set()
+    text_keys = {"content", "text", "title", "name", "description", "user_name", "display_name"}
+    ignored_keys = {"token", "url", "id", "block_id", "obj_token"}
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            chunks.append(text)
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in ignored_keys:
+                    continue
+                if key in text_keys and isinstance(child, str):
+                    add(child)
+                elif isinstance(child, (dict, list)):
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(element)
+    return " ".join(chunks) or "<!-- 飞书内联元素未转换 -->"
+
+
+def feishu_docx_elements_to_markdown(
+    elements: list[dict[str, Any]] | None,
+    unsupported_inline: list[str] | None = None,
+) -> str:
     parts: list[str] = []
     for element in elements or []:
         if not isinstance(element, dict) or not isinstance(element.get("text_run"), dict):
             keys = ", ".join(sorted(element.keys())) if isinstance(element, dict) else type(element).__name__
-            raise FeishuOpenAPIBlocksUnsupported(f"文档含有暂未转换的内联元素：{keys}")
+            if unsupported_inline is not None:
+                unsupported_inline.append(keys)
+            parts.append(_feishu_docx_unknown_inline_text(element))
+            continue
         text_run = element["text_run"]
         text = str(text_run.get("content") or "")
         style = text_run.get("text_element_style")
@@ -737,6 +774,7 @@ def _feishu_docx_block_text(
     host: str,
     images: list[str],
     unsupported: list[int] | None = None,
+    unsupported_inline: list[str] | None = None,
 ) -> str:
     try:
         block_type = int(block.get("block_type"))
@@ -755,7 +793,9 @@ def _feishu_docx_block_text(
         image = block.get("image") if isinstance(block.get("image"), dict) else {}
         token = str(image.get("token") or "").strip()
         if not token:
-            raise FeishuOpenAPIBlocksUnsupported("图片块未提供素材 token")
+            if unsupported is not None:
+                unsupported.append(block_type)
+            return "<!-- 飞书图片块未提供素材 token -->"
         resource = FEISHU_OPENAPI_MEDIA_PREFIX + token
         images.append(resource)
         return f"![image]({resource})"
@@ -763,12 +803,14 @@ def _feishu_docx_block_text(
         sheet = block.get("sheet") if isinstance(block.get("sheet"), dict) else {}
         token = str(sheet.get("token") or "").strip()
         if not token:
-            raise FeishuOpenAPIBlocksUnsupported("电子表格块未提供 token")
+            if unsupported is not None:
+                unsupported.append(block_type)
+            return "<!-- 飞书电子表格块未提供 token -->"
         return f"[飞书电子表格](https://{host}/sheets/{token})" if host else f"[飞书电子表格]({token})"
 
     field = FEISHU_DOCX_TEXT_FIELDS.get(block_type)
     payload = block.get(field) if field and isinstance(block.get(field), dict) else {}
-    text = feishu_docx_elements_to_markdown(payload.get("elements"))
+    text = feishu_docx_elements_to_markdown(payload.get("elements"), unsupported_inline)
     if not text:
         return ""
     if block_type in FEISHU_DOCX_HEADING_PREFIXES:
@@ -837,6 +879,7 @@ def feishu_docx_blocks_to_markdown(
     host = urllib.parse.urlparse(source_url).netloc
     images: list[str] = []
     unsupported: list[int] = []
+    unsupported_inline: list[str] = []
     visited: set[str] = set()
     visiting: set[str] = set()
 
@@ -864,7 +907,7 @@ def feishu_docx_blocks_to_markdown(
             block_type = int(block.get("block_type"))
         except (TypeError, ValueError) as exc:
             raise FeishuOpenAPIBlocksUnsupported("文档块缺少有效 block_type") from exc
-        own = _feishu_docx_block_text(block, host, images, unsupported)
+        own = _feishu_docx_block_text(block, host, images, unsupported, unsupported_inline)
         if block_type == 1:
             parts = render_children(block)
         elif block_type == 34:
@@ -887,14 +930,16 @@ def feishu_docx_blocks_to_markdown(
     body = "\n\n".join(part for part in rendered if part).strip()
     markdown = f"# {title}\n" + (f"\n{body}\n" if body else "")
     unique_unsupported = list(dict.fromkeys(unsupported))
+    unique_unsupported_inline = list(dict.fromkeys(unsupported_inline))
     return {
         "title": title,
         "markdown": markdown,
         "images": list(dict.fromkeys(images)),
         "blockCount": len(blocks),
         "textLength": len(body),
-        "renderer": "openapi_docx_partial" if unique_unsupported else "openapi_docx",
+        "renderer": "openapi_docx_partial" if unique_unsupported or unique_unsupported_inline else "openapi_docx",
         "unsupportedBlockTypes": unique_unsupported,
+        "unsupportedInlineElements": unique_unsupported_inline,
     }
 
 

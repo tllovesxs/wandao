@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 license = { text = "AGPL-3.0-only" }
 authors = [{ name = "tllovesxs" }]
 dependencies = [
-  "evernote-backup==1.13.1",
+  "evernote-backup==1.14.0",
 ]
 
 [project.urls]

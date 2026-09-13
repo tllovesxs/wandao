@@ -83,6 +83,9 @@ DEFAULT_WIKI_URL = ""
 FEISHU_NATIVE_DOC_OBJ_TYPE = 22
 FEISHU_FILE_OBJ_TYPE = 12
 FEISHU_MARKDOWN_FILE_TYPES = {"md", "markdown"}
+FEISHU_DOCUMENT_WATCHDOG_IDLE_SECONDS = 45
+FEISHU_DOCUMENT_WATCHDOG_MAX_SECONDS = 30 * 60
+FEISHU_DOCUMENT_WATCHDOG_PREFIX = "__WANDAO_FEISHU_WATCHDOG__"
 FEISHU_OPENAPI_BASE = "https://open.feishu.cn/open-apis"
 FEISHU_OPENAPI_CONFIG_FILE = "feishu_import_config.json"
 FEISHU_OPENAPI_MEDIA_PREFIX = "feishu-media://"
@@ -1380,6 +1383,17 @@ async (fallbackTitle) => {
   const images = [];
   const imageSourcesByNode = new Map();
   const ZERO = /[\u200b\u200c\u200d\ufeff]/g;
+  const watchdogPulse = (phase, payload = {}) => {
+    try {
+      const consoleApi = globalThis && globalThis.console;
+      if (!consoleApi || typeof consoleApi.debug !== "function") return;
+      consoleApi.debug("__WANDAO_FEISHU_WATCHDOG__" + JSON.stringify({
+        phase,
+        ...payload,
+        timestamp: Date.now(),
+      }));
+    } catch (_) {}
+  };
   function clean(value) {
     return (value || "")
       .replace(ZERO, "")
@@ -1667,6 +1681,7 @@ async (fallbackTitle) => {
       recoveryAnchors = [],
       maxRecoveryAnchors = 80,
       fallbackTitle = "",
+      watchdog = () => {},
     } = options;
     const ownerDoc = doc || document;
     const win = (ownerDoc.defaultView) || (typeof window !== "undefined" ? window : null);
@@ -1677,6 +1692,7 @@ async (fallbackTitle) => {
     // at the end of the Markdown document.
     const renderedByKey = new Map();
     const order = [];
+    watchdog("started", { iteration: 0, blockCount: 0 });
     const keyFor = (block) => block.getAttribute("data-record-id")
       || block.getAttribute("data-block-id")
       || `${block.getAttribute("data-block-type")}:${clean(block.innerText || block.textContent || "").slice(0, 80)}`;
@@ -1946,6 +1962,13 @@ async (fallbackTitle) => {
     };
     for (let i = 0; i < iterationBudget; i++) {
       scrollIterations = i + 1;
+      if (i === 0 || i % 4 === 0) {
+        watchdog("scrolling", {
+          iteration: scrollIterations,
+          iterationBudget,
+          blockCount: renderedByKey.size,
+        });
+      }
       scrollables = findScrollables();
       // Large Feishu virtual lists can report hundreds of thousands of pixels
       // of scrollable content. The historical fixed ceiling of 180 iterations
@@ -2021,6 +2044,11 @@ async (fallbackTitle) => {
           await sleep(120);
           collect();
           recoveryAttempts += 1;
+          watchdog("toc-recovery", {
+            iteration: scrollIterations,
+            blockCount: renderedByKey.size,
+            recoveryAttempts,
+          });
         } catch (_) {}
       }
     }
@@ -2029,6 +2057,11 @@ async (fallbackTitle) => {
     const finalRendered = order.map((key) => renderedByKey.get(key)).filter(Boolean);
     const settledImages = await settleImageSources(finalRendered, imageList, imageNodes);
     resetScroll(scrollables);
+    watchdog("completed", {
+      iteration: scrollIterations,
+      blockCount: finalRendered.length,
+      recoveryAttempts,
+    });
     return {
       rendered: finalRendered,
       images: settledImages,
@@ -2071,6 +2104,7 @@ async (fallbackTitle) => {
     imageNodes: imageSourcesByNode,
     maxIterations: 180,
     fallbackTitle,
+    watchdog: watchdogPulse,
     recoveryAnchors: recoveryAnchorNodes.map((element) => ({
       element,
       text: clean(element.innerText || element.textContent || ""),
@@ -2333,6 +2367,68 @@ def wait_for_doc_ready(
     raise ExportError(f"飞书{kind}没有加载完成：{(node or {}).get('title') or '未命名'}")
 
 
+def feishu_document_watchdog(
+    args: argparse.Namespace | None,
+    node: dict[str, Any],
+) -> Callable[[dict[str, Any]], bool]:
+    """Renew a long-running page evaluation while its JS extraction is alive.
+
+    The page-side converter runs as one awaited Runtime.evaluate call because
+    it must keep the virtualized document DOM in one browser context. Console
+    heartbeat events let the CDP socket use an idle deadline instead of a
+    fixed wall-clock deadline, while ``FEISHU_DOCUMENT_WATCHDOG_MAX_SECONDS``
+    remains a hard upper bound for genuinely stuck pages.
+    """
+
+    started = time.monotonic()
+    last_report = 0.0
+    title = str(node.get("title") or "未命名").strip()
+
+    def observe(message: dict[str, Any]) -> bool:
+        nonlocal last_report
+        if message.get("method") != "Runtime.consoleAPICalled":
+            return False
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return False
+        values = params.get("args")
+        if not isinstance(values, list):
+            return False
+        heartbeat = next(
+            (
+                str(item.get("value") or "")
+                for item in values
+                if isinstance(item, dict)
+                and str(item.get("value") or "").startswith(FEISHU_DOCUMENT_WATCHDOG_PREFIX)
+            ),
+            "",
+        )
+        if not heartbeat:
+            return False
+        now = time.monotonic()
+        if args is not None and now - last_report >= 5:
+            last_report = now
+            detail = ""
+            try:
+                payload = json.loads(heartbeat[len(FEISHU_DOCUMENT_WATCHDOG_PREFIX):])
+                phase = str(payload.get("phase") or "采集正文")
+                iteration = int(payload.get("iteration") or 0)
+                blocks = int(payload.get("blockCount") or 0)
+                detail = f"{phase}，已扫描 {iteration} 轮，收集 {blocks} 个内容块"
+            except (TypeError, ValueError, json.JSONDecodeError):
+                detail = "正在采集正文"
+            elapsed = max(0, int(now - started))
+            emit(
+                args,
+                f"飞书正文采集仍在进行：{title}（已持续 {elapsed} 秒，{detail}）",
+                event="document.export.watchdog",
+                level="info",
+            )
+        return True
+
+    return observe
+
+
 def extract_doc_markdown_current(
     cdp: CDPClient,
     node: dict[str, Any],
@@ -2378,7 +2474,12 @@ def extract_doc_markdown_current(
             value = evaluate_markdown_file(True)
     else:
         wait_for_doc_ready(cdp, timeout=35, args=args, node=node)
-        value = cdp.evaluate(f"({FEISHU_CONVERTER_JS})({js_string(node.get('title') or '未命名')})", timeout=120)
+        value = cdp.evaluate(
+            f"({FEISHU_CONVERTER_JS})({js_string(node.get('title') or '未命名')})",
+            timeout=FEISHU_DOCUMENT_WATCHDOG_IDLE_SECONDS,
+            max_timeout=FEISHU_DOCUMENT_WATCHDOG_MAX_SECONDS,
+            watchdog=feishu_document_watchdog(args, node),
+        )
     if not isinstance(value, dict):
         raise ExportError(f"Unexpected Feishu doc response: {node.get('title')}")
     if value.get("renderer") == "markdown_preview_fallback":

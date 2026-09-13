@@ -19,6 +19,11 @@
     'protect_task_args',
     'restore_task_args',
     'read_file',
+    'read_markdown_file',
+    'read_markdown_asset',
+    'list_markdown_tree',
+    'directory_exists',
+    'write_markdown_file',
     'write_file',
     'file_exists',
     'open_path',
@@ -49,6 +54,7 @@
     onUpdateCheckRequested: 'request-update-check',
     onPythonLog: 'python-log',
     onPythonProcessState: 'python-process-state',
+    onMarkdownTreeProgress: 'markdown-tree-progress',
     onPluginDownloadProgress: 'plugin-download-progress',
     onUpdateProgress: 'update-progress'
   });
@@ -157,6 +163,14 @@
       restoreTaskArgs: (payload) => invokeCommand('restore_task_args', { payload }),
 
       readFile: (filePath) => invokeCommand('read_file', { filePath }),
+      readMarkdownFile: (filePath) => invokeCommand('read_markdown_file', { filePath }),
+      readMarkdownAsset: (markdownPath, assetPath) => invokeCommand('read_markdown_asset', {
+        markdownPath,
+        assetPath
+      }),
+      listMarkdownTree: (directoryPath) => invokeCommand('list_markdown_tree', { directoryPath }),
+      directoryExists: (directoryPath) => invokeCommand('directory_exists', { directoryPath }),
+      writeMarkdownFile: (filePath, content) => invokeCommand('write_markdown_file', { filePath, content }),
       writeFile: (filePath, content) => invokeCommand('write_file', { filePath, content }),
       fileExists: (filePath) => invokeCommand('file_exists', { filePath }),
       openPath: (targetPath) => invokeCommand('open_path', { targetPath }),
@@ -189,6 +203,7 @@
       onUpdateCheckRequested: (callback) => subscribe(EVENT_NAMES.onUpdateCheckRequested, callback),
       onPythonLog: (callback) => subscribe(EVENT_NAMES.onPythonLog, callback),
       onPythonProcessState: (callback) => subscribe(EVENT_NAMES.onPythonProcessState, callback),
+      onMarkdownTreeProgress: (callback) => subscribe(EVENT_NAMES.onMarkdownTreeProgress, callback),
       onPluginDownloadProgress: (callback) => subscribe(EVENT_NAMES.onPluginDownloadProgress, callback),
       onUpdateProgress: (callback) => subscribe(EVENT_NAMES.onUpdateProgress, callback)
     });

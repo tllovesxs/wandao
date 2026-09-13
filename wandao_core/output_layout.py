@@ -146,7 +146,8 @@ def resolve_output_directory(
     small private index beneath ``output_root/.wandao``.  A failed or renamed
     source therefore returns to the same directory on later runs. Existing
     flat exports are kept in place when ``preserve_legacy`` is enabled and no
-    source mapping has been written yet.
+    source mapping has been written yet. That first legacy source is recorded
+    as ``directory: "."`` so later sources can still receive child folders.
     """
 
     root = Path(output_root).expanduser().resolve()
@@ -160,17 +161,30 @@ def resolve_output_directory(
     key = _source_key(source_id, source_name)
     existing_record = sources.get(key)
     if isinstance(existing_record, dict):
-        recorded = sanitize_output_folder_name(str(existing_record.get("directory") or ""), fallback)
-        if recorded:
-            target = root / recorded
-            target.mkdir(parents=True, exist_ok=True)
-            source_text = str(source_name or fallback).strip() or fallback
-            if existing_record.get("sourceName") != source_text:
-                existing_record["sourceName"] = source_text
-                _write_layout(layout_path, layout)
-            return target
+        raw_recorded = str(existing_record.get("directory") or "").strip()
+        # ``.`` is the explicit compatibility mapping for a historical flat
+        # export. It keeps the first known source in place while allowing a
+        # later, different source to receive its own child directory.
+        target = (
+            root
+            if raw_recorded in {"", ".", "./"}
+            else root / sanitize_output_folder_name(raw_recorded, fallback)
+        )
+        target.mkdir(parents=True, exist_ok=True)
+        source_text = str(source_name or fallback).strip() or fallback
+        if existing_record.get("sourceName") != source_text:
+            existing_record["sourceName"] = source_text
+            _write_layout(layout_path, layout)
+        return target
 
     if preserve_legacy and not sources and _has_legacy_export_content(root):
+        source_text = str(source_name or fallback).strip() or fallback
+        sources[key] = {
+            "directory": ".",
+            "sourceName": source_text,
+            "legacy": True,
+        }
+        _write_layout(layout_path, layout)
         return root
 
     requested = sanitize_output_folder_name(source_name, fallback)

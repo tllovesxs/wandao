@@ -2,6 +2,7 @@
 !define WANDAO_LEGACY_INSTALL_KEY "Software\1b0cbfbe-638f-5e34-9149-e794da0edaeb"
 !define WANDAO_LEGACY_INSTALL_DIR "$LOCALAPPDATA\Programs\wandao"
 !define WANDAO_LEGACY_MAIN_EXE "${WANDAO_LEGACY_INSTALL_DIR}\Wandao.exe"
+!define WANDAO_OLD_TAURI_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Wandao"
 
 ; Tauri enables MUI_HEADERIMAGE when the configured branded bitmap exists.
 ; Keep it on the conventional right side so installer text remains left-aligned.
@@ -15,7 +16,7 @@
   ${GetOptions} $CMDLINE "/SKIPLEGACYUNINSTALL" $R0
   ${IfNot} ${Errors}
     DetailPrint "Skipping legacy Wandao uninstall by explicit command-line request."
-    Goto wandao_legacy_done
+    Goto wandao_legacy_skip_all
   ${EndIf}
 
   wandao_legacy_validate:
@@ -170,6 +171,11 @@
   Abort
 
   wandao_legacy_done:
+  ; v1.4.x Tauri used the Wandao display name in its uninstall entry. Reuse
+  ; that verified install root so a product-name change cannot create a second
+  ; application directory during a manual install or an in-app update.
+  Call WandaoReuseOldTauriInstall
+  wandao_legacy_skip_all:
 !macroend
 
 ; The updater invokes this installer in /UPDATE mode. Re-assert the final
@@ -186,6 +192,7 @@
   WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" "1"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" "1"
+  DeleteRegKey HKCU "${WANDAO_OLD_TAURI_UNINSTALL_KEY}"
   Call WandaoRepairExistingShortcuts
 !macroend
 
@@ -202,12 +209,93 @@
 Function WandaoRepairExistingShortcuts
   ; Keep user-deleted shortcuts deleted, but repair any remaining product
   ; shortcut that still targets an older executable.
+  ${If} ${FileExists} "$SMPROGRAMS\万能导.lnk"
+    !insertmacro SetShortcutTarget "$SMPROGRAMS\万能导.lnk" "$INSTDIR\wandao.exe"
+    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\万能导.lnk"
+  ${EndIf}
+  ${If} ${FileExists} "$DESKTOP\万能导.lnk"
+    !insertmacro SetShortcutTarget "$DESKTOP\万能导.lnk" "$INSTDIR\wandao.exe"
+    !insertmacro SetLnkAppUserModelId "$DESKTOP\万能导.lnk"
+  ${EndIf}
+FunctionEnd
+
+Function WandaoReuseOldTauriInstall
+  wandao_old_tauri_validate:
+  StrCpy $R6 $INSTDIR
+  ClearErrors
+  ReadRegStr $R0 HKCU "${WANDAO_OLD_TAURI_UNINSTALL_KEY}" "DisplayName"
+  IfErrors wandao_old_tauri_not_found
+  StrCmp $R0 "Wandao" 0 wandao_old_tauri_not_found
+
+  ReadRegStr $R1 HKCU "${WANDAO_OLD_TAURI_UNINSTALL_KEY}" "Publisher"
+  ; This function is compiled before Tauri defines ${MANUFACTURER}; keep the
+  ; verified publisher literal here instead of expanding an empty macro.
+  StrCmp $R1 "tllovesxs" 0 wandao_old_tauri_untrusted
+  ReadRegStr $R2 HKCU "${WANDAO_OLD_TAURI_UNINSTALL_KEY}" "InstallLocation"
+  StrCmp $R2 "" wandao_old_tauri_untrusted
+
+  ; Our hook writes InstallLocation quoted for Windows registry consumers.
+  ; Normalize that value before using it as an installer directory.
+  ${StrLoc} $R3 $R2 '$\"' ">"
+  StrCmp $R3 "0" 0 wandao_old_tauri_path_unquoted
+  StrLen $R4 $R2
+  IntCmp $R4 2 wandao_old_tauri_untrusted wandao_old_tauri_untrusted 0
+  IntOp $R4 $R4 - 2
+  StrCpy $R2 $R2 $R4 1
+  wandao_old_tauri_path_unquoted:
+  StrLen $R3 $R2
+  IntCmp $R3 3 wandao_old_tauri_untrusted wandao_old_tauri_untrusted 0
+  StrCpy $R4 $R2 1 1
+  StrCmp $R4 ":" 0 wandao_old_tauri_untrusted
+  StrCpy $R4 $R2 1 2
+  StrCmp $R4 "\" 0 wandao_old_tauri_untrusted
+  ${StrLoc} $R4 $R2 '$\"' ">"
+  StrCmp $R4 "" 0 wandao_old_tauri_untrusted
+  ${StrLoc} $R4 $R2 "%" ">"
+  StrCmp $R4 "" 0 wandao_old_tauri_untrusted
+  StrCpy $R4 "$R2\wandao.exe"
+  StrCpy $R5 "$R2\uninstall.exe"
+  ${IfNot} ${FileExists} "$R4"
+    Goto wandao_old_tauri_untrusted
+  ${EndIf}
+  ${IfNot} ${FileExists} "$R5"
+    Goto wandao_old_tauri_untrusted
+  ${EndIf}
+
+  StrCpy $INSTDIR $R2
+  ; SetOutPath runs before this hook. Remove only the empty default directory
+  ; created for the abandoned localized path; never recurse into user files.
+  StrCmp $R6 $R2 wandao_old_tauri_keep_original_dir
+  ${If} ${FileExists} "$R6"
+    RMDir "$R6"
+  ${EndIf}
+  wandao_old_tauri_keep_original_dir:
+  Call WandaoMigrateOldShortcuts
+  Return
+
+  wandao_old_tauri_untrusted:
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "检测到旧版 Wandao 的安装记录，但安装路径不完整或不可信。请从 Windows“设置 → 应用 → 已安装的应用”卸载旧版后点击“重试”。用户数据目录 %APPDATA%\wandao 会保留。" /SD IDCANCEL IDRETRY wandao_old_tauri_validate
+  SetErrorLevel 13
+  Abort
+
+  wandao_old_tauri_not_found:
+FunctionEnd
+
+Function WandaoMigrateOldShortcuts
+  ; Rename the old shell entries before the stock NSIS template creates the
+  ; localized entries. This keeps the user's existing shortcut placement.
   ${If} ${FileExists} "$SMPROGRAMS\Wandao.lnk"
-    !insertmacro SetShortcutTarget "$SMPROGRAMS\Wandao.lnk" "$INSTDIR\wandao.exe"
-    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\Wandao.lnk"
+    ${IfNot} ${FileExists} "$SMPROGRAMS\万能导.lnk"
+      Rename "$SMPROGRAMS\Wandao.lnk" "$SMPROGRAMS\万能导.lnk"
+    ${Else}
+      Delete "$SMPROGRAMS\Wandao.lnk"
+    ${EndIf}
   ${EndIf}
   ${If} ${FileExists} "$DESKTOP\Wandao.lnk"
-    !insertmacro SetShortcutTarget "$DESKTOP\Wandao.lnk" "$INSTDIR\wandao.exe"
-    !insertmacro SetLnkAppUserModelId "$DESKTOP\Wandao.lnk"
+    ${IfNot} ${FileExists} "$DESKTOP\万能导.lnk"
+      Rename "$DESKTOP\Wandao.lnk" "$DESKTOP\万能导.lnk"
+    ${Else}
+      Delete "$DESKTOP\Wandao.lnk"
+    ${EndIf}
   ${EndIf}
 FunctionEnd

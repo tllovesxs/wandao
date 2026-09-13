@@ -1,9 +1,10 @@
-Wandao bundles the browser build of markdown-it 15.0.1.
+Wandao bundles the browser build of Vditor 4.0.0 under the MIT License.
 
-markdown-it, mdurl, linkify-it, punycode.js and uc.micro are distributed under
-the MIT License. entities is distributed under the BSD 2-Clause License.
-argparse is distributed under the PSF-2.0 License.
+Vditor includes the Lute Markdown engine and optional offline assets for code
+highlighting, KaTeX, Mermaid and other supported Markdown extensions. Their
+license notices are kept in the bundled Vditor dist directory where provided.
+Vditor's diff-match-patch dependency is distributed under the Apache-2.0
+License.
 
-The complete markdown-it license text is included in markdown-it.LICENSE.txt.
 The corresponding package license texts are available in the locked npm
 dependencies listed in ../package-lock.json.

@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'">
   <title>万能导 Wandao</title>
+  <link rel="stylesheet" href="vendor/vditor/dist/index.css">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -54,6 +55,7 @@
           <div class="progress-header">
             <span id="progress-title">准备中</span>
             <span id="progress-percent">0%</span>
+            <button class="btn-secondary" id="btn-open-live-markdown" type="button" hidden disabled>查看正在导出的文件夹</button>
             <button class="btn-danger" id="btn-global-stop" type="button" disabled>停止任务</button>
           </div>
           <div class="progress-track" role="progressbar" aria-label="任务进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -128,6 +130,23 @@
           </div>
           <div class="log-content" id="log-content" aria-live="polite" aria-atomic="false"></div>
         </section>
+
+        <aside class="markdown-dock" id="markdown-dock" hidden aria-label="Markdown 文档工具">
+          <div class="markdown-dock-resizer" data-md-dock-resizer role="separator" aria-orientation="vertical" tabindex="0" aria-label="调整 Markdown 面板宽度" aria-valuemin="360" aria-valuemax="800" aria-valuenow="520"></div>
+          <div class="markdown-dock-surface">
+            <header class="markdown-dock-header">
+              <div>
+                <span class="markdown-dock-kicker">文档工具</span>
+                <strong>Markdown 工作区</strong>
+              </div>
+              <button class="btn-text markdown-dock-close" data-md-dock-close type="button" aria-label="收起 Markdown 面板">收起</button>
+            </header>
+            <div class="markdown-dock-tabs" role="tablist" aria-label="Markdown 工具">
+              <button class="markdown-dock-tab" data-md-dock-tab="preview" role="tab" type="button" aria-controls="markdown-dock-body">实时预览</button>
+            </div>
+            <div class="markdown-dock-body" id="markdown-dock-body" role="tabpanel"></div>
+          </div>
+        </aside>
       </main>
     </div>
   </div>
@@ -228,6 +247,10 @@
               <span>增量导出</span>
             </label>
             <label class="checkbox-label">
+              <input type="checkbox" id="zsxq-group-auto-output-folder" checked>
+              <span>按来源自动创建子文件夹</span>
+            </label>
+            <label class="checkbox-label">
               <input type="checkbox" id="zsxq-group-include-comments">
               <span>导出帖子自带评论区</span>
             </label>
@@ -293,6 +316,10 @@
               <span>增量导出</span>
             </label>
             <label class="checkbox-label">
+              <input type="checkbox" id="zsxq-column-auto-output-folder" checked>
+              <span>按来源自动创建子文件夹</span>
+            </label>
+            <label class="checkbox-label">
               <input type="checkbox" id="zsxq-column-include-comments">
               <span>导出帖子自带评论区</span>
             </label>
@@ -344,6 +371,10 @@
             <label class="checkbox-label">
               <input type="checkbox" id="yuque-incremental" checked>
               <span>增量导出</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="yuque-auto-output-folder" checked>
+              <span>按来源自动创建子文件夹</span>
             </label>
             <label class="checkbox-label">
               <input type="checkbox" id="yuque-download-attachments" checked>
@@ -469,6 +500,10 @@
               <input type="checkbox" id="feishu-export-incremental" checked>
               <span>增量导出</span>
             </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="feishu-export-auto-output-folder" checked>
+              <span>按来源自动创建子文件夹</span>
+            </label>
           </div>
         </details>
       </section>
@@ -513,6 +548,10 @@
               <input type="checkbox" id="aliyun-incremental" checked>
               <span>增量导出</span>
             </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="aliyun-auto-output-folder" checked>
+              <span>按来源自动创建子文件夹</span>
+            </label>
           </div>
         </details>
       </section>
@@ -552,6 +591,10 @@
             <label class="checkbox-label">
               <input type="checkbox" id="yinxiang-incremental" checked>
               <span>增量导出</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="yinxiang-auto-output-folder" checked>
+              <span>按来源自动创建子文件夹</span>
             </label>
             <p class="helper-note">首次点击“登录并同步”会把印象笔记同步到本地，之后可读取目录并选择要导出的笔记。</p>
           </div>
@@ -672,6 +715,10 @@
                 <input type="number" id="ima-export-jitter" value="0.2" min="0" step="0.1">
               </div>
             </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="ima-export-auto-output-folder" checked>
+              <span>按来源自动创建子文件夹</span>
+            </label>
           </div>
         </details>
         <p class="helper-note">先读取目录后可按知识库、文件夹或单个文件勾选导出。普通文件会尽量按原文件保存；ima 笔记类内容受官方 API 限制，会尽量导出为 Markdown 文本。</p>
@@ -792,7 +839,9 @@
   <script src="form_drafts.js"></script>
   <script src="recent_inputs.js"></script>
   <script src="plugin_update_state.js"></script>
-  <script src="vendor/markdown-it.umd.min.js"></script>
+  <script src="vendor/vditor/dist/index.min.js"></script>
+  <script src="vditor_runtime.js"></script>
+  <script src="markdown_dock.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -47,6 +47,21 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
         self.assertEqual(config["bundle"]["publisher"], "tllovesxs")
         self.assertTrue((TAURI_CONFIG.parent / hooks_path).is_file())
 
+    def test_display_name_change_keeps_update_identity_and_binary_name(self) -> None:
+        config = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
+
+        self.assertEqual(config["productName"], "万能导")
+        self.assertEqual(config["mainBinaryName"], "wandao")
+        self.assertEqual(config["identifier"], "com.wandao.app")
+        self.assertIn("WANDAO_OLD_TAURI_UNINSTALL_KEY", self.hook)
+        self.assertIn("Call WandaoReuseOldTauriInstall", self.preinstall)
+        self.assertIn('DeleteRegKey HKCU "${WANDAO_OLD_TAURI_UNINSTALL_KEY}"', self.hook)
+        self.assertIn(
+            'Uninstall\\万能导" -ErrorAction SilentlyContinue',
+            self.workflow,
+        )
+        self.assertIn('Programs\\万能导.lnk', self.workflow)
+
     def test_nsis_uses_wandao_branding_assets_with_supported_formats(self) -> None:
         config = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
         nsis = config["bundle"]["windows"]["nsis"]

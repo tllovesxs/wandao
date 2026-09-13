@@ -1,12 +1,12 @@
 {
   "name": "wandao",
-  "version": "1.4.9",
+  "version": "1.5.0",
   "description": "Wandao multi-platform document conversion tool",
   "scripts": {
     "start": "tauri dev",
     "dev": "tauri dev",
     "tauri": "tauri",
-    "check": "node --check guide_assets.js && node --check plugin_state_migration.js && node --check provider_script_routing.js && node --check provider_legacy_compat.js && node --check renderer/tauri_bridge.js && node --check renderer/error_protocol.js && node --check renderer/feedback.js && node --check renderer/app.js && node --check renderer/providers.js && node --check renderer/provider_runtime.js && node --check renderer/plugin_update_state.js && node --check renderer/task_report.js && node --check renderer/task_history.js && node --check renderer/form_drafts.js && node --check renderer/recent_inputs.js && node --check renderer/structured_logs.js && node --check renderer/time_format.js && node --check renderer/task_resume.js && node --check renderer/toc_tree.js && node --check renderer/toc_browser.js && node --check scripts/npm_install_cn.js && node --check scripts/npm_audit_policy.js",
+    "check": "node --check guide_assets.js && node --check plugin_state_migration.js && node --check provider_script_routing.js && node --check provider_legacy_compat.js && node --check renderer/tauri_bridge.js && node --check renderer/error_protocol.js && node --check renderer/feedback.js && node --check renderer/app.js && node --check renderer/providers.js && node --check renderer/provider_runtime.js && node --check renderer/plugin_update_state.js && node --check renderer/task_report.js && node --check renderer/task_history.js && node --check renderer/form_drafts.js && node --check renderer/recent_inputs.js && node --check renderer/structured_logs.js && node --check renderer/time_format.js && node --check renderer/task_resume.js && node --check renderer/toc_tree.js && node --check renderer/toc_browser.js && node --check renderer/vditor_runtime.js && node --check scripts/npm_install_cn.js && node --check scripts/npm_audit_policy.js",
     "install:cn": "node scripts/npm_install_cn.js",
     "prepare:python": "python scripts/prepare_python_runtime.py --target auto",
     "prepare:python:win": "python scripts/prepare_python_runtime.py --target win-x64",
@@ -44,10 +44,11 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
-    "linkedom": "0.18.13"
+    "linkedom": "0.18.13",
+    "markdown-it": "15.0.1"
   },
   "type": "commonjs",
   "dependencies": {
-    "markdown-it": "15.0.1"
+    "vditor": "4.0.0"
   }
 }

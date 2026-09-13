@@ -42,6 +42,8 @@ const LATEST_RELEASE_API: &str = "https://api.github.com/repos/tllovesxs/wandao/
 const RELEASES_URL: &str = "https://github.com/tllovesxs/wandao/releases";
 const MAX_REMOTE_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_REMOTE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MARKDOWN_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_MARKDOWN_TREE_ENTRIES: usize = 5000;
 const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PLUGIN_DOWNLOAD_BYTES: usize = 128 * 1024 * 1024;
 
@@ -334,6 +336,244 @@ pub async fn read_file(state: State<'_, AppState>, file_path: String) -> Result<
         Ok(content) => json!({"success": true, "content": content}),
         Err(error) => json!({"success": false, "error": error}),
     })
+}
+
+#[tauri::command]
+pub async fn read_markdown_file(file_path: String) -> Result<Value, String> {
+    let result = (|| {
+        let path = normalize_absolute(Path::new(&file_path));
+        validate_markdown_path(&path)?;
+        let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err("请选择一个 Markdown 文件。".to_string());
+        }
+        if metadata.len() > MAX_MARKDOWN_FILE_BYTES {
+            return Err(format!(
+                "Markdown 文件超过 {} MB，暂不支持直接预览。",
+                MAX_MARKDOWN_FILE_BYTES / 1024 / 1024
+            ));
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("读取 Markdown 文件失败：{error}"))?;
+        let title = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Markdown 文档")
+            .to_string();
+        Ok::<Value, String>(json!({
+            "success": true,
+            "path": path.to_string_lossy(),
+            "title": title,
+            "content": content,
+            "bytes": metadata.len()
+        }))
+    })();
+    Ok(result.unwrap_or_else(|error| json!({"success": false, "error": error})))
+}
+
+#[tauri::command]
+pub async fn read_markdown_asset(
+    markdown_path: String,
+    asset_path: String,
+) -> Result<Value, String> {
+    let result = (|| {
+        let markdown = normalize_absolute(Path::new(&markdown_path));
+        validate_markdown_path(&markdown)?;
+        if !fs::metadata(&markdown)
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
+            return Err("Markdown 文件不存在。".to_string());
+        }
+        let base = markdown
+            .parent()
+            .ok_or_else(|| "无法确定 Markdown 文件目录。".to_string())?;
+        let raw_asset = asset_path.trim();
+        if raw_asset.is_empty()
+            || raw_asset.contains('\0')
+            || raw_asset.contains(':')
+            || raw_asset.starts_with("//")
+        {
+            return Err("图片路径不是本地相对路径。".to_string());
+        }
+        let asset = normalize_absolute(&base.join(raw_asset.replace('/', "\\")));
+        if !is_inside(base, &asset) {
+            return Err("图片路径必须位于 Markdown 文件所在目录内。".to_string());
+        }
+        let metadata = fs::metadata(&asset).map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err("图片文件不存在。".to_string());
+        }
+        if metadata.len() > MAX_REMOTE_IMAGE_BYTES as u64 {
+            return Err("图片超过 4 MB，暂不加载。".to_string());
+        }
+        let bytes = fs::read(&asset).map_err(|error| error.to_string())?;
+        let mime = mime_guess::from_path(&asset)
+            .first_raw()
+            .unwrap_or("application/octet-stream");
+        Ok::<Value, String>(json!({
+            "success": true,
+            "dataUrl": format!("data:{mime};base64,{}", BASE64.encode(bytes))
+        }))
+    })();
+    Ok(result.unwrap_or_else(|error| json!({"success": false, "error": error})))
+}
+
+#[tauri::command]
+pub async fn list_markdown_tree(app: AppHandle, directory_path: String) -> Result<Value, String> {
+    let result = (|| {
+        let root = normalize_absolute(Path::new(&directory_path));
+        let metadata = fs::metadata(&root).map_err(|error| error.to_string())?;
+        if !metadata.is_dir() {
+            return Err("请选择一个文件夹。".to_string());
+        }
+        let mut entries = Vec::new();
+        let mut truncated = false;
+        let mut scanned = 0usize;
+        let emit_progress = |scanned: usize, matched: usize, done: bool, error: Option<&str>| {
+            let _ = app.emit(
+                "markdown-tree-progress",
+                json!({
+                    "directoryPath": root.to_string_lossy(),
+                    "scanned": scanned,
+                    "matched": matched,
+                    "done": done,
+                    "error": error.unwrap_or("")
+                }),
+            );
+        };
+        emit_progress(0, 0, false, None);
+        for item in walkdir::WalkDir::new(&root)
+            .follow_links(false)
+            .max_depth(16)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            scanned += 1;
+            if scanned == 1 || scanned % 100 == 0 {
+                emit_progress(scanned, entries.len(), false, None);
+            }
+            let path = item.path();
+            if path == root {
+                continue;
+            }
+            let relative = match path.strip_prefix(&root) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let is_directory = item.file_type().is_dir();
+            if !is_directory {
+                let is_markdown = path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(|value| {
+                        matches!(
+                            value.to_ascii_lowercase().as_str(),
+                            "md" | "markdown" | "mdown" | "mkdn"
+                        )
+                    })
+                    .unwrap_or(false);
+                if !is_markdown {
+                    continue;
+                }
+            }
+            if entries.len() >= MAX_MARKDOWN_TREE_ENTRIES {
+                truncated = true;
+                break;
+            }
+            let item_metadata = item.metadata().ok();
+            let modified_at = item_metadata
+                .as_ref()
+                .and_then(|value| value.modified().ok())
+                .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|value| value.as_millis())
+                .unwrap_or(0);
+            let size = item_metadata
+                .as_ref()
+                .map(std::fs::Metadata::len)
+                .unwrap_or(0);
+            entries.push(json!({
+                "path": path.to_string_lossy(),
+                "relativePath": relative.to_string_lossy(),
+                "name": path.file_name().and_then(|value| value.to_str()).unwrap_or(""),
+                "kind": if is_directory { "directory" } else { "file" },
+                "modifiedAt": modified_at,
+                "size": size
+            }));
+        }
+        emit_progress(scanned, entries.len(), true, None);
+        entries.sort_by(|left, right| {
+            let left_path = left
+                .get("relativePath")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let right_path = right
+                .get("relativePath")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            left_path.cmp(right_path).then_with(|| {
+                let left_kind = left.get("kind").and_then(Value::as_str).unwrap_or_default();
+                let right_kind = right
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                right_kind.cmp(left_kind)
+            })
+        });
+        Ok::<Value, String>(json!({
+            "success": true,
+            "root": root.to_string_lossy(),
+            "entries": entries,
+            "truncated": truncated
+        }))
+    })();
+    Ok(result.unwrap_or_else(|error| json!({"success": false, "error": error})))
+}
+
+#[tauri::command]
+pub async fn directory_exists(directory_path: String) -> Result<Value, String> {
+    let path = normalize_absolute(Path::new(&directory_path));
+    let exists = fs::metadata(path)
+        .map(|value| value.is_dir())
+        .unwrap_or(false);
+    Ok(json!({"success": true, "exists": exists}))
+}
+
+#[tauri::command]
+pub async fn write_markdown_file(file_path: String, content: String) -> Result<Value, String> {
+    let result = (|| {
+        let path = normalize_absolute(Path::new(&file_path));
+        validate_markdown_path(&path)?;
+        let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err("请选择一个已有的 Markdown 文件。".to_string());
+        }
+        if content.len() as u64 > MAX_MARKDOWN_FILE_BYTES {
+            return Err(format!(
+                "Markdown 内容超过 {} MB，暂不保存。",
+                MAX_MARKDOWN_FILE_BYTES / 1024 / 1024
+            ));
+        }
+        write_private_atomic(&path, content.as_bytes())?;
+        Ok::<Value, String>(json!({
+            "success": true,
+            "path": path.to_string_lossy(),
+            "bytes": content.len()
+        }))
+    })();
+    Ok(result.unwrap_or_else(|error| json!({"success": false, "error": error})))
+}
+
+fn validate_markdown_path(path: &Path) -> Result<(), String> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !matches!(extension.as_str(), "md" | "markdown" | "mdown" | "mkdn") {
+        return Err("只支持 .md、.markdown、.mdown 或 .mkdn 文件。".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]

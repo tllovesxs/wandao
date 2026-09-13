@@ -1,10 +1,18 @@
 const PROVIDER_REGISTRY = window.WandaoProviders;
 let TOOLS = PROVIDER_REGISTRY?.tools?.() || {};
 const DEFAULT_VIEW_ID = 'home';
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'wandao-sidebar-collapsed-v1';
+const SIDEBAR_WIDTH_STORAGE_KEY = 'wandao-sidebar-width-v1';
+const DEFAULT_SIDEBAR_WIDTH = 208;
+const MIN_SIDEBAR_WIDTH = 156;
+const MAX_SIDEBAR_WIDTH = 320;
+const SIDEBAR_COLLAPSE_SNAP_WIDTH = 120;
+const COLLAPSED_SIDEBAR_WIDTH = 72;
 const PRIMARY_NAV_ITEMS = [
   { id: 'home', label: '首页', description: '快速开始', icon: 'home' },
   { id: 'platform-center', label: '平台中心', description: '选择平台和操作', icon: 'platforms' },
   { id: 'task-center', label: '任务中心', description: '查看最近任务', icon: 'tasks' },
+  { id: 'markdown-reader', label: 'Markdown 阅读器', description: '打开本地文档', icon: 'reader' },
   { id: 'notice-center', label: '教程公告', description: '公告与教程', icon: 'notice' },
   { id: 'plugin-center', label: '插件中心', description: '安装与更新平台', icon: 'plugins' },
   { id: 'settings', label: '设置', description: '偏好与帮助', icon: 'settings' }
@@ -25,6 +33,9 @@ let pluginOperationNotice = null;
 let updateCheckPromise = null;
 let updateCheckAnnounce = false;
 let customPluginMessageCleanup = null;
+let sidebarCollapsed = false;
+let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+let sidebarResizeSession = null;
 const FALLBACK_NOTICE_CENTER = {
   version: 1,
   updatedAt: '2026-08-30',
@@ -212,6 +223,7 @@ let logPanelRenderCount = LOG_PANEL_RENDER_LIMIT;
 const MAX_TASK_HISTORY = 80;
 const TASK_HISTORY_RENDER_LIMIT = 20;
 const TASK_FAILURE_RENDER_LIMIT = 12;
+const TASK_STATUS_ORB_POSITION_KEY = 'wandao-task-status-orb-position-v1';
 let taskHistory = [];
 let taskHistoryFilters = { query: '', status: 'all', providerId: 'all' };
 let taskHistoryVisibleLimit = TASK_HISTORY_RENDER_LIMIT;
@@ -220,6 +232,8 @@ let latestFinishedTaskId = '';
 let taskHistoryLoadPromise = null;
 let taskHistoryLoadError = '';
 let dismissedTaskStatusOrbId = '';
+let taskStatusOrbDrag = null;
+let taskStatusOrbSuppressClickUntil = 0;
 const ONBOARDING_DISMISSED_STORAGE_KEY = 'wandao-onboarding-v1-dismissed';
 const FORM_DRAFTS = window.WandaoFormDrafts;
 const RECENT_INPUTS = window.WandaoRecentInputs;
@@ -583,6 +597,7 @@ function toggleTheme() {
   const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
   localStorage.setItem('wandao-theme', next);
   applyTheme(next);
+  window.WandaoMarkdownDock?.render?.();
   log(next === 'dark' ? '已切换到夜间模式' : '已切换到日间模式', 'info');
 }
 
@@ -1413,6 +1428,51 @@ function taskArtifactPaths(task) {
   return window.WandaoTaskReport?.taskArtifactPaths(task) || { output: '', reportFile: '' };
 }
 
+function syncMarkdownReaderExportDirectories() {
+  const seen = new Set();
+  const directories = taskHistory
+    .filter((task) => /导出|export/i.test(String(task?.action || '')))
+    .map((task) => {
+      const output = taskArtifactPaths(task).output;
+      if (!output || seen.has(output)) return null;
+      seen.add(output);
+      const provider = TOOLS[task.providerId] || {};
+      return {
+        path: output,
+        title: task.title || task.providerTitle || provider.title || 'Markdown 导出',
+        provider: task.providerTitle || provider.title || task.providerId || '',
+        finishedAt: task.finishedAt || task.startedAt || '',
+        status: taskDisplayStatus(task)
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+  window.WandaoMarkdownDock?.setExportDirectories(directories);
+}
+
+function normalizedDirectoryPath(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[\\\/]+/g, '\\')
+    .replace(/\\+$/, '')
+    .toLowerCase();
+}
+
+function latestExportOutputForTool(toolId, requestedRoot = '') {
+  const expectedRoot = normalizedDirectoryPath(requestedRoot);
+  const task = taskHistory.find((item) => {
+    if (item?.providerId !== toolId || !/导出|export/i.test(String(item?.action || ''))) return false;
+    return Boolean(taskArtifactPaths(item).output);
+  });
+  const output = task ? taskArtifactPaths(task).output : '';
+  if (!output) return '';
+  if (!expectedRoot) return output;
+  const actualPath = normalizedDirectoryPath(output);
+  return actualPath === expectedRoot || actualPath.startsWith(`${expectedRoot}\\`)
+    ? output
+    : '';
+}
+
 function taskFailurePreview(task) {
   return window.WandaoTaskReport?.taskFailurePreview(task, 3) || [];
 }
@@ -1656,6 +1716,9 @@ async function performTaskHistoryLoad() {
     && (!runningTaskId || task.id === runningTaskId)
   )) || null;
   if (needsMigration) await saveTaskHistory();
+  if (typeof syncMarkdownReaderExportDirectories === 'function') {
+    syncMarkdownReaderExportDirectories();
+  }
   renderTaskHistory();
   renderTaskStatusOrb();
 }
@@ -2243,6 +2306,7 @@ function renderTaskStatusOrb() {
   if (orb.dataset.renderKey !== renderKey) {
     orb.className = `task-status-orb ${state.status}`;
     orb.innerHTML = `
+      <button class="task-status-orb-grip" type="button" data-task-orb-drag aria-label="拖动任务状态提示" title="拖动以调整位置">⠿</button>
       <button class="task-status-orb-main" type="button" data-task-orb-action="return" aria-label="返回任务发起页面">
         <span class="task-status-orb-mark" aria-hidden="true"></span>
         <span class="task-status-orb-copy"><strong></strong><span></span></span>
@@ -2253,6 +2317,8 @@ function renderTaskStatusOrb() {
     `;
     orb.dataset.renderKey = renderKey;
   }
+  bindTaskStatusOrbDrag(orb);
+  restoreTaskStatusOrbPosition(orb);
   const mainButton = orb.querySelector('.task-status-orb-main');
   const markElement = orb.querySelector('.task-status-orb-mark');
   const copy = orb.querySelector('.task-status-orb-copy');
@@ -2264,6 +2330,109 @@ function renderTaskStatusOrb() {
   if (title) title.textContent = task.title || task.providerTitle || '最近任务';
   const retryButton = orb.querySelector('.task-status-orb-retry');
   if (retryButton) retryButton.textContent = `重试失败项${retryCount > 1 ? `（${retryCount}）` : ''}`;
+}
+
+function readTaskStatusOrbPosition() {
+  try {
+    const value = JSON.parse(localStorage.getItem(TASK_STATUS_ORB_POSITION_KEY) || 'null');
+    if (Number.isFinite(value?.left) && Number.isFinite(value?.top)) return value;
+  } catch (_) {
+    // Ignore corrupted display preferences and use the default position.
+  }
+  return null;
+}
+
+function saveTaskStatusOrbPosition(left, top) {
+  try {
+    localStorage.setItem(TASK_STATUS_ORB_POSITION_KEY, JSON.stringify({ left, top }));
+  } catch (_) {
+    // The task status indicator must remain usable if storage is unavailable.
+  }
+}
+
+function clampTaskStatusOrbPosition(orb, left, top) {
+  const margin = 8;
+  return {
+    left: Math.max(margin, Math.min(Math.max(margin, window.innerWidth - orb.offsetWidth - margin), left)),
+    top: Math.max(margin, Math.min(Math.max(margin, window.innerHeight - orb.offsetHeight - margin), top))
+  };
+}
+
+function applyTaskStatusOrbPosition(orb, left, top, persist = false) {
+  if (!orb) return;
+  const position = clampTaskStatusOrbPosition(orb, Number(left) || 0, Number(top) || 0);
+  orb.style.left = `${Math.round(position.left)}px`;
+  orb.style.top = `${Math.round(position.top)}px`;
+  orb.style.right = 'auto';
+  orb.style.bottom = 'auto';
+  orb.dataset.positionApplied = 'true';
+  if (persist) saveTaskStatusOrbPosition(position.left, position.top);
+}
+
+function restoreTaskStatusOrbPosition(orb) {
+  if (!orb || orb.dataset.positionApplied === 'true') return;
+  const saved = readTaskStatusOrbPosition();
+  if (saved) applyTaskStatusOrbPosition(orb, saved.left, saved.top);
+}
+
+function bindTaskStatusOrbDrag(orb) {
+  if (!orb || orb.dataset.dragBound === 'true') return;
+  const grip = orb.querySelector('[data-task-orb-drag]');
+  if (!grip) return;
+  orb.dataset.dragBound = 'true';
+  grip.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const rect = orb.getBoundingClientRect();
+    taskStatusOrbDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      moved: false
+    };
+    grip.setPointerCapture?.(event.pointerId);
+    orb.classList.add('is-dragging');
+    event.preventDefault();
+  });
+  grip.addEventListener('pointermove', (event) => {
+    if (!taskStatusOrbDrag || taskStatusOrbDrag.pointerId !== event.pointerId) return;
+    const movedX = Math.abs(event.clientX - taskStatusOrbDrag.startX);
+    const movedY = Math.abs(event.clientY - taskStatusOrbDrag.startY);
+    taskStatusOrbDrag.moved = taskStatusOrbDrag.moved || movedX > 4 || movedY > 4;
+    if (!taskStatusOrbDrag.moved) return;
+    applyTaskStatusOrbPosition(
+      orb,
+      event.clientX - taskStatusOrbDrag.offsetX,
+      event.clientY - taskStatusOrbDrag.offsetY
+    );
+    event.preventDefault();
+  });
+  const finishDrag = (event) => {
+    if (!taskStatusOrbDrag || taskStatusOrbDrag.pointerId !== event.pointerId) return;
+    const moved = taskStatusOrbDrag.moved;
+    taskStatusOrbDrag = null;
+    orb.classList.remove('is-dragging');
+    if (moved) {
+      const rect = orb.getBoundingClientRect();
+      applyTaskStatusOrbPosition(orb, rect.left, rect.top, true);
+      taskStatusOrbSuppressClickUntil = Date.now() + 260;
+    }
+  };
+  grip.addEventListener('pointerup', finishDrag);
+  grip.addEventListener('pointercancel', finishDrag);
+  grip.addEventListener('keydown', (event) => {
+    const rect = orb.getBoundingClientRect();
+    const step = event.shiftKey ? 80 : 24;
+    const next = { left: rect.left, top: rect.top };
+    if (event.key === 'ArrowLeft') next.left -= step;
+    else if (event.key === 'ArrowRight') next.left += step;
+    else if (event.key === 'ArrowUp') next.top -= step;
+    else if (event.key === 'ArrowDown') next.top += step;
+    else return;
+    event.preventDefault();
+    applyTaskStatusOrbPosition(orb, next.left, next.top, true);
+  });
 }
 
 function dismissTaskStatusOrb() {
@@ -2489,6 +2658,9 @@ async function finishHistoryTask(task, result, thrownError = null) {
   }
   latestFinishedTaskId = task.id;
   await saveTaskHistory();
+  if (typeof syncMarkdownReaderExportDirectories === 'function') {
+    syncMarkdownReaderExportDirectories();
+  }
   renderTaskHistory();
   renderTaskStatusOrb();
   announceTaskOutcome(task);
@@ -2648,6 +2820,16 @@ async function resumeTask(task) {
   }
   startProgress(`继续任务：${resumeSubject}`, retryingFailures ? '正在读取上次报告并重试失败项...' : '正在按历史命令重新执行，脚本会根据自身增量能力跳过已完成内容。');
   log(retryingFailures ? `重试失败项：${resumeSubject}` : `继续任务：${resumeSubject}`, 'info');
+  const isExportTask = /导出|export/i.test(String(task.action || ''));
+  if (isExportTask && providerSupportsMarkdownPreview(provider)) {
+    const outputPath = taskArtifactPaths(task).output
+      || taskArgValue(args, provider.outputParam || '--output');
+    window.WandaoMarkdownDock?.prepareLiveExport({
+      outputPath,
+      title: resumeSubject,
+      originTool: task.providerId || currentTool
+    });
+  }
   try {
     const result = await runProviderCommand(task.script, args, {
       providerId: task.providerId || currentTool,
@@ -2678,6 +2860,10 @@ async function resumeTask(task) {
   } catch (error) {
     log(`历史任务继续执行出错：${formatError(error)}`, 'error');
     finishProgress(false, '历史任务继续执行出错，请查看日志');
+  } finally {
+    if (isExportTask && providerSupportsMarkdownPreview(provider)) {
+      window.WandaoMarkdownDock?.stopLiveExport();
+    }
   }
 }
 
@@ -2798,6 +2984,7 @@ function updateProgress(done, total, detail = '') {
       activeHistoryTask.progress = { current: safeDone, total: 0, detail: detail || progressBaseDetail || '任务进行中' };
       renderTaskStatusOrb();
     }
+    window.WandaoMarkdownDock?.updateLiveStatus(safeDone, safeTotal, detail);
     refreshProgressFeedback({ refreshDetail: false });
     return;
   }
@@ -2814,6 +3001,7 @@ function updateProgress(done, total, detail = '') {
     activeHistoryTask.progress = { current: safeDone, total: safeTotal, detail: progressDetail };
     renderTaskStatusOrb();
   }
+  window.WandaoMarkdownDock?.updateLiveStatus(safeDone, safeTotal, progressDetail);
   refreshProgressFeedback({ refreshDetail: false });
 }
 
@@ -3167,6 +3355,21 @@ function providerFeatureTags(provider) {
   return Array.from(tags);
 }
 
+function providerSupportsMarkdownPreview(provider) {
+  if (!provider?.capabilities?.export || !provider?.capabilities?.tree) return false;
+  const hasDirectoryOutput = Array.isArray(provider.fields)
+    && provider.fields.some((field) => field?.name === 'output' && field?.type === 'directory');
+  const hasSelectableTree = Boolean(provider.toc?.itemsPath && provider.toc?.selectionArg);
+  return hasDirectoryOutput && hasSelectableTree;
+}
+
+function markdownPreviewOutputPath(provider, args) {
+  const outputFlag = provider?.outputParam || '--output';
+  const values = Array.isArray(args) ? args : [];
+  const index = values.findIndex((value) => value === outputFlag);
+  return index >= 0 ? String(values[index + 1] || '').trim() : '';
+}
+
 function platformCapabilityTags(group) {
   const tags = new Set();
   group.providers.forEach((provider) => {
@@ -3213,6 +3416,7 @@ function navigationIcon(name) {
     home: '<path d="M3 10.5 12 3l9 7.5v9A1.5 1.5 0 0 1 19.5 21h-15A1.5 1.5 0 0 1 3 19.5v-9Z"/><path d="M9 21v-7h6v7"/>',
     platforms: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
     tasks: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2"/>',
+    reader: '<path d="M6 3.5h9.5L19 7v13.5H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M15 3.5V8h4M8 12h8M8 15.5h8"/>',
     notice: '<path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7l-4 2V6a2 2 0 0 1 2-2Z"/><path d="M8 9h8M8 13h6"/>',
     plugins: '<path d="M8 3v4M16 3v4M5 9h14v4a7 7 0 0 1-14 0V9Z"/><path d="M12 20v-5"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.08-1l2-1.5-2-3.46-2.35.95a7 7 0 0 0-1.72-1L14.5 3h-5l-.35 2.99a7 7 0 0 0-1.72 1L5.08 6.04l-2 3.46L5.08 11a7 7 0 0 0 0 2l-2 1.5 2 3.46 2.35-.95a7 7 0 0 0 1.72 1L9.5 21h5l.35-2.99a7 7 0 0 0 1.72-1l2.35.95 2-3.46-2-1.5c.05-.33.08-.66.08-1Z"/>'
@@ -3226,19 +3430,132 @@ function platformMark(group) {
   return label.slice(0, 1);
 }
 
+function loadSidebarState() {
+  try {
+    sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
+    const savedWidth = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    if (Number.isFinite(savedWidth)) sidebarWidth = clampSidebarWidth(savedWidth);
+  } catch (_) {
+    sidebarCollapsed = false;
+  }
+  applySidebarLayout();
+}
+
+function clampSidebarWidth(value) {
+  const viewportMax = Math.max(MIN_SIDEBAR_WIDTH, Math.floor(window.innerWidth * 0.36));
+  return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, viewportMax, Number(value) || DEFAULT_SIDEBAR_WIDTH));
+}
+
+function applySidebarLayout() {
+  sidebarWidth = clampSidebarWidth(sidebarWidth);
+  document.documentElement.style.setProperty(
+    '--sidebar-width',
+    `${sidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH : sidebarWidth}px`
+  );
+  document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed);
+}
+
+function saveSidebarState() {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed ? 'true' : 'false');
+    localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
+  } catch (_) {
+    // A restricted localStorage must not prevent navigation from working.
+  }
+}
+
+function toggleSidebar() {
+  sidebarCollapsed = !sidebarCollapsed;
+  applySidebarLayout();
+  saveSidebarState();
+  renderProviderNavigation();
+}
+
+function startSidebarResize(event) {
+  const handle = event.target.closest('[data-sidebar-resizer]');
+  if (!handle) return false;
+  sidebarResizeSession = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startWidth: sidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH : sidebarWidth,
+    handle
+  };
+  handle.setPointerCapture?.(event.pointerId);
+  handle.classList.add('is-dragging');
+  event.preventDefault();
+  return true;
+}
+
+function moveSidebarResize(event) {
+  const session = sidebarResizeSession;
+  if (!session || session.pointerId !== event.pointerId) return false;
+  const nextWidth = session.startWidth + event.clientX - session.startX;
+  if (nextWidth <= SIDEBAR_COLLAPSE_SNAP_WIDTH) {
+    sidebarCollapsed = true;
+  } else {
+    sidebarCollapsed = false;
+    sidebarWidth = clampSidebarWidth(nextWidth);
+  }
+  applySidebarLayout();
+  session.handle.setAttribute('aria-valuenow', String(sidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH : sidebarWidth));
+  event.preventDefault();
+  return true;
+}
+
+function finishSidebarResize(event) {
+  const session = sidebarResizeSession;
+  if (!session || session.pointerId !== event.pointerId) return false;
+  session.handle.classList.remove('is-dragging');
+  sidebarResizeSession = null;
+  applySidebarLayout();
+  saveSidebarState();
+  renderProviderNavigation();
+  return true;
+}
+
+function handleSidebarResizeKeydown(event) {
+  const handle = event.target.closest('[data-sidebar-resizer]');
+  if (!handle) return;
+  const step = event.shiftKey ? 48 : 20;
+  if (event.key === 'ArrowLeft') {
+    if (sidebarCollapsed) return;
+    if (sidebarWidth - step <= SIDEBAR_COLLAPSE_SNAP_WIDTH) sidebarCollapsed = true;
+    else sidebarWidth = clampSidebarWidth(sidebarWidth - step);
+  } else if (event.key === 'ArrowRight') {
+    if (sidebarCollapsed) {
+      sidebarCollapsed = false;
+      sidebarWidth = clampSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+    } else {
+      sidebarWidth = clampSidebarWidth(sidebarWidth + step);
+    }
+  } else {
+    return;
+  }
+  event.preventDefault();
+  applySidebarLayout();
+  saveSidebarState();
+  renderProviderNavigation();
+}
+
 function renderProviderNavigation() {
   const sidebar = document.getElementById('provider-sidebar') || document.querySelector('.sidebar');
   if (!sidebar) return;
   const activeId = primaryNavIdFor();
   sidebar.innerHTML = `
+    <div class="sidebar-toolbar">
+      <span class="sidebar-toolbar-label">主导航</span>
+      <button class="sidebar-collapse-toggle" data-sidebar-toggle type="button" aria-label="${sidebarCollapsed ? '展开主导航' : '收起主导航'}" title="${sidebarCollapsed ? '展开主导航' : '收起主导航'}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16M13 9h4M13 12h4M13 15h4"/></svg>
+      </button>
+    </div>
     <div class="sidebar-intro">
       <span>知识迁移</span>
       <strong>从这里开始</strong>
     </div>
-    <nav class="nav-group" aria-label="工作台">
+      <nav class="nav-group" aria-label="工作台">
       <span class="nav-group-label">工作台</span>
       ${PRIMARY_NAV_ITEMS.map((item) => `
-        <button class="nav-item ${item.id === activeId ? 'active' : ''}" data-tool="${escapeHtml(item.id)}" type="button" ${item.id === activeId ? 'aria-current="page"' : ''}>
+        <button class="nav-item ${item.id === activeId ? 'active' : ''}" data-tool="${escapeHtml(item.id)}" type="button" aria-label="${escapeHtml(item.label)}" title="${escapeHtml(item.label)}" ${item.id === activeId ? 'aria-current="page"' : ''}>
           ${navigationIcon(item.icon)}
           <span class="nav-copy">
             <strong>${escapeHtml(item.label)}</strong>
@@ -3246,8 +3563,9 @@ function renderProviderNavigation() {
           </span>
         </button>
       `).join('')}
-    </nav>
+      </nav>
     <div class="sidebar-footnote">本地优先 · Markdown 归档</div>
+    <div class="sidebar-resizer" data-sidebar-resizer role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整主导航宽度" aria-valuemin="156" aria-valuemax="320" aria-valuenow="${sidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH : sidebarWidth}"></div>
   `;
 }
 
@@ -3981,6 +4299,14 @@ function renderTaskCenterPage() {
   bindWorkbenchActions(contentArea);
 }
 
+function renderMarkdownReaderPage() {
+  setTaskHistoryVisible(false);
+  setToolHeading('Markdown 阅读器', '打开本地 Markdown 文件夹，按目录层次阅读文档。');
+  const contentArea = document.getElementById('content-area');
+  contentArea.innerHTML = '';
+  window.WandaoMarkdownDock?.renderReaderPage(contentArea);
+}
+
 async function requestNoticeImage(imageUrl) {
   const safeUrl = safeNoticeImageUrl(imageUrl);
   if (!safeUrl) {
@@ -4166,7 +4492,10 @@ function renderNoticeCenterPage() {
     </section>
   `;
   bindNoticeCenterActions(contentArea);
-  hydrateNoticeImages(contentArea);
+  mountMarkdownPreviews(contentArea).then(() => {
+    hydrateNoticeImages(contentArea);
+    bindRenderedMarkdownLinks(contentArea);
+  });
   if (noticeCenterState.status === 'idle') {
     loadNoticeCenter(false);
   } else if (
@@ -4764,6 +5093,8 @@ function renderAppView(viewId) {
     renderPlatformCenterPage();
   } else if (viewId === 'task-center') {
     renderTaskCenterPage();
+  } else if (viewId === 'markdown-reader') {
+    renderMarkdownReaderPage();
   } else if (viewId === 'notice-center') {
     renderNoticeCenterPage();
   } else if (viewId === 'plugin-center') {
@@ -4822,70 +5153,23 @@ function resolveNoticeImageSource(source, item) {
   }
 }
 
-function renderMarkdownImage(token, options = {}) {
-  const source = token.attrGet('src') || '';
-  const resolvedSource = typeof options.resolveImageSource === 'function'
-    ? options.resolveImageSource(source)
-    : source;
-  const allowRemoteImage = typeof options.allowRemoteImage === 'function'
+function markdownToHtml(markdown, options = {}) {
+  const runtime = window.WandaoVditor;
+  if (!runtime?.placeholder) return `<p>${escapeHtml(markdown || '')}</p>`;
+  const allowImageSource = typeof options.allowRemoteImage === 'function'
     ? options.allowRemoteImage
-    : safeRemoteGuideImageUrl;
-  const remoteUrl = allowRemoteImage(resolvedSource);
-  const remoteAttribute = options.remoteImageAttribute || 'data-guide-image';
-  const localAttribute = options.localImageAttribute || 'data-guide-image';
-  const alt = token.content || token.attrGet('alt') || '';
-  if (remoteUrl) {
-    return `<img class="guide-image" alt="${escapeHtml(alt)}" ${remoteAttribute}="${escapeHtml(remoteUrl)}" loading="lazy">`;
-  }
-  const imagePath = safeGuideImagePath(resolvedSource);
-  if (!imagePath) return '';
-  return `<img class="guide-image" alt="${escapeHtml(alt)}" ${localAttribute}="${escapeHtml(imagePath)}" loading="lazy">`;
+    : safeGuideImagePath;
+  return runtime.placeholder(markdown, {
+    resolveImageSource: options.resolveImageSource,
+    allowImageSource,
+    imageAttribute: options.remoteImageAttribute || options.localImageAttribute || 'data-guide-image',
+    imageClass: 'guide-image',
+    externalLinkAttribute: options.externalLinkAttribute || 'data-external-link'
+  });
 }
 
-function markdownToHtml(markdown, options = {}) {
-  const markdownItFactory = typeof window !== 'undefined' ? window.markdownit : null;
-  if (typeof markdownItFactory !== 'function') {
-    return String(markdown || '')
-      .split(/\r?\n/)
-      .map((line) => line.trim() ? `<p>${escapeHtml(line.trim())}</p>` : '')
-      .filter(Boolean)
-      .join('\n');
-  }
-
-  const renderer = markdownItFactory({
-    html: false,
-    breaks: false,
-    linkify: false,
-    typographer: false
-  });
-  renderer.core.ruler.push('wandao-safe-links', (state) => {
-    state.tokens.forEach((blockToken) => {
-      if (blockToken.type !== 'inline' || !Array.isArray(blockToken.children)) return;
-      blockToken.children.forEach((token, index) => {
-        if (token.type !== 'link_open') return;
-        const href = token.attrGet('href') || '';
-        if (/^https:\/\//i.test(href) || /^#[A-Za-z][A-Za-z0-9_.:-]*$/.test(href)) return;
-        token.hidden = true;
-        for (let closeIndex = index + 1; closeIndex < blockToken.children.length; closeIndex += 1) {
-          const closeToken = blockToken.children[closeIndex];
-          if (closeToken.type === 'link_close' && closeToken.level === token.level) {
-            closeToken.hidden = true;
-            break;
-          }
-        }
-      });
-    });
-  });
-  const defaultLinkOpen = renderer.renderer.rules.link_open
-    || ((tokens, index, renderOptions, _env, self) => self.renderToken(tokens, index, renderOptions));
-  renderer.renderer.rules.link_open = (tokens, index, renderOptions, env, self) => {
-    const token = tokens[index];
-    const href = token.attrGet('href') || '';
-    if (/^https:\/\//i.test(href)) token.attrSet('data-external-link', 'true');
-    return defaultLinkOpen(tokens, index, renderOptions, env, self);
-  };
-  renderer.renderer.rules.image = (tokens, index) => renderMarkdownImage(tokens[index], options);
-  return renderer.render(String(markdown || ''));
+function mountMarkdownPreviews(container) {
+  return window.WandaoVditor?.mountQueued(container) || Promise.resolve();
 }
 
 function valueAtPath(source, pathExpression) {
@@ -5039,6 +5323,17 @@ function bindCollapsibleGuideImages(container, providerId) {
   loadImages();
 }
 
+function bindRenderedMarkdownLinks(container) {
+  container?.querySelectorAll?.('[data-external-link]').forEach((link) => {
+    if (link.dataset.wandaoExternalLinkBound === 'true') return;
+    link.dataset.wandaoExternalLinkBound = 'true';
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      window.electronAPI.openExternal(link.href);
+    });
+  });
+}
+
 function appendProviderGuideSection(container, provider) {
   if (!container || !provider?.guideMarkdown) return;
   const guideHost = container.querySelector('.form-section') || container;
@@ -5048,7 +5343,10 @@ function appendProviderGuideSection(container, provider) {
       <div class="guide-content compact">${markdownToHtml(provider.guideMarkdown)}</div>
     </details>
   `);
-  bindCollapsibleGuideImages(container, provider.id);
+  mountMarkdownPreviews(container).then(() => {
+    bindCollapsibleGuideImages(container, provider.id);
+    bindRenderedMarkdownLinks(container);
+  });
 }
 function renderGuideProvider(provider) {
   const contentArea = document.getElementById('content-area');
@@ -5083,18 +5381,16 @@ function renderGuideProvider(provider) {
       </section>
     </div>
   `;
-  hydrateGuideImages(contentArea, provider.id);
+  mountMarkdownPreviews(contentArea).then(() => {
+    hydrateGuideImages(contentArea, provider.id);
+    bindRenderedMarkdownLinks(contentArea);
+  });
   contentArea.querySelectorAll('[data-open-url]').forEach((button) => {
     button.addEventListener('click', () => {
       window.electronAPI.openExternal(button.dataset.openUrl);
     });
   });
-  contentArea.querySelectorAll('[data-external-link]').forEach((link) => {
-    link.addEventListener('click', (event) => {
-      event.preventDefault();
-      window.electronAPI.openExternal(link.href);
-    });
-  });
+  bindRenderedMarkdownLinks(contentArea);
 }
 
 function manifestFieldId(provider, field) {
@@ -5238,8 +5534,12 @@ function renderManifestProviderForm(provider) {
       </section>
     </div>
   `;
-  bindCollapsibleGuideImages(contentArea, provider.id);
   initializeManifestProviderHandlers(provider, actions, fields);
+  mountMarkdownPreviews(contentArea).then(() => {
+    bindCollapsibleGuideImages(contentArea, provider.id);
+    hydrateGuideImages(contentArea, provider.id);
+    bindRenderedMarkdownLinks(contentArea);
+  });
 }
 
 function manifestFieldValue(provider, field) {
@@ -5765,6 +6065,10 @@ function loadAppPaths() {
 // Tool switching
 function switchTool(toolId) {
   const targetTool = toolId || DEFAULT_VIEW_ID;
+  if (targetTool === 'markdown-reader' && currentTool === 'markdown-reader') {
+    window.WandaoMarkdownDock?.showReaderLanding();
+    return true;
+  }
   const allowsActiveTaskNavigation = Boolean(
     isRunning
     && activeHistoryTask
@@ -5801,6 +6105,8 @@ function switchTool(toolId) {
   }
   currentTool = targetTool;
   renderProviderNavigation();
+  window.WandaoMarkdownDock?.close();
+  document.body.classList.toggle('markdown-reader-mode', currentTool === 'markdown-reader');
 
   if (String(currentTool).startsWith('platform:')) {
     renderPlatformDetailPage(String(currentTool).slice('platform:'.length));
@@ -5877,6 +6183,7 @@ function switchTool(toolId) {
 function initializeToolHandlers(toolId) {
   const prefix = toolId;
   ensureTocSelector(toolId);
+  syncAutoOutputFolderControl(toolId);
 
   const outputInput = document.getElementById(`${prefix}-output`);
   if (outputInput && !outputInput.value.trim()) {
@@ -5954,7 +6261,8 @@ function initializeToolHandlers(toolId) {
   const openDirBtn = document.getElementById(`${prefix}-open-dir`);
   if (openDirBtn) {
     openDirBtn.addEventListener('click', async () => {
-      const output = document.getElementById(`${prefix}-output`).value.trim();
+      const requestedOutput = document.getElementById(`${prefix}-output`)?.value.trim() || '';
+      const output = latestExportOutputForTool(toolId, requestedOutput) || requestedOutput;
       if (output) {
         await window.electronAPI.openPath(output);
       } else {
@@ -6220,6 +6528,31 @@ function requireImaCredentials(prefix) {
   }
 }
 
+function appendAutoOutputFolderArg(args, prefix, forScan = false) {
+  if (forScan || !providerSupportsAutoOutputFolder(prefix)) return;
+  const checkbox = document.getElementById(`${prefix}-auto-output-folder`);
+  // Keep older hard-coded templates safe during the transition: a provider
+  // that advertises this capability should default to the new layout even if
+  // its UI has not yet gained the optional switch.
+  args.push(!checkbox || checkbox.checked ? '--auto-output-folder' : '--flat-output');
+}
+
+function providerSupportsAutoOutputFolder(toolId) {
+  const provider = TOOLS[toolId] || {};
+  return Array.isArray(provider.fields) && provider.fields.some((field) => (
+    field?.name === 'auto_output_folder' && field?.arg === '--auto-output-folder'
+  ));
+}
+
+function syncAutoOutputFolderControl(toolId) {
+  const checkbox = document.getElementById(`${toolId}-auto-output-folder`);
+  if (!checkbox) return;
+  const supported = providerSupportsAutoOutputFolder(toolId);
+  const label = checkbox.closest('label.checkbox-label') || checkbox.closest('.form-group');
+  if (label) label.hidden = !supported;
+  checkbox.disabled = !supported;
+}
+
 function buildImaExportArgs(options = {}) {
   const prefix = 'ima-export';
   const forScan = Boolean(options.forScan);
@@ -6233,6 +6566,7 @@ function buildImaExportArgs(options = {}) {
     args.push('--scan-toc');
   } else {
     if (output) args.push('--output', output);
+    appendAutoOutputFolderArg(args, prefix, forScan);
     args.push('--progress-every', '1');
     if (includeSelection) args.push(...selectedTocArgs(prefix));
   }
@@ -7199,6 +7533,7 @@ function buildExportArgs(toolId, options = {}) {
   if (!forScan && incrementalCheckbox && incrementalCheckbox.checked) {
     args.push('--incremental');
   }
+  appendAutoOutputFolderArg(args, prefix, forScan);
 
   const delayInput = document.getElementById(`${prefix}-delay`);
   if (delayInput && delayInput.value) {
@@ -7652,6 +7987,13 @@ async function handleExport(toolId) {
     log(`本次按目录选择导出：已选择 ${state.selected.size} 篇。`, 'info');
     updateProgress(0, state.selected.size, `已选择 ${state.selected.size} 篇，正在读取远端内容...`);
   }
+  if (actionName === '导出' && providerSupportsMarkdownPreview(config)) {
+    window.WandaoMarkdownDock?.prepareLiveExport({
+      outputPath: markdownPreviewOutputPath(config, args),
+      title: config.title,
+      originTool: toolId
+    });
+  }
 
   try {
     const result = await runProviderCommand(config.script, args, {
@@ -7689,6 +8031,10 @@ async function handleExport(toolId) {
   } catch (error) {
     log(`错误：${formatError(error)}`, 'error');
     finishProgress(false, `${actionName}出错，请查看运行日志`);
+  } finally {
+    if (actionName === '导出' && providerSupportsMarkdownPreview(config)) {
+      window.WandaoMarkdownDock?.stopLiveExport();
+    }
   }
 }
 
@@ -8538,9 +8884,11 @@ function initializeFeishuImportHandlers() {
 document.addEventListener('DOMContentLoaded', () => {
   initializeRendererDiagnostics();
   applyTheme(loadTheme());
+  loadSidebarState();
   initializeFormDraftPersistence();
   initializePythonProcessStateSync();
   initializePluginDownloadProgress();
+  window.WandaoMarkdownDock?.init();
   renderProviderNavigation();
   document.addEventListener('click', (event) => {
     if (!isRunning) return;
@@ -8571,14 +8919,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Setup navigation
   document.getElementById('provider-sidebar')?.addEventListener('click', (event) => {
+    if (event.target.closest('[data-sidebar-toggle]')) {
+      toggleSidebar();
+      return;
+    }
     const item = event.target.closest('.nav-item');
     if (!item) return;
     switchTool(item.dataset.tool);
   });
+  document.getElementById('provider-sidebar')?.addEventListener('pointerdown', startSidebarResize);
+  document.getElementById('provider-sidebar')?.addEventListener('pointermove', moveSidebarResize);
+  document.getElementById('provider-sidebar')?.addEventListener('pointerup', finishSidebarResize);
+  document.getElementById('provider-sidebar')?.addEventListener('pointercancel', finishSidebarResize);
+  document.getElementById('provider-sidebar')?.addEventListener('keydown', handleSidebarResizeKeydown);
 
   // Setup footer buttons
   document.getElementById('btn-clear-log').addEventListener('click', clearLog);
   document.getElementById('btn-global-stop')?.addEventListener('click', handleStop);
+  document.getElementById('btn-open-live-markdown')?.addEventListener('click', () => {
+    const liveContext = window.WandaoMarkdownDock?.openLiveExportReader();
+    if (!liveContext?.outputPath) return;
+    if (!switchTool('markdown-reader')) return;
+    window.WandaoMarkdownDock?.loadFolder(liveContext.outputPath, {
+      remember: false,
+      live: true
+    }).catch((error) => {
+      log(`打开正在导出的 Markdown 目录失败：${formatError(error)}`, 'error');
+    });
+  });
   document.getElementById('btn-toggle-log')?.addEventListener('click', () => {
     const section = document.getElementById('log-section');
     setLogCollapsed(!section?.classList.contains('is-collapsed'));
@@ -8663,6 +9031,12 @@ document.addEventListener('DOMContentLoaded', () => {
       .catch((error) => log(`执行任务操作失败：${formatError(error)}`, 'error'));
   });
   document.getElementById('task-status-orb')?.addEventListener('click', (event) => {
+    if (Date.now() < taskStatusOrbSuppressClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+      taskStatusOrbSuppressClickUntil = 0;
+      return;
+    }
     const action = event.target.closest('[data-task-orb-action]')?.dataset.taskOrbAction;
     const task = activeTaskStatusOrbTask();
     if (!action) return;

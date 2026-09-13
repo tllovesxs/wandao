@@ -251,8 +251,8 @@ jobs:
           $appExecutable = Get-ChildItem -LiteralPath $installRoot -Filter *.exe -File | Where-Object { $_.BaseName -ieq "wandao" } | Select-Object -First 1
           if (-not $appExecutable) { throw "Installed Wandao executable was not found" }
           $expectedVersion = (Get-Content -Raw wandao_electron/package.json | ConvertFrom-Json).version
-          $uninstall = Get-ItemProperty -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Wandao" -ErrorAction SilentlyContinue
-          if (-not $uninstall) { throw "Wandao uninstall registry entry was not created" }
+          $uninstall = Get-ItemProperty -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\万能导" -ErrorAction SilentlyContinue
+          if (-not $uninstall) { throw "万能导 uninstall registry entry was not created" }
           if ($uninstall.DisplayVersion -ne $expectedVersion) {
             throw "Installed registry version is $($uninstall.DisplayVersion), expected $expectedVersion"
           }
@@ -267,8 +267,8 @@ jobs:
           }
           $shell = New-Object -ComObject WScript.Shell
           $shortcutPaths = @(
-            (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Wandao.lnk"),
-            (Join-Path $env:USERPROFILE "Desktop\Wandao.lnk")
+            (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\万能导.lnk"),
+            (Join-Path $env:USERPROFILE "Desktop\万能导.lnk")
           )
           foreach ($shortcutPath in $shortcutPaths) {
             if (-not (Test-Path -LiteralPath $shortcutPath)) { throw "Installed shortcut was not created: $shortcutPath" }
@@ -405,13 +405,12 @@ jobs:
           if (-not $source) { throw "Tauri NSIS installer was not generated" }
           $version = (Get-Content wandao_electron/package.json | ConvertFrom-Json).version
           $suffix = if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") { "UNSIGNED-SMOKE" } else { "setup" }
-          Copy-Item $source.FullName "release-output/Wandao-$version-win-x64-$suffix.exe"
+          $releaseName = "Wandao-$version-win-x64-$suffix.exe"
+          Copy-Item $source.FullName "release-output/$releaseName"
           if ($env:GITHUB_REF_TYPE -eq "tag") {
-            $updater = Get-ChildItem wandao_electron/src-tauri/target/release/bundle/nsis -File | Where-Object { $_.Extension -eq '.exe' -and (Test-Path -LiteralPath "$($_.FullName).sig") } | Select-Object -First 1
-            if (-not $updater) { throw "Tauri Windows updater archive was not generated" }
-            Copy-Item $updater.FullName "release-output/$($updater.Name)"
-            if (-not (Test-Path -LiteralPath "$($updater.FullName).sig")) { throw "Tauri Windows updater signature was not generated" }
-            Copy-Item "$($updater.FullName).sig" "release-output/$($updater.Name).sig"
+            $signature = "$($source.FullName).sig"
+            if (-not (Test-Path -LiteralPath $signature)) { throw "Tauri Windows updater signature was not generated" }
+            Copy-Item $signature "release-output/$releaseName.sig"
           }
 
       - name: Prepare macOS release file

@@ -29,6 +29,10 @@ class ExportError(RuntimeError):
     pass
 
 
+class CDPTimeoutError(ExportError):
+    """A socket-level read timeout, distinct from a watchdog timeout."""
+
+
 class ExportStopped(ExportError):
     pass
 
@@ -147,22 +151,76 @@ class CDPClient:
             finally:
                 self.sock = None
 
-    def send(self, method: str, params: dict[str, Any] | None = None, timeout: float = 30) -> dict[str, Any]:
+    def send(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        timeout: float = 30,
+        *,
+        max_timeout: float | None = None,
+        watchdog: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> dict[str, Any]:
         if not self.sock:
             raise ExportError("CDP socket is not connected")
         self.next_id += 1
         msg_id = self.next_id
         payload = json.dumps({"id": msg_id, "method": method, "params": params or {}}, ensure_ascii=False)
         self._send_text(payload)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            message = self._recv_checked(method, max(0.5, deadline - time.time()))
+        idle_timeout = max(0.5, float(timeout))
+        started = time.monotonic()
+        hard_deadline = (
+            started + max(idle_timeout, float(max_timeout))
+            if max_timeout is not None and float(max_timeout) > 0
+            else None
+        )
+        deadline = started + idle_timeout
+        if hard_deadline is not None:
+            deadline = min(deadline, hard_deadline)
+        while time.monotonic() < deadline:
+            try:
+                message = self._recv_checked(method, max(0.5, deadline - time.monotonic()))
+            except CDPTimeoutError as exc:
+                if watchdog:
+                    if hard_deadline is not None and time.monotonic() >= hard_deadline:
+                        raise ExportError(
+                            f"CDP {method} 看门狗达到最大执行时间：{int(max_timeout or 0)} 秒"
+                        ) from exc
+                    raise ExportError(
+                        f"CDP {method} 看门狗超时：{max(1, int(idle_timeout))} 秒内没有收到页面心跳"
+                    ) from exc
+                raise
+            except ExportError as exc:
+                if watchdog and time.monotonic() >= deadline:
+                    if hard_deadline is not None and time.monotonic() >= hard_deadline:
+                        raise ExportError(
+                            f"CDP {method} 看门狗达到最大执行时间：{int(max_timeout or 0)} 秒"
+                        ) from exc
+                    raise ExportError(
+                        f"CDP {method} 看门狗超时：{max(1, int(idle_timeout))} 秒内没有收到页面心跳"
+                    ) from exc
+                raise
             if message.get("id") == msg_id:
                 if "error" in message:
                     raise ExportError(f"CDP {method} failed: {message['error']}")
                 return message
             if message.get("method"):
+                try:
+                    renewed = bool(watchdog(message)) if watchdog else False
+                except Exception:
+                    renewed = False
+                if renewed:
+                    deadline = time.monotonic() + idle_timeout
+                    if hard_deadline is not None:
+                        deadline = min(deadline, hard_deadline)
                 self.pending_events.append(message)
+        if watchdog:
+            if hard_deadline is not None and time.monotonic() >= hard_deadline:
+                raise ExportError(
+                    f"CDP {method} 看门狗达到最大执行时间：{int(max_timeout or 0)} 秒"
+                )
+                raise ExportError(
+                    f"CDP {method} 看门狗超时：{max(1, int(idle_timeout))} 秒内没有收到页面心跳"
+                )
         raise ExportError(f"Timed out waiting for CDP response: {method}")
 
     def wait_for_event(
@@ -187,11 +245,20 @@ class CDPClient:
                 self.pending_events.append(message)
         raise ExportError(f"Timed out waiting for CDP event: {method}")
 
-    def evaluate(self, expression: str, timeout: float = 60) -> Any:
+    def evaluate(
+        self,
+        expression: str,
+        timeout: float = 60,
+        *,
+        max_timeout: float | None = None,
+        watchdog: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> Any:
         response = self.send(
             "Runtime.evaluate",
             {"expression": expression, "returnByValue": True, "awaitPromise": True},
             timeout=timeout,
+            max_timeout=max_timeout,
+            watchdog=watchdog,
         )
         result = response.get("result", {})
         if result.get("exceptionDetails"):
@@ -221,8 +288,10 @@ class CDPClient:
     def _recv_checked(self, label: str, timeout: float) -> dict[str, Any]:
         try:
             return self._recv_json(timeout=timeout)
-        except OSError as exc:  # socket.timeout 在 3.10+ 即 TimeoutError，同属 OSError
-            raise ExportError(f"CDP {label} 通信超时或中断：{exc}") from exc
+        except TimeoutError as exc:
+            raise CDPTimeoutError(f"CDP {label} 通信超时或中断：{exc}") from exc
+        except OSError as exc:
+            raise ExportError(f"CDP {label} 通信中断：{exc}") from exc
 
     def _recv_json(self, timeout: float) -> dict[str, Any]:
         assert self.sock is not None

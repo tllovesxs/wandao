@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Wandao",
-  "version": "1.4.9",
+  "productName": "万能导",
+  "mainBinaryName": "wandao",
+  "version": "1.5.0",
   "identifier": "com.wandao.app",
   "build": {
     "beforeDevCommand": "python scripts/prepare_python_runtime.py --clean-source-caches-only",

@@ -422,9 +422,11 @@ class SequencedExtractorCdp:
     def __init__(self, results: list[dict | Exception]) -> None:
         self.results = list(results)
         self.expressions: list[tuple[str, int | float]] = []
+        self.evaluate_options: list[dict] = []
 
-    def evaluate(self, expression: str, timeout: int | float = 60) -> dict:
+    def evaluate(self, expression: str, timeout: int | float = 60, **kwargs: object) -> dict:
         self.expressions.append((expression, timeout))
+        self.evaluate_options.append(kwargs)
         result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -432,6 +434,51 @@ class SequencedExtractorCdp:
 
 
 class FeishuMarkdownExtractionTests(unittest.TestCase):
+    def test_document_watchdog_renews_on_console_heartbeat(self) -> None:
+        args = argparse.Namespace()
+        callback = feishu.feishu_document_watchdog(args, {"title": "Long document"})
+        event = {
+            "method": "Runtime.consoleAPICalled",
+            "params": {
+                "args": [{
+                    "value": feishu.FEISHU_DOCUMENT_WATCHDOG_PREFIX
+                    + json.dumps({"phase": "scrolling", "iteration": 12, "blockCount": 80}),
+                }]
+            },
+        }
+
+        with mock.patch.object(feishu, "emit") as emit:
+            self.assertTrue(callback(event))
+
+        emit.assert_called_once()
+        self.assertIn("Long document", emit.call_args.args[1])
+
+    def test_native_doc_converter_uses_watchdog_deadlines(self) -> None:
+        cdp = SequencedExtractorCdp(
+            [{
+                "title": "Long document",
+                "markdown": "# Long document\n",
+                "images": [],
+                "renderer": "native_doc",
+            }]
+        )
+        node = {
+            "wiki_token": "wiki-token",
+            "obj_type": 22,
+            "title": "Long document",
+            "url": ENTRY_URL,
+        }
+
+        with mock.patch.object(feishu, "wait_for_doc_ready") as wait_ready:
+            result = feishu.extract_doc_markdown_current(cdp, node)
+
+        wait_ready.assert_called_once_with(cdp, timeout=35, args=None, node=node)
+        self.assertEqual(result["renderer"], "native_doc")
+        self.assertEqual(cdp.expressions[0][1], feishu.FEISHU_DOCUMENT_WATCHDOG_IDLE_SECONDS)
+        options = cdp.evaluate_options[0]
+        self.assertEqual(options["max_timeout"], feishu.FEISHU_DOCUMENT_WATCHDOG_MAX_SECONDS)
+        self.assertTrue(callable(options["watchdog"]))
+
     def test_markdown_detection_accepts_serialized_icon_info_and_markdown_extension(self) -> None:
         serialized_icon_node = {
             "wiki_token": "serialized-icon",

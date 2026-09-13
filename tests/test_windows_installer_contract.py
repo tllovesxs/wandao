@@ -61,6 +61,11 @@ class WindowsInstallerMigrationContractTests(unittest.TestCase):
             self.workflow,
         )
         self.assertIn('Programs\\万能导.lnk', self.workflow)
+        self.assertIn(
+            'updater_output="release-output/Wandao-${version}-macOS-arm64.app.tar.gz"',
+            self.workflow,
+        )
+        self.assertIn('cp "$updater.sig" "$updater_output.sig"', self.workflow)
 
     def test_nsis_uses_wandao_branding_assets_with_supported_formats(self) -> None:
         config = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))

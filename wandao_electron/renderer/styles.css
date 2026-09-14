@@ -19,6 +19,9 @@
   --surface-sunk: #f3f5f1;
   --surface-dark: #0e0f0c;
   --surface-dark-soft: #1a211a;
+  --code-surface: #f1f4f0;
+  --code-border: #d4ded5;
+  --code-text: #26342b;
   --shell-start: #eaf3f7;
   --shell-end: #eef6e4;
   --shell-accent: #f4f8df;
@@ -92,6 +95,9 @@ body[data-theme="dark"] {
   --surface-sunk: #242826;
   --surface-dark: #0f1210;
   --surface-dark-soft: #171a18;
+  --code-surface: #171b18;
+  --code-border: #303b33;
+  --code-text: #e8f0e8;
   --shell-start: #172229;
   --shell-end: #19241d;
   --shell-accent: #20291a;
@@ -3053,14 +3059,23 @@ body.markdown-reader-mode .tool-heading {
 .guide-content pre {
   padding: 16px;
   border-radius: var(--r-sm);
-  background: var(--surface-dark);
-  color: #d9e3d6;
+  border: 1px solid var(--code-border);
+  background: var(--code-surface);
+  color: var(--code-text);
   overflow-x: auto;
 }
 
-.guide-content pre code {
+.guide-content .vditor-reset pre {
+  border: 1px solid var(--code-border);
+  background: var(--code-surface);
+  color: var(--code-text);
+}
+
+.guide-content pre code,
+.guide-content .vditor-reset pre code {
   padding: 0;
   background: transparent;
+  color: var(--code-text);
 }
 
 /* Directory selector */

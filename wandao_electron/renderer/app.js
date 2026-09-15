@@ -8453,6 +8453,52 @@ async function loadFeishuImportConfigIntoForm() {
   log('已读取本机飞书导入 API 配置', 'info');
 }
 
+function feishuActionRequiresApiCredentials(args) {
+  const apiActions = new Set([
+    '--api-import-one',
+    '--api-import-all',
+    '--setup-openapi-permissions',
+    '--check-app-setup',
+    '--setup-target-wiki-doc-app'
+  ]);
+  return (args || []).some((argument) => apiActions.has(String(argument)));
+}
+
+async function ensureFeishuApiCredentials() {
+  let appId = document.getElementById('feishu-import-app-id')?.value.trim() || '';
+  let appSecret = document.getElementById('feishu-import-app-secret')?.value.trim() || '';
+  if (!appId || !appSecret) {
+    try {
+      const config = await readJsonConfigWithMigration(
+        feishuImportConfigPath(),
+        feishuImportConfigFallbackPaths(),
+        '飞书导入 API 配置'
+      );
+      if (config && typeof config === 'object') {
+        feishuImportConfig = config;
+        setInputValueIfEmpty('feishu-import-app-id', config.app_id);
+        setInputValueIfEmpty('feishu-import-app-secret', config.app_secret);
+        appId = document.getElementById('feishu-import-app-id')?.value.trim() || '';
+        appSecret = document.getElementById('feishu-import-app-secret')?.value.trim() || '';
+      }
+    } catch (error) {
+      log(`读取飞书 API 配置失败：${error.message || error}`, 'warn');
+    }
+  }
+  if (appId && appSecret) return true;
+
+  const missing = [];
+  if (!appId) missing.push('App ID');
+  if (!appSecret) missing.push('App Secret');
+  notifyUser(
+    `无法开始飞书导入：缺少 ${missing.join('、')}。请填写后点击“保存 API 配置”。`,
+    'warn',
+    { title: '飞书 API 配置不完整', duration: 0 }
+  );
+  (appId ? document.getElementById('feishu-import-app-secret') : document.getElementById('feishu-import-app-id'))?.focus?.();
+  return false;
+}
+
 async function saveFeishuImportConfigFromForm() {
   const appId = document.getElementById('feishu-import-app-id').value.trim();
   const appSecret = document.getElementById('feishu-import-app-secret').value.trim();
@@ -8716,6 +8762,9 @@ function feishuActionAttentionMessage(data) {
 }
 
 async function runFeishuImportCommand(args, taskName) {
+  if (feishuActionRequiresApiCredentials(args) && !(await ensureFeishuApiCredentials())) {
+    return null;
+  }
   startProgress(taskName, '任务启动中，正在等待进度信息...');
   log(`开始：${taskName}`, 'info');
   try {
@@ -8860,6 +8909,7 @@ function initializeFeishuImportHandlers() {
       return;
     }
     const args = [...buildFeishuImportArgs(), '--api-import-one', '--yes'];
+    if (!(await ensureFeishuApiCredentials())) return;
     if (!(await confirmFeishuImportWrite({ single: true }))) return;
     await runFeishuImportCommand(args, '单篇导入测试');
   });
@@ -8870,6 +8920,7 @@ function initializeFeishuImportHandlers() {
       return;
     }
     const args = [...buildFeishuImportArgs(), '--api-import-all', '--yes'];
+    if (!(await ensureFeishuApiCredentials())) return;
     if (!(await confirmFeishuImportWrite())) return;
     await runFeishuImportCommand(args, '批量导入');
   });

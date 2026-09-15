@@ -38,6 +38,38 @@ class FeishuImportResumeTests(unittest.TestCase):
         self.assertTrue(args.retry_failed)
         self.assertTrue(args.use_filename_as_title)
 
+    def test_batch_import_rejects_missing_api_credentials_before_network_or_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = import_feishu.parse_args(
+                [
+                    "--wiki-url", "https://demo.feishu.cn/wiki/demo",
+                    "--source-dir", str(root),
+                    "--config-file", str(root / "missing-config.json"),
+                    "--space-id", "space-demo",
+                    "--api-import-all", "--yes", "--move-to-wiki",
+                ]
+            )
+            with patch.object(import_feishu, "probe_target_wiki") as probe:
+                with self.assertRaisesRegex(import_feishu.ExportError, "API 配置不完整"):
+                    import_feishu.import_all_with_openapi(args)
+            probe.assert_not_called()
+
+    def test_batch_import_rejects_an_empty_source_directory_instead_of_reporting_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = import_feishu.parse_args(
+                [
+                    "--wiki-url", "https://demo.feishu.cn/wiki/demo",
+                    "--source-dir", str(root),
+                    "--space-id", "space-demo",
+                    "--app-id", "app-demo", "--app-secret", "secret-demo",
+                    "--api-import-all", "--yes", "--move-to-wiki",
+                ]
+            )
+            with self.assertRaisesRegex(import_feishu.ExportError, "没有找到 Markdown 文件"):
+                import_feishu.import_all_with_openapi(args)
+
     def test_resume_restores_completed_parent_wiki_token_before_selecting_docs(self) -> None:
         docs = [{"relativePath": "A.md"}, {"relativePath": "A/child.md"}]
         with tempfile.TemporaryDirectory() as tmp:

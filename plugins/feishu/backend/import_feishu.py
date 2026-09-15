@@ -611,6 +611,19 @@ def get_config_value(args: argparse.Namespace, key: str, env_name: str | None = 
     return str(value).strip() if value is not None else ""
 
 
+def require_feishu_api_credentials(args: argparse.Namespace) -> tuple[str, str]:
+    """Fail before a batch is started when the OpenAPI credentials are absent."""
+
+    app_id = get_config_value(args, "app_id", "FEISHU_APP_ID")
+    app_secret = get_config_value(args, "app_secret", "FEISHU_APP_SECRET")
+    if not app_id or not app_secret:
+        raise ExportError(
+            "飞书 API 配置不完整，无法开始导入。请填写并保存 App ID / App Secret，"
+            "或设置 FEISHU_APP_ID / FEISHU_APP_SECRET 环境变量。"
+        )
+    return app_id, app_secret
+
+
 def normalize_title_from_md(md_path: Path) -> str:
     try:
         text = md_path.read_text(encoding="utf-8", errors="ignore")
@@ -1830,10 +1843,7 @@ def move_doc_to_wiki(
 def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
     if not getattr(args, "yes", False):
         raise ExportError("这是写入操作。命令行执行时必须增加 --yes 明确确认。")
-    app_id = get_config_value(args, "app_id", "FEISHU_APP_ID")
-    app_secret = get_config_value(args, "app_secret", "FEISHU_APP_SECRET")
-    if not app_id or not app_secret:
-        raise ExportError("请填写飞书 App ID / App Secret，或设置 FEISHU_APP_ID / FEISHU_APP_SECRET 环境变量")
+    app_id, app_secret = require_feishu_api_credentials(args)
 
     md_path = select_source_file(args)
     source_root = source_root_for_file(getattr(args, "source_dir", None), md_path)
@@ -2157,6 +2167,18 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         raise ExportError("这是写入操作。命令行执行时必须增加 --yes 明确确认。")
     if not getattr(args, "move_to_wiki", False):
         raise ExportError("批量导入目前需要 --move-to-wiki，用目标 Wiki 节点恢复目录层级。")
+    require_feishu_api_credentials(args)
+
+    docs = scan_markdown_source(
+        Path(args.source_dir),
+        limit=max(0, int(getattr(args, "max_import", 0) or 0)),
+        use_filename_as_title=bool(getattr(args, "use_filename_as_title", False)),
+    ).get("docs") or []
+    if not docs:
+        raise ExportError(
+            f"所选目录中没有找到 Markdown 文件：{Path(args.source_dir).resolve()}。"
+            "请确认选择的是包含 .md 文件的目录，而不是上级目录。"
+        )
 
     host, _origin, target_wiki_token, _wiki_url = parse_wiki_url(args.wiki_url)
     if not get_config_value(args, "space_id"):
@@ -2166,11 +2188,6 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
     if not get_config_value(args, "space_id"):
         raise ExportError("无法获取目标 Wiki 的 spaceId")
 
-    docs = scan_markdown_source(
-        Path(args.source_dir),
-        limit=max(0, int(getattr(args, "max_import", 0) or 0)),
-        use_filename_as_title=bool(getattr(args, "use_filename_as_title", False)),
-    ).get("docs") or []
     imported_by_relative_path: dict[str, str] = {}
     folder_tokens: dict[str, str] = {}
     checkpoint = open_checkpoint_from_args(args, "feishu-import", "import")

@@ -5,7 +5,7 @@
   "name": "飞书",
   "title": "飞书 Wiki Markdown 导出",
   "navLabel": "飞书导出",
-  "description": "读取飞书 Wiki 目录并批量导出 Markdown、图片和目录结构；已保存 OpenAPI 凭证时优先完整读取长文档。",
+  "description": "读取飞书 Wiki、单篇文档或云空间文件夹并导出 Markdown、图片和目录结构；已保存 OpenAPI 凭证时优先完整读取长文档。",
   "type": "hybrid",
   "group": "export",
   "trustLevel": "official",
@@ -18,7 +18,7 @@
   "retryFailures": { "arg": "--retry-failed", "label": "只重试失败项" },
   "toc": { "itemsPath": "ordered", "idKey": "wiki_token", "exportIdKey": "wiki_token", "titleKey": "title", "parentIdKey": "parent_wiki_token", "selectableKey": "selectable", "selectionArg": "--doc-id", "selectableWhenExportId": false },
   "fields": [
-    { "name": "wiki_url", "label": "飞书 Wiki URL", "type": "text", "arg": "--wiki-url", "required": true, "history": "url", "placeholder": "https://xxx.feishu.cn/wiki/...", "actions": ["login", "scan", "export"] },
+    { "name": "wiki_url", "label": "飞书 Wiki / 文档 URL", "type": "text", "arg": "--wiki-url", "required": true, "history": "url", "placeholder": "https://xxx.feishu.cn/wiki/... 或 /docx/...", "actions": ["login", "scan", "export"] },
     { "name": "output", "label": "导出根目录", "type": "directory", "arg": "--output", "required": true, "history": "path", "actions": ["export"] },
     { "name": "auto_output_folder", "label": "按来源自动创建子文件夹", "type": "checkbox", "arg": "--auto-output-folder", "falseArg": "--flat-output", "default": true, "actions": ["export"] },
     { "name": "include_source", "label": "显示来源链接", "type": "checkbox", "arg": "--include-source", "falseArg": "--no-source", "default": true, "actions": ["export"] },
@@ -31,7 +31,7 @@
   ],
   "actions": [
     { "id": "login", "kind": "login", "label": "登录并保存凭证", "script": "../../backend/export_feishu.py", "args": ["--login"], "includeSelection": false, "track": false, "secondary": true },
-    { "id": "scan", "kind": "scan", "label": "读取 Wiki 目录", "script": "../../backend/export_feishu.py", "args": ["--scan-toc"], "includeSelection": false, "secondary": true },
+    { "id": "scan", "kind": "scan", "label": "读取目录 / 文档", "script": "../../backend/export_feishu.py", "args": ["--scan-toc"], "includeSelection": false, "secondary": true },
     { "id": "export", "kind": "export", "label": "开始导出", "script": "../../backend/export_feishu.py", "args": ["--progress-every", "1"], "progressTitle": "飞书 Wiki 导出", "progressDetail": "正在导出目录、正文和图片..." }
   ]
 }

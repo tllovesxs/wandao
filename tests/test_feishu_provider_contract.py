@@ -1,5 +1,8 @@
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
+from plugins.feishu.backend import export_feishu as feishu
 from plugins.feishu.backend.export_feishu import (
     annotate_selectable_toc,
     is_exportable_feishu_node,
@@ -124,6 +127,26 @@ class FeishuProviderContractTests(unittest.TestCase):
         )
 
         self.assertTrue(ordered[0]["selectable"])
+
+    def test_scanning_a_direct_docx_entry_marks_the_document_selectable(self) -> None:
+        args = SimpleNamespace(
+            wiki_url="https://example.feishu.cn/docx/direct-document",
+            close_started_chrome=False,
+        )
+        cdp = mock.Mock()
+
+        with (
+            mock.patch.object(feishu, "connect_entry_browser", return_value=(cdp, None)),
+            mock.patch.object(feishu, "prepare_entry_session"),
+            mock.patch.object(feishu, "try_extract_doc_markdown_via_openapi", return_value=None),
+            mock.patch.object(feishu, "extract_doc_markdown_current", return_value={"title": "Direct document"}),
+        ):
+            result = feishu.scan_wiki_toc(args)
+
+        self.assertEqual(result["entryKind"], "document")
+        self.assertEqual(result["totalDocs"], 1)
+        self.assertEqual(result["ordered"][0]["wiki_token"], "direct-document")
+        self.assertTrue(result["ordered"][0]["selectable"])
 
 
 if __name__ == "__main__":

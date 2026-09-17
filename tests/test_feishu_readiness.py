@@ -110,6 +110,34 @@ class FeishuReadinessTests(unittest.TestCase):
         ):
             feishu.wait_for_wiki_ready(page, timeout=1)
 
+    def test_prepare_entry_session_retries_a_blank_initial_page_once(self) -> None:
+        entry_url = "https://example.feishu.cn/docx/document-token"
+        args = mock.Mock(auth_file=None, skip_auth_load=False)
+        cdp = mock.Mock()
+        initial_state = {
+            "href": entry_url,
+            "permissionDenied": False,
+            "loginRequired": False,
+        }
+        ready_state = {"href": entry_url, "readyState": "interactive", "textLength": 100}
+
+        with (
+            mock.patch.object(feishu, "inspect_entry_session", return_value=initial_state),
+            mock.patch.object(
+                feishu,
+                "wait_for_wiki_ready",
+                side_effect=[feishu.FeishuPageLoadTimeout("initial load timed out"), ready_state],
+            ) as wait_for_ready,
+            mock.patch.object(feishu, "emit") as emit,
+        ):
+            result = feishu.prepare_entry_session(cdp, args, entry_url)
+
+        self.assertTrue(result["navigated"])
+        self.assertEqual(result["state"], ready_state)
+        cdp.navigate.assert_called_once_with(entry_url)
+        self.assertEqual(wait_for_ready.call_count, 2)
+        emit.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

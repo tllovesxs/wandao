@@ -129,6 +129,10 @@ class FeishuPermissionDenied(ExportError):
     pass
 
 
+class FeishuPageLoadTimeout(ExportError):
+    pass
+
+
 class FeishuMarkdownSourceInvalid(ExportError):
     pass
 
@@ -439,7 +443,7 @@ def wait_for_wiki_ready(
         f"href={last_state.get('href') or '-'}, title={last_state.get('title') or '-'}, "
         f"readyState={last_state.get('readyState') or '-'}, textLength={last_state.get('textLength') or 0}"
     )
-    raise ExportError(f"飞书页面没有加载完成（{detail}）")
+    raise FeishuPageLoadTimeout(f"飞书页面没有加载完成（{detail}）")
 
 
 def prepare_entry_session(
@@ -480,6 +484,14 @@ def prepare_entry_session(
             raise
         restored_cookies = load_auth_state(cdp, auth_file)
         emit(args, f"Loaded {restored_cookies} auth cookies from {auth_file}")
+        cdp.navigate(entry_url)
+        navigated = True
+        ready_state = wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=entry_url)
+    except FeishuPageLoadTimeout:
+        # A cold Feishu/Lark document tab can remain on its initial blank shell
+        # long enough to miss the first readiness window. Retry the navigation
+        # once before reporting an otherwise opaque load failure.
+        emit(args, "飞书页面首次加载超时，正在重新打开页面后重试。", level="warn")
         cdp.navigate(entry_url)
         navigated = True
         ready_state = wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=entry_url)
@@ -2908,7 +2920,8 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
                 "childMap": {},
                 "nodes": {start_token: node},
             }
-            return {"tree": tree, "ordered": [node], "totalDocs": 1, "entryKind": "document"}
+            ordered = annotate_selectable_toc([node])
+            return {"tree": tree, "ordered": ordered, "totalDocs": 1, "entryKind": "document"}
         finally:
             cdp.close()
             if chrome_proc and args.close_started_chrome:

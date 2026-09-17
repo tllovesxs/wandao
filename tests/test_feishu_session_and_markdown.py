@@ -921,7 +921,7 @@ class FeishuOpenAPIBlockExportTests(unittest.TestCase):
         self.assertIn("![image](feishu-media://image-token)", result["markdown"])
         self.assertEqual(result["images"], ["feishu-media://image-token"])
 
-    def test_docx_blocks_keep_unknown_blocks_in_api_export(self) -> None:
+    def test_docx_blocks_report_unknown_blocks_for_browser_fallback(self) -> None:
         blocks = [
             {"block_id": "root", "block_type": 1, "children": ["text", "unknown"]},
             {
@@ -1031,6 +1031,49 @@ class FeishuOpenAPIBlockExportTests(unittest.TestCase):
         self.assertIs(result, browser_result)
         self.assertEqual(cdp.navigated, [ENTRY_URL])
         browser_extract.assert_called_once()
+
+    def test_fetch_falls_back_to_browser_when_openapi_result_is_partial(self) -> None:
+        node = {"title": "Fallback document", "url": ENTRY_URL, "obj_type": 22}
+        cdp = FakeSessionCdp()
+        partial_result = {
+            "markdown": "# Fallback document\n<!-- 飞书块类型 31 尚未转换 -->\n",
+            "images": [],
+            "renderer": "openapi_docx_partial",
+            "unsupportedBlockTypes": [31],
+        }
+        browser_result = {"markdown": "# Fallback document\nComplete browser content\n", "images": []}
+
+        with (
+            mock.patch.object(feishu, "throttle_request"),
+            mock.patch.object(feishu, "try_extract_doc_markdown_via_openapi", return_value=partial_result),
+            mock.patch.object(feishu, "extract_doc_markdown_current", return_value=browser_result) as browser_extract,
+            mock.patch.object(feishu, "emit") as emit,
+        ):
+            result = feishu.fetch_doc_markdown(cdp, node, argparse.Namespace(stop_event=None))
+
+        self.assertIs(result, browser_result)
+        self.assertEqual(cdp.navigated, [ENTRY_URL])
+        browser_extract.assert_called_once()
+        self.assertIn("已改用网页滚动采集", emit.call_args.args[1])
+
+    def test_openapi_partial_conversion_falls_back_to_browser(self) -> None:
+        args = argparse.Namespace(_feishu_openapi_access_token="tenant-token", log_callback=None)
+        node = {"title": "Fallback document", "wiki_token": "document-token", "obj_type": 22, "url": ENTRY_URL}
+        blocks = [
+            {"block_id": "root", "block_type": 1, "children": ["unknown"]},
+            {"block_id": "unknown", "parent_id": "root", "block_type": 31, "callout": {"content": "Callout"}},
+        ]
+
+        with (
+            mock.patch.object(feishu, "feishu_openapi_credentials", return_value=("app-id", "secret", "test")),
+            mock.patch.object(feishu, "list_feishu_docx_blocks", return_value=blocks),
+            mock.patch.object(feishu, "emit") as emit,
+        ):
+            result = feishu.try_extract_doc_markdown_via_openapi(node, args)
+
+        self.assertIsNone(result)
+        self.assertIn("未转换块类型：31", emit.call_args.args[1])
+        self.assertIn("已改用网页采集", emit.call_args.args[1])
 
 
 class FeishuRelativeResourceReportingTests(unittest.TestCase):

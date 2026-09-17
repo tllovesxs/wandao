@@ -1011,6 +1011,15 @@ def try_extract_doc_markdown_via_openapi(
                 title=str(node.get("title") or "未命名"),
                 source_url=str(node.get("url") or ""),
             )
+            if result.get("renderer") == "openapi_docx_partial":
+                unsupported_blocks = [str(item) for item in result.get("unsupportedBlockTypes") or []]
+                unsupported_inline = [str(item) for item in result.get("unsupportedInlineElements") or []]
+                details: list[str] = []
+                if unsupported_blocks:
+                    details.append(f"未转换块类型：{', '.join(unsupported_blocks)}")
+                if unsupported_inline:
+                    details.append(f"未转换内联元素：{', '.join(unsupported_inline)}")
+                raise FeishuOpenAPIBlocksUnsupported("；".join(details) or "文档块未能完整转换")
             result["openapiDocumentId"] = document_id
             return result
         except ExportError as exc:
@@ -2511,10 +2520,9 @@ def fetch_doc_markdown(
     if openapi_result is not None:
         renderer = openapi_result.get("renderer")
         if renderer == "openapi_docx_partial":
-            unsupported = ", ".join(str(item) for item in openapi_result.get("unsupportedBlockTypes") or [])
             emit(
                 args,
-                f"飞书块 API 已完成读取“{node.get('title') or '未命名'}”，部分块类型以占位符保留：{unsupported}",
+                f"飞书块 API 未能完整转换“{node.get('title') or '未命名'}”，已改用网页滚动采集。",
                 level="warn",
             )
         else:
@@ -2528,7 +2536,7 @@ def fetch_doc_markdown(
                     "textLength": openapi_result.get("textLength"),
                 },
             )
-        return openapi_result
+            return openapi_result
     url = node.get("url") or ""
     if not url:
         raise ExportError(f"Node has no URL: {node.get('title')}")

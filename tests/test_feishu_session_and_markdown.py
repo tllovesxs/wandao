@@ -933,7 +933,7 @@ class FeishuOpenAPIBlockExportTests(unittest.TestCase):
             {
                 "block_id": "unknown",
                 "parent_id": "root",
-                "block_type": 31,
+                "block_type": 99,
                 "callout": {"content": "New block content"},
             },
         ]
@@ -942,9 +942,65 @@ class FeishuOpenAPIBlockExportTests(unittest.TestCase):
 
         self.assertIn("Kept text", result["markdown"])
         self.assertIn("New block content", result["markdown"])
-        self.assertIn("飞书块类型 31 尚未转换", result["markdown"])
-        self.assertEqual(result["unsupportedBlockTypes"], [31])
+        self.assertIn("飞书块类型 99 尚未转换", result["markdown"])
+        self.assertEqual(result["unsupportedBlockTypes"], [99])
         self.assertEqual(result["renderer"], "openapi_docx_partial")
+
+    def test_docx_blocks_convert_table_and_cells_to_markdown(self) -> None:
+        blocks = [
+            {"block_id": "root", "block_type": 1, "children": ["table"]},
+            {
+                "block_id": "table",
+                "parent_id": "root",
+                "block_type": 31,
+                "table": {"property": {"row_size": 2, "column_size": 2}},
+                "children": ["cell-1", "cell-2", "cell-3", "cell-4"],
+            },
+            {"block_id": "cell-1", "parent_id": "table", "block_type": 32, "children": ["text-1"]},
+            {"block_id": "cell-2", "parent_id": "table", "block_type": 32, "children": ["text-2"]},
+            {"block_id": "cell-3", "parent_id": "table", "block_type": 32, "children": ["text-3"]},
+            {"block_id": "cell-4", "parent_id": "table", "block_type": 32, "children": ["text-4"]},
+            {"block_id": "text-1", "parent_id": "cell-1", "block_type": 2, "text": {"elements": [{"text_run": {"content": "SDK 名称"}}]}},
+            {"block_id": "text-2", "parent_id": "cell-2", "block_type": 2, "text": {"elements": [{"text_run": {"content": "版本号"}}]}},
+            {"block_id": "text-3", "parent_id": "cell-3", "block_type": 2, "text": {"elements": [{"text_run": {"content": "巨量引擎转化 SDK"}}]}},
+            {"block_id": "text-4", "parent_id": "cell-4", "block_type": 2, "text": {"elements": [{"text_run": {"content": "1.0.0"}}]}},
+        ]
+
+        result = feishu.feishu_docx_blocks_to_markdown(blocks, title="Document")
+
+        self.assertIn("| SDK 名称 | 版本号 |", result["markdown"])
+        self.assertIn("| --- | --- |", result["markdown"])
+        self.assertIn("| 巨量引擎转化 SDK | 1.0.0 |", result["markdown"])
+        self.assertNotIn("尚未转换", result["markdown"])
+        self.assertEqual(result["renderer"], "openapi_docx")
+
+    def test_docx_blocks_convert_supported_containers_and_embeds(self) -> None:
+        blocks = [
+            {"block_id": "root", "block_type": 1, "children": ["callout", "grid", "iframe", "synced", "reference"]},
+            {"block_id": "callout", "parent_id": "root", "block_type": 19, "children": ["callout-text"], "callout": {"emoji_id": "bulb"}},
+            {"block_id": "callout-text", "parent_id": "callout", "block_type": 2, "text": {"elements": [{"text_run": {"content": "提示内容"}}]}},
+            {"block_id": "grid", "parent_id": "root", "block_type": 24, "children": ["column"], "grid": {"column_size": 1}},
+            {"block_id": "column", "parent_id": "grid", "block_type": 25, "children": ["view"], "grid_column": {"width_ratio": 100}},
+            {"block_id": "view", "parent_id": "column", "block_type": 33, "children": ["file"], "view": {"view_type": 1}},
+            {"block_id": "file", "parent_id": "view", "block_type": 23, "file": {"name": "release.zip", "token": "file-token"}},
+            {"block_id": "iframe", "parent_id": "root", "block_type": 26, "iframe": {"component": {"url": "https%3A%2F%2Fexample.com%2Fvideo"}}},
+            {"block_id": "synced", "parent_id": "root", "block_type": 49, "children": ["board"], "source_synced": {}},
+            {"block_id": "board", "parent_id": "synced", "block_type": 43, "board": {"token": "board-token"}},
+            {"block_id": "reference", "parent_id": "root", "block_type": 50, "reference_synced": {"source_document_id": "source-doc", "source_block_id": "source-block"}},
+        ]
+
+        result = feishu.feishu_docx_blocks_to_markdown(blocks, title="Document", source_url=ENTRY_URL)
+
+        self.assertIn("> 提示内容", result["markdown"])
+        self.assertIn("[release.zip](https://example.feishu.cn/file/file-token)", result["markdown"])
+        self.assertIn("[嵌入内容](https://example.com/video)", result["markdown"])
+        self.assertIn("[飞书画板](https://example.feishu.cn/board/board-token)", result["markdown"])
+        self.assertIn(
+            "[飞书同步块](https://example.feishu.cn/docx/source-doc?blockId=source-block)",
+            result["markdown"],
+        )
+        self.assertNotIn("尚未转换", result["markdown"])
+        self.assertEqual(result["renderer"], "openapi_docx")
 
     def test_docx_blocks_keep_unknown_inline_elements_in_api_export(self) -> None:
         result = feishu.feishu_docx_blocks_to_markdown(
@@ -972,7 +1028,35 @@ class FeishuOpenAPIBlockExportTests(unittest.TestCase):
         self.assertIn("unknown inline text", result["markdown"])
         self.assertIn("after", result["markdown"])
         self.assertEqual(result["renderer"], "openapi_docx_partial")
-        self.assertIn("mention_doc", result["unsupportedInlineElements"])
+        self.assertNotIn("mention_doc", result["unsupportedInlineElements"])
+        self.assertIn("undefined", result["unsupportedInlineElements"])
+
+    def test_docx_blocks_convert_mentioned_documents_to_markdown_links(self) -> None:
+        result = feishu.feishu_docx_blocks_to_markdown(
+            [
+                {"block_id": "root", "block_type": 1, "children": ["text"]},
+                {
+                    "block_id": "text",
+                    "parent_id": "root",
+                    "block_type": 2,
+                    "text": {
+                        "elements": [
+                            {
+                                "mention_doc": {
+                                    "title": "[链接文档]",
+                                    "url": "https%3A%2F%2Fexample.com%2Fdoc",
+                                    "text_element_style": {"bold": True},
+                                }
+                            }
+                        ]
+                    },
+                },
+            ],
+            title="Document",
+        )
+
+        self.assertIn("[**\\[链接文档\\]**](https://example.com/doc)", result["markdown"])
+        self.assertEqual(result["renderer"], "openapi_docx")
 
     def test_docx_blocks_keep_media_blocks_without_tokens_in_api_export(self) -> None:
         result = feishu.feishu_docx_blocks_to_markdown(
@@ -1036,10 +1120,10 @@ class FeishuOpenAPIBlockExportTests(unittest.TestCase):
         node = {"title": "Fallback document", "url": ENTRY_URL, "obj_type": 22}
         cdp = FakeSessionCdp()
         partial_result = {
-            "markdown": "# Fallback document\n<!-- 飞书块类型 31 尚未转换 -->\n",
+            "markdown": "# Fallback document\n<!-- 飞书块类型 99 尚未转换 -->\n",
             "images": [],
             "renderer": "openapi_docx_partial",
-            "unsupportedBlockTypes": [31],
+            "unsupportedBlockTypes": [99],
         }
         browser_result = {"markdown": "# Fallback document\nComplete browser content\n", "images": []}
 
@@ -1061,7 +1145,7 @@ class FeishuOpenAPIBlockExportTests(unittest.TestCase):
         node = {"title": "Fallback document", "wiki_token": "document-token", "obj_type": 22, "url": ENTRY_URL}
         blocks = [
             {"block_id": "root", "block_type": 1, "children": ["unknown"]},
-            {"block_id": "unknown", "parent_id": "root", "block_type": 31, "callout": {"content": "Callout"}},
+            {"block_id": "unknown", "parent_id": "root", "block_type": 99, "callout": {"content": "Callout"}},
         ]
 
         with (
@@ -1072,7 +1156,7 @@ class FeishuOpenAPIBlockExportTests(unittest.TestCase):
             result = feishu.try_extract_doc_markdown_via_openapi(node, args)
 
         self.assertIsNone(result)
-        self.assertIn("未转换块类型：31", emit.call_args.args[1])
+        self.assertIn("未转换块类型：99", emit.call_args.args[1])
         self.assertIn("已改用网页采集", emit.call_args.args[1])
 
 

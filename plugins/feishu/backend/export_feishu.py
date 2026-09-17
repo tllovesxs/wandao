@@ -118,7 +118,9 @@ FEISHU_DOCX_HEADING_PREFIXES = {
     10: "######",
     11: "######",
 }
-FEISHU_DOCX_SUPPORTED_BLOCK_TYPES = frozenset((*FEISHU_DOCX_TEXT_FIELDS, 1, 22, 27, 30, 34))
+FEISHU_DOCX_SUPPORTED_BLOCK_TYPES = frozenset(
+    (*FEISHU_DOCX_TEXT_FIELDS, 1, 19, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 43, 49, 50)
+)
 
 
 class FeishuLoginRequired(ExportError):
@@ -687,6 +689,18 @@ def _feishu_docx_code_span(text: str) -> str:
     return f"{delimiter}{text}{delimiter}"
 
 
+def _feishu_docx_apply_inline_style(text: str, style: dict[str, Any]) -> str:
+    if style.get("inline_code"):
+        text = _feishu_docx_code_span(text)
+    if style.get("bold"):
+        text = f"**{text}**"
+    if style.get("italic"):
+        text = f"*{text}*"
+    if style.get("strikethrough"):
+        text = f"~~{text}~~"
+    return text
+
+
 def _feishu_docx_unknown_inline_text(element: Any) -> str:
     """Keep readable fields from a newer Feishu inline element."""
 
@@ -724,7 +738,25 @@ def feishu_docx_elements_to_markdown(
 ) -> str:
     parts: list[str] = []
     for element in elements or []:
-        if not isinstance(element, dict) or not isinstance(element.get("text_run"), dict):
+        if not isinstance(element, dict):
+            if unsupported_inline is not None:
+                unsupported_inline.append(type(element).__name__)
+            parts.append(_feishu_docx_unknown_inline_text(element))
+            continue
+        mention_doc = element.get("mention_doc")
+        if isinstance(mention_doc, dict):
+            title = str(mention_doc.get("title") or "飞书文档").strip() or "飞书文档"
+            style = mention_doc.get("text_element_style")
+            styled_title = _feishu_docx_apply_inline_style(title, style if isinstance(style, dict) else {})
+            raw_url = str(mention_doc.get("url") or "").strip()
+            decoded_url = urllib.parse.unquote(raw_url)
+            parsed_url = urllib.parse.urlparse(decoded_url)
+            if parsed_url.scheme in {"http", "https"} and parsed_url.netloc:
+                parts.append(_feishu_docx_markdown_link(styled_title, decoded_url))
+            else:
+                parts.append(styled_title)
+            continue
+        if not isinstance(element.get("text_run"), dict):
             keys = ", ".join(sorted(element.keys())) if isinstance(element, dict) else type(element).__name__
             if unsupported_inline is not None:
                 unsupported_inline.append(keys)
@@ -734,14 +766,7 @@ def feishu_docx_elements_to_markdown(
         text = str(text_run.get("content") or "")
         style = text_run.get("text_element_style")
         style = style if isinstance(style, dict) else {}
-        if style.get("inline_code"):
-            text = _feishu_docx_code_span(text)
-        if style.get("bold"):
-            text = f"**{text}**"
-        if style.get("italic"):
-            text = f"*{text}*"
-        if style.get("strikethrough"):
-            text = f"~~{text}~~"
+        text = _feishu_docx_apply_inline_style(text, style)
         link = style.get("link") if isinstance(style.get("link"), dict) else {}
         href = str(link.get("url") or "").strip()
         if href and text:
@@ -784,6 +809,38 @@ def _feishu_docx_unknown_block_text(block: dict[str, Any], block_type: int) -> s
     return "\n".join([*chunks, marker]) if chunks else marker
 
 
+def _feishu_docx_markdown_link(label: str, url: str) -> str:
+    """Build a compact Markdown link from Docx block metadata."""
+
+    safe_label = label.strip().replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]") or "飞书资源"
+    return f"[{safe_label}]({url})"
+
+
+def _feishu_docx_hosted_url(host: str, path: str, token: str, *, query: dict[str, str] | None = None) -> str:
+    """Make a tenant-local resource URL only when the block provides a token."""
+
+    clean_host = host.strip()
+    clean_path = path.strip("/")
+    clean_token = token.strip()
+    if not clean_host or not clean_path or not clean_token:
+        return ""
+    url = f"https://{clean_host}/{clean_path}/{urllib.parse.quote(clean_token, safe='')}"
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    return url
+
+
+def _feishu_docx_iframe_url(block: dict[str, Any]) -> str:
+    iframe = block.get("iframe") if isinstance(block.get("iframe"), dict) else {}
+    component = iframe.get("component") if isinstance(iframe.get("component"), dict) else {}
+    raw_url = str(component.get("url") or iframe.get("url") or "").strip()
+    if not raw_url:
+        return ""
+    decoded_url = urllib.parse.unquote(raw_url)
+    parsed = urllib.parse.urlparse(decoded_url)
+    return decoded_url if parsed.scheme in {"http", "https"} and parsed.netloc else ""
+
+
 def _feishu_docx_block_text(
     block: dict[str, Any],
     host: str,
@@ -800,7 +857,7 @@ def _feishu_docx_block_text(
             unsupported.append(block_type)
             return _feishu_docx_unknown_block_text(block, block_type)
         raise FeishuOpenAPIBlocksUnsupported(f"文档含有暂未转换的块类型：{block_type}")
-    if block_type in {1, 34}:
+    if block_type in {1, 19, 24, 25, 31, 32, 33, 34, 49}:
         return ""
     if block_type == 22:
         return "---"
@@ -822,6 +879,46 @@ def _feishu_docx_block_text(
                 unsupported.append(block_type)
             return "<!-- 飞书电子表格块未提供 token -->"
         return f"[飞书电子表格](https://{host}/sheets/{token})" if host else f"[飞书电子表格]({token})"
+    if block_type == 23:
+        file = block.get("file") if isinstance(block.get("file"), dict) else {}
+        name = str(file.get("name") or "飞书附件").strip() or "飞书附件"
+        token = str(file.get("token") or "").strip()
+        url = _feishu_docx_hosted_url(host, "file", token)
+        if not url:
+            if unsupported is not None:
+                unsupported.append(block_type)
+            return f"<!-- 飞书附件未提供可用 token：{name} -->"
+        return _feishu_docx_markdown_link(name, url)
+    if block_type == 26:
+        url = _feishu_docx_iframe_url(block)
+        if not url:
+            if unsupported is not None:
+                unsupported.append(block_type)
+            return "<!-- 飞书嵌入块未提供可用链接 -->"
+        return _feishu_docx_markdown_link("嵌入内容", url)
+    if block_type == 43:
+        board = block.get("board") if isinstance(block.get("board"), dict) else {}
+        url = _feishu_docx_hosted_url(host, "board", str(board.get("token") or ""))
+        if not url:
+            if unsupported is not None:
+                unsupported.append(block_type)
+            return "<!-- 飞书画板未提供可用 token -->"
+        return _feishu_docx_markdown_link("飞书画板", url)
+    if block_type == 50:
+        reference = block.get("reference_synced") if isinstance(block.get("reference_synced"), dict) else {}
+        source_document_id = str(reference.get("source_document_id") or "").strip()
+        source_block_id = str(reference.get("source_block_id") or "").strip()
+        url = _feishu_docx_hosted_url(
+            host,
+            "docx",
+            source_document_id,
+            query={"blockId": source_block_id} if source_block_id else None,
+        )
+        if not url:
+            if unsupported is not None:
+                unsupported.append(block_type)
+            return "<!-- 飞书引用同步块未提供来源 -->"
+        return _feishu_docx_markdown_link("飞书同步块", url)
 
     field = FEISHU_DOCX_TEXT_FIELDS.get(block_type)
     payload = block.get(field) if field and isinstance(block.get(field), dict) else {}
@@ -898,6 +995,26 @@ def feishu_docx_blocks_to_markdown(
     visited: set[str] = set()
     visiting: set[str] = set()
 
+    def table_column_count(block: dict[str, Any], cell_count: int) -> int:
+        table = block.get("table") if isinstance(block.get("table"), dict) else {}
+        property_value = table.get("property") if isinstance(table.get("property"), dict) else {}
+        for source in (property_value, table, block):
+            for key in ("column_size", "columnSize", "columns"):
+                value = source.get(key) if isinstance(source, dict) else None
+                try:
+                    columns = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if columns > 0:
+                    return columns
+        return max(1, cell_count)
+
+    def table_cell_markdown(value: str) -> str:
+        text = value.strip()
+        text = re.sub(r"(?m)^#{1,6}\s+", "", text)
+        text = text.replace("|", r"\|")
+        return "<br>".join(line.strip() for line in text.splitlines() if line.strip())
+
     def render_children(block: dict[str, Any], *, indent: str = "") -> list[str]:
         rendered: list[str] = []
         for child_id_raw in block.get("children") or []:
@@ -925,9 +1042,36 @@ def feishu_docx_blocks_to_markdown(
         own = _feishu_docx_block_text(block, host, images, unsupported, unsupported_inline)
         if block_type == 1:
             parts = render_children(block)
-        elif block_type == 34:
+        elif block_type == 31:
+            cell_ids = [
+                str(child_id or "").strip()
+                for child_id in block.get("children") or []
+                if str(child_id or "").strip()
+            ]
+            columns = table_column_count(block, len(cell_ids))
+            cells = [table_cell_markdown(render_node(cell_id)) for cell_id in cell_ids]
+            rows = [cells[index : index + columns] for index in range(0, len(cells), columns)]
+            if not rows:
+                parts = []
+            elif columns == 1:
+                parts = ["\n\n".join(cell for row in rows for cell in row if cell)]
+            else:
+                normalized_rows = [row + [""] * (columns - len(row)) for row in rows]
+                header = normalized_rows[0]
+                body_rows = normalized_rows[1:]
+                lines = [
+                    "| " + " | ".join(header) + " |",
+                    "| " + " | ".join("---" for _ in range(columns)) + " |",
+                ]
+                lines.extend("| " + " | ".join(row) + " |" for row in body_rows)
+                parts = ["\n".join(lines)]
+        elif block_type == 32:
+            parts = render_children(block)
+        elif block_type in {19, 34}:
             quote = "\n\n".join(render_children(block))
             parts = ["\n".join(f"> {line}" if line else ">" for line in quote.splitlines())] if quote else []
+        elif block_type in {24, 25, 33, 49}:
+            parts = render_children(block)
         elif block_type in {12, 13}:
             nested = render_children(block, indent="  ")
             parts = [own] if own else []

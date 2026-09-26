@@ -43,7 +43,7 @@
     "url": "https://github.com/tllovesxs/wandao.git"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.4",
+    "@tauri-apps/cli": "2.11.5",
     "linkedom": "0.18.13",
     "markdown-it": "15.0.1"
   },

@@ -10,7 +10,7 @@ import socket
 import unittest
 from unittest import mock
 
-from wandao_core.browser import CDPClient, ExportError
+from wandao_core.browser import CDPClient, ExportError, console_heartbeat_watchdog
 
 
 class CDPTimeoutTests(unittest.TestCase):
@@ -86,6 +86,26 @@ class CDPTimeoutTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ExportError, "看门狗超时"):
             client.send("Runtime.evaluate", {}, timeout=0.1, max_timeout=1, watchdog=lambda _message: False)
+
+    def test_console_heartbeat_watchdog_extracts_payload_and_renews(self) -> None:
+        received: list[tuple[dict, int]] = []
+        watchdog = console_heartbeat_watchdog(
+            "__TEST_WATCHDOG__",
+            lambda payload, elapsed: received.append((payload, elapsed)),
+        )
+
+        self.assertFalse(watchdog({"method": "Runtime.consoleAPICalled", "params": {"args": []}}))
+        self.assertTrue(
+            watchdog(
+                {
+                    "method": "Runtime.consoleAPICalled",
+                    "params": {"args": [{"value": '__TEST_WATCHDOG__{"phase":"page","count":3}'}]},
+                }
+            )
+        )
+        self.assertEqual(received[0][0]["phase"], "page")
+        self.assertEqual(received[0][0]["count"], 3)
+        self.assertGreaterEqual(received[0][1], 0)
 
 
 if __name__ == "__main__":

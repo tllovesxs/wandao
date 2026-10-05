@@ -48,6 +48,25 @@ from wandao_checkpoint import WandaoCheckpoint
 
 
 class ZsxqGroupExportTests(unittest.TestCase):
+    def test_column_toc_watchdog_renews_on_console_heartbeat(self) -> None:
+        args = argparse.Namespace()
+        callback = export_zsxq.zsxq_toc_watchdog(args)
+        event = {
+            "method": "Runtime.consoleAPICalled",
+            "params": {
+                "args": [{
+                    "value": export_zsxq.ZSXQ_TOC_WATCHDOG_PREFIX
+                    + json.dumps({"phase": "读取栏目", "page": 4, "topics": 160}),
+                }]
+            },
+        }
+
+        with mock.patch.object(export_zsxq, "emit") as emit:
+            self.assertTrue(callback(event))
+
+        emit.assert_called_once()
+        self.assertIn("读取栏目", emit.call_args.args[1])
+
     def test_group_id_is_parsed_from_group_urls_and_query(self) -> None:
         self.assertEqual(group_id_from_url("https://wx.zsxq.com/group/123456789"), "123456789")
         self.assertEqual(group_id_from_url("https://wx.zsxq.com/groups/123456789/topics"), "123456789")

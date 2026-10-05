@@ -55,6 +55,7 @@ from wandao_core.browser import (
     ExportStopped,
     check_stopped,
     chrome_debug_available,
+    console_heartbeat_watchdog,
     default_data_dir,
     default_state_path,
     emit,
@@ -83,6 +84,9 @@ DEFAULT_ENTRY_URL = ""
 DEFAULT_GROUP_LIMIT = 50
 DEFAULT_GROUP_BATCH_SIZE = 20
 MAX_GROUP_BATCH_SIZE = 20
+ZSXQ_TOC_WATCHDOG_IDLE_SECONDS = 45
+ZSXQ_TOC_WATCHDOG_MAX_SECONDS = 10 * 60
+ZSXQ_TOC_WATCHDOG_PREFIX = "__WANDAO_ZSXQ_WATCHDOG__"
 GROUP_LONG_EXPORT_WARNING_LIMIT = 1000
 DEFAULT_REQUEST_DELAY = 2.5
 DEFAULT_REQUEST_JITTER = 2.5
@@ -340,6 +344,32 @@ def wait_eval(
             last_value = {"error": str(exc)}
         time.sleep(0.5)
     return last_value
+
+
+def zsxq_toc_watchdog(args: argparse.Namespace | None = None) -> Callable[[dict[str, Any]], bool]:
+    """Keep large column-directory evaluation alive while its page script works."""
+
+    last_report = 0.0
+
+    def report(payload: dict[str, Any], elapsed: int) -> None:
+        nonlocal last_report
+        now = time.monotonic()
+        if args is None or now - last_report < 5:
+            return
+        last_report = now
+        phase = str(payload.get("phase") or "读取目录")
+        page = int(payload.get("page") or 0)
+        topics = int(payload.get("topics") or 0)
+        detail = f"{phase}，已读取 {page} 页，发现 {topics} 条内容" if page else phase
+        emit(
+            args,
+            f"知识星球目录仍在读取：已持续 {elapsed} 秒，{detail}",
+            event="task.watchdog",
+            level="info",
+            stats={"phase": phase, "page": page, "topics": topics, "elapsedSeconds": elapsed},
+        )
+
+    return console_heartbeat_watchdog(ZSXQ_TOC_WATCHDOG_PREFIX, report)
 
 
 def wait_with_stop(args: argparse.Namespace | None, seconds: float) -> None:
@@ -1012,6 +1042,17 @@ async () => {
 ZSXQ_TOC_JS = r"""
 async () => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const watchdogPrefix = "__WANDAO_ZSXQ_WATCHDOG__";
+  const heartbeat = (phase, page = 0, topics = 0) => {
+    try { console.info(watchdogPrefix + JSON.stringify({phase, page, topics})); } catch (err) {}
+  };
+  const heartbeatTimer = setInterval(() => heartbeat("等待页面/API响应"), 5000);
+  const stopHeartbeat = phase => {
+    clearInterval(heartbeatTimer);
+    heartbeat(phase);
+  };
+  heartbeat("开始读取目录");
+  try {
   const clean = s => (s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
   const activate = async el => {
     if (!el) return;
@@ -1078,17 +1119,20 @@ async () => {
         if (attempt > 0) await wait(1200 + attempt * 1200);
         const data = await apiGet(url, 1);
         const topics = data && data.topics || [];
+        heartbeat("读取栏目", attempt + 1, topics.length);
         if (!best || topics.length > ((best && best.topics) || []).length) best = data;
         if (!expected || topics.length >= expected) return data;
       }
       return best;
     };
     const topicBatches = [];
-    for (const column of columns) {
+    for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+      const column = columns[columnIndex];
       const columnId = String(column.column_id || "");
       const count = column.statistics && column.statistics.topics_count || 0;
       await wait(900);
       topicBatches.push(await fetchColumnTopics(columnId, count));
+      heartbeat("读取栏目目录", columnIndex + 1, topicBatches.reduce((sum, item) => sum + ((item && item.topics) || []).length, 0));
     }
     return columns.map((column, gi) => {
       const count = column.statistics && column.statistics.topics_count || 0;
@@ -1153,12 +1197,17 @@ async () => {
   if (!groups.length || !groups.some(group => group.topics.some(topic => topic.topicId))) {
     groups = await domGroups();
   }
-  return {
+  const result = {
     href: location.href,
     title: clean((document.querySelector(".group-name") || document.querySelector(".title") || {}).innerText || document.title || "知识星球目录"),
     groups: groups.filter(group => group.groupTitle || group.topics.length),
     totalTopics: groups.reduce((sum, group) => sum + group.topics.length, 0),
   };
+  stopHeartbeat("目录读取完成");
+  return result;
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
 }
 """
 
@@ -2231,7 +2280,12 @@ def collect_toc(
         timeout=35,
         args=args,
     )
-    toc = cdp.evaluate(f"({ZSXQ_TOC_JS})()", timeout=90) or {}
+    toc = cdp.evaluate(
+        f"({ZSXQ_TOC_JS})()",
+        timeout=ZSXQ_TOC_WATCHDOG_IDLE_SECONDS,
+        max_timeout=ZSXQ_TOC_WATCHDOG_MAX_SECONDS,
+        watchdog=zsxq_toc_watchdog(args),
+    ) or {}
     groups = toc.get("groups") or []
     for group in groups:
         for item in group.get("topics") or []:

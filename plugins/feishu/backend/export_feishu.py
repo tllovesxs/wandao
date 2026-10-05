@@ -50,6 +50,7 @@ from typing import Any, Callable
 
 from wandao_core.browser import (
     CDPClient,
+    console_heartbeat_watchdog,
     DEFAULT_PORT,
     ExportError,
     ExportStopped,
@@ -86,6 +87,9 @@ FEISHU_MARKDOWN_FILE_TYPES = {"md", "markdown"}
 FEISHU_DOCUMENT_WATCHDOG_IDLE_SECONDS = 45
 FEISHU_DOCUMENT_WATCHDOG_MAX_SECONDS = 30 * 60
 FEISHU_DOCUMENT_WATCHDOG_PREFIX = "__WANDAO_FEISHU_WATCHDOG__"
+FEISHU_TREE_WATCHDOG_IDLE_SECONDS = 45
+FEISHU_TREE_WATCHDOG_MAX_SECONDS = 10 * 60
+FEISHU_TREE_WATCHDOG_PREFIX = "__WANDAO_FEISHU_TREE_WATCHDOG__"
 FEISHU_OPENAPI_BASE = "https://open.feishu.cn/open-apis"
 FEISHU_OPENAPI_CONFIG_FILE = "feishu_import_config.json"
 FEISHU_OPENAPI_MEDIA_PREFIX = "feishu-media://"
@@ -1179,6 +1183,13 @@ def try_extract_doc_markdown_via_openapi(
 
 FEISHU_TREE_LOADER_JS = r"""
 async (startToken) => {
+  const watchdogPrefix = "__WANDAO_FEISHU_TREE_WATCHDOG__";
+  const heartbeat = (phase, nodes = 0) => {
+    try { console.info(watchdogPrefix + JSON.stringify({phase, nodes})); } catch (err) {}
+  };
+  const heartbeatTimer = setInterval(() => heartbeat("等待目录接口"), 5000);
+  heartbeat("开始读取目录");
+  try {
   function assertOk(json, url) {
     if (!json || (json.code !== 0 && json.code !== undefined)) {
       throw new Error("Feishu API failed: " + url + " " + JSON.stringify(json && {code: json.code, msg: json.msg || json.message}));
@@ -1251,6 +1262,7 @@ async (startToken) => {
     if (data.space) space = data.space;
     Object.assign(nodes, tree.nodes || {});
     Object.assign(childMap, tree.child_map || {});
+    heartbeat("读取目录节点", Object.keys(nodes).length);
     for (const kids of Object.values(tree.child_map || {})) {
       for (const kid of kids || []) {
         if ((tree.nodes || {})[kid] && (tree.nodes || {})[kid].has_child) await load(kid);
@@ -1279,13 +1291,25 @@ async (startToken) => {
       mount_point: "wiki",
     };
   }
-  return {spaceId, space, rootList, childMap, nodes: compactNodes};
+  const result = {spaceId, space, rootList, childMap, nodes: compactNodes};
+  heartbeat("目录读取完成", Object.keys(compactNodes).length);
+  return result;
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
 }
 """
 
 
 FEISHU_DRIVE_FOLDER_LOADER_JS = r"""
 async (startToken) => {
+  const watchdogPrefix = "__WANDAO_FEISHU_TREE_WATCHDOG__";
+  const heartbeat = (phase, nodes = 0) => {
+    try { console.info(watchdogPrefix + JSON.stringify({phase, nodes})); } catch (err) {}
+  };
+  const heartbeatTimer = setInterval(() => heartbeat("等待云空间接口"), 5000);
+  heartbeat("开始读取云空间目录");
+  try {
   function assertOk(json, url) {
     if (!json || (json.code !== 0 && json.code !== undefined)) {
       throw new Error("Feishu Drive API failed: " + url + " " + JSON.stringify(json && {code: json.code, msg: json.msg || json.message}));
@@ -1369,6 +1393,7 @@ async (startToken) => {
         nodes[child.wiki_token] = child;
         children.push(child.wiki_token);
       }
+      heartbeat("读取云空间目录分页", Object.keys(nodes).length);
       if (!data.has_more) break;
       lastLabel = data.last_label || "";
       if (!lastLabel) break;
@@ -1382,7 +1407,7 @@ async (startToken) => {
   }
 
   await loadFolder(startToken, "", 1);
-  return {
+  const result = {
     spaceId: "",
     space: {space_name: nodes[startToken] && nodes[startToken].title || "飞书云空间文件夹"},
     rootList: [startToken],
@@ -1390,6 +1415,11 @@ async (startToken) => {
     nodes,
     entryKind: "drive_folder",
   };
+  heartbeat("云空间目录读取完成", Object.keys(nodes).length);
+  return result;
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
 }
 """
 
@@ -1403,7 +1433,12 @@ def load_wiki_tree(
     throttle_request(args)
     wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=wiki_url)
     try:
-        value = cdp.evaluate(f"({FEISHU_TREE_LOADER_JS})({js_string(start_token)})", timeout=120)
+        value = cdp.evaluate(
+            f"({FEISHU_TREE_LOADER_JS})({js_string(start_token)})",
+            timeout=FEISHU_TREE_WATCHDOG_IDLE_SECONDS,
+            max_timeout=FEISHU_TREE_WATCHDOG_MAX_SECONDS,
+            watchdog=feishu_tree_watchdog(args, "飞书知识库目录"),
+        )
     except ExportError as exc:
         message = str(exc)
         if "FEISHU_AUTH_REQUIRED" in message:
@@ -1425,7 +1460,12 @@ def load_drive_folder_tree(
     throttle_request(args)
     wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=folder_url)
     try:
-        value = cdp.evaluate(f"({FEISHU_DRIVE_FOLDER_LOADER_JS})({js_string(start_token)})", timeout=180)
+        value = cdp.evaluate(
+            f"({FEISHU_DRIVE_FOLDER_LOADER_JS})({js_string(start_token)})",
+            timeout=FEISHU_TREE_WATCHDOG_IDLE_SECONDS,
+            max_timeout=FEISHU_TREE_WATCHDOG_MAX_SECONDS,
+            watchdog=feishu_tree_watchdog(args, "飞书云空间目录"),
+        )
     except ExportError as exc:
         message = str(exc)
         if "FEISHU_AUTH_REQUIRED" in message:
@@ -2592,6 +2632,33 @@ def feishu_document_watchdog(
         return True
 
     return observe
+
+
+def feishu_tree_watchdog(
+    args: argparse.Namespace | None,
+    label: str,
+) -> Callable[[dict[str, Any]], bool]:
+    """Renew long-running recursive Feishu directory loaders on page heartbeats."""
+
+    last_report = 0.0
+
+    def report(payload: dict[str, Any], elapsed: int) -> None:
+        nonlocal last_report
+        now = time.monotonic()
+        if args is None or now - last_report < 5:
+            return
+        last_report = now
+        phase = str(payload.get("phase") or "读取目录")
+        nodes = int(payload.get("nodes") or 0)
+        emit(
+            args,
+            f"{label}仍在读取：已持续 {elapsed} 秒，{phase}，已发现 {nodes} 个节点",
+            event="task.watchdog",
+            level="info",
+            stats={"phase": phase, "nodes": nodes, "elapsedSeconds": elapsed},
+        )
+
+    return console_heartbeat_watchdog(FEISHU_TREE_WATCHDOG_PREFIX, report)
 
 
 def extract_doc_markdown_current(

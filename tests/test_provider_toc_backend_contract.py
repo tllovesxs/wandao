@@ -123,7 +123,7 @@ class ProviderTocBackendContractTests(unittest.TestCase):
             ))
 
         class TocCdp:
-            def evaluate(self, _script, timeout=0):
+            def evaluate(self, _script, timeout=0, **_kwargs):
                 return {"href": "https://wx.zsxq.com/dweb2/column/x", "groups": [{
                     "groupIndex": 3, "groupTitle": "Section",
                     "topics": [{"groupIndex": 3, "topicIndex": 0, "title": "Article", "topicId": "topic"}],

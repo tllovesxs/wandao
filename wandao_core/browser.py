@@ -108,6 +108,57 @@ def throttle_request(args: argparse.Namespace | None) -> None:
     args._request_count = int(getattr(args, "_request_count", 0) or 0) + 1
 
 
+def console_heartbeat_watchdog(
+    prefix: str,
+    on_heartbeat: Callable[[dict[str, Any], int], None] | None = None,
+) -> Callable[[dict[str, Any]], bool]:
+    """Renew a CDP evaluation when the page emits a structured heartbeat.
+
+    Long page-side JavaScript often performs several sequential fetches and
+    DOM operations inside one awaited ``Runtime.evaluate`` call.  Providers
+    can emit ``console.info(prefix + JSON payload)`` from that script and use
+    this callback as an idle watchdog while retaining a separate hard limit.
+    """
+
+    started = time.monotonic()
+
+    def observe(message: dict[str, Any]) -> bool:
+        if message.get("method") != "Runtime.consoleAPICalled":
+            return False
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return False
+        values = params.get("args")
+        if not isinstance(values, list):
+            return False
+        raw = next(
+            (
+                str(item.get("value") or "")
+                for item in values
+                if isinstance(item, dict)
+                and str(item.get("value") or "").startswith(prefix)
+            ),
+            "",
+        )
+        if not raw:
+            return False
+        payload: dict[str, Any] = {}
+        encoded = raw[len(prefix) :].strip()
+        if encoded:
+            try:
+                value = json.loads(encoded)
+                if isinstance(value, dict):
+                    payload = value
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {"message": encoded}
+        payload.setdefault("elapsedSeconds", max(0, int(time.monotonic() - started)))
+        if on_heartbeat:
+            on_heartbeat(payload, payload["elapsedSeconds"])
+        return True
+
+    return observe
+
+
 class CDPClient:
     """Small dependency-free Chrome DevTools Protocol WebSocket client."""
 

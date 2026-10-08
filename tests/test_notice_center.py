@@ -15,7 +15,7 @@ class NoticeCenterTests(unittest.TestCase):
 
         self.assertEqual(
             [item["id"] for item in items],
-            ["provider-co-creation-invite", "project-learning-ai-prompt", "fluxion-ai-sponsor", "wandao-ai-project-learning"],
+            ["provider-co-creation-invite", "project-learning-ai-prompt", "fluxion-ai-sponsor", "wandao-ai-project-learning", "wandao-usage-tutorial"],
         )
         self.assertTrue(items[0]["pinned"])
         self.assertEqual(items[0]["type"], "announcement")

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-30",
+  "updatedAt": "2026-10-07",
   "repository": "https://github.com/tllovesxs/wandao",
   "items": [
     {
@@ -62,6 +62,21 @@
         "Markdown"
       ],
       "path": "docs/tutorials/wandao-ai-project-learning.md"
+    },
+    {
+      "id": "wandao-usage-tutorial",
+      "type": "tutorial",
+      "title": "万能导使用教程",
+      "summary": "从平台中心、任务中心到插件中心和设置，完整走一遍万能导的导入导出流程，并附常见报错排查与实用建议。",
+      "date": "2026-10-07",
+      "badge": "使用教程",
+      "tags": [
+        "教程",
+        "入门",
+        "导入导出",
+        "排错"
+      ],
+      "path": "docs/tutorials/wandao-usage-tutorial.md"
     }
   ]
 }

@@ -17,3 +17,14 @@ test('Markdown reader reuses local image data URLs across re-renders', () => {
   assert.match(source, /cacheMarkdownImage\(value\)/);
   assert.match(source, /resolveMarkdownImage\(markdownPath, source\)/);
 });
+
+test('live Markdown reader waits for export completion before showing a document', () => {
+  assert.match(source, /LIVE_READER_IDLE_TIMEOUT_MS = 120000/);
+  assert.match(source, /LIVE_READER_HARD_TIMEOUT_MS = 1800000/);
+  assert.match(source, /pendingContent/);
+  assert.match(source, /state\.reader\.status = 'loading'/);
+  assert.match(source, /refreshLiveReader\(true,/);
+  assert.match(source, /导出中的正文、图片和附件尚未完成/);
+  assert.match(source, /导出内容长时间没有完成/);
+  assert.match(source, /state\.liveExport\.mode === 'running'/);
+});

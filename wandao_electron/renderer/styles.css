@@ -2929,6 +2929,37 @@ body.markdown-reader-mode .tool-heading {
   padding: 20px;
 }
 
+.guide-content.is-images-loading {
+  position: relative;
+  min-height: 280px;
+}
+
+.guide-content.is-images-loading > :not(.markdown-image-loading-indicator) {
+  visibility: hidden;
+}
+
+.markdown-image-loading-indicator {
+  display: flex;
+  min-height: 220px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.markdown-image-loading-indicator::before {
+  width: 22px;
+  height: 22px;
+  margin-right: 10px;
+  border: 3px solid var(--border);
+  border-top-color: var(--brand-pressed);
+  border-radius: 50%;
+  content: "";
+  animation: spin 800ms linear infinite;
+}
+
 .guide-content h2,
 .guide-content h3,
 .guide-content h4 {

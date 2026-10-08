@@ -14,6 +14,8 @@
   const TREE_COLLAPSE_SNAP_WIDTH = 120;
   const COLLAPSED_TREE_WIDTH = 0;
   const MAX_RECENT_FILES = 8;
+  const LIVE_READER_IDLE_TIMEOUT_MS = 120000;
+  const LIVE_READER_HARD_TIMEOUT_MS = 1800000;
 
   const state = {
     open: false,
@@ -43,7 +45,11 @@
       scanProgress: { scanned: 0, matched: 0, done: false },
       directory: '',
       tree: [],
-      treeTruncated: false
+      treeTruncated: false,
+      pendingPath: '',
+      pendingTitle: '',
+      pendingContent: '',
+      pendingMeta: ''
     },
     preview: {
       status: 'idle',
@@ -76,6 +82,9 @@
   let liveReaderRefreshBusy = false;
   let liveReaderTreeSignature = '';
   let liveReaderCurrentMeta = '';
+  let liveReaderStartedAt = 0;
+  let liveReaderLastProgressAt = 0;
+  let liveReaderGeneration = 0;
   const locationValidation = new Map();
   const markdownAssetCache = new Map();
   const MAX_MARKDOWN_ASSET_CACHE_ENTRIES = 48;
@@ -188,6 +197,10 @@
       directory: '',
       tree: [],
       treeTruncated: false,
+      pendingPath: '',
+      pendingTitle: '',
+      pendingContent: '',
+      pendingMeta: '',
       ...overrides
     };
   }
@@ -551,6 +564,21 @@
     const reader = state.reader;
     if (reader.screen === 'start') return renderQuickStart();
     if (reader.status === 'loading') {
+      if (reader.live) {
+        const liveStatus = state.liveExport.statusText || '正在等待输出内容…';
+        return `
+          <div class="markdown-dock-empty markdown-dock-loading markdown-reader-live-loading">
+            <span class="markdown-dock-eyebrow">Markdown 阅读器</span>
+            <h3>正在准备文档</h3>
+            <p>导出中的正文、图片和附件尚未完成，完成前不会展示不完整内容。</p>
+            <div class="markdown-reader-scan-track" role="progressbar" aria-label="正在等待导出文档完成" aria-valuetext="${escapeHtml(liveStatus)}">
+              <div class="markdown-reader-scan-fill"></div>
+            </div>
+            <span class="markdown-reader-scan-count">${escapeHtml(liveStatus)}</span>
+            <button class="btn-text" data-md-cancel-load type="button">暂不查看</button>
+          </div>
+        `;
+      }
       const scanned = Number(reader.scanProgress?.scanned || 0);
       const matched = Number(reader.scanProgress?.matched || 0);
       return `
@@ -898,6 +926,7 @@
 
   async function loadFile(path, options = {}) {
     if (!path) return;
+    if (readerStateIsLive() && state.liveExport.mode === 'running') return false;
     const isCurrent = typeof options.isCurrent === 'function' ? options.isCurrent : () => true;
     if (!isCurrent()) return false;
     if (state.reader.editing && !root.confirm('当前 Markdown 仍在编辑中，未保存内容会丢失。确认打开另一篇吗？')) return false;
@@ -993,10 +1022,10 @@
       state.reader.directory = result.root || path;
       state.reader.tree = Array.isArray(result.entries) ? result.entries : [];
       state.reader.treeTruncated = Boolean(result.truncated);
-      state.reader.status = 'ready';
+      state.reader.status = live ? 'loading' : 'ready';
       if (live) startLiveReaderWatch(state.reader.directory);
       if (remember) rememberFolder(state.reader.directory);
-      const firstFile = autoSelect && state.reader.tree.find((item) => item.kind === 'file');
+      const firstFile = autoSelect && !live && state.reader.tree.find((item) => item.kind === 'file');
       if (firstFile?.path) {
         await loadFile(firstFile.path, { isCurrent });
         return true;
@@ -1007,7 +1036,7 @@
       if (!isCurrent()) return false;
       if (live) {
         state.reader = defaultReaderState({
-          status: 'ready',
+          status: 'loading',
           screen: 'document',
           directory: path,
           live: true
@@ -1131,58 +1160,95 @@
   }
 
   function stopLiveReaderWatch() {
+    liveReaderGeneration += 1;
     if (liveReaderTimer) {
       root.clearInterval(liveReaderTimer);
       liveReaderTimer = null;
     }
-    liveReaderRefreshBusy = false;
     liveReaderTreeSignature = '';
     liveReaderCurrentMeta = '';
+    liveReaderStartedAt = 0;
+    liveReaderLastProgressAt = 0;
   }
 
   function startLiveReaderWatch(directory) {
     stopLiveReaderWatch();
     if (!directory) return;
-    refreshLiveReader();
-    liveReaderTimer = root.setInterval(refreshLiveReader, 1200);
+    liveReaderStartedAt = Date.now();
+    liveReaderLastProgressAt = liveReaderStartedAt;
+    const generation = liveReaderGeneration;
+    refreshLiveReader(false, generation);
+    liveReaderTimer = root.setInterval(() => refreshLiveReader(false, generation), 1200);
   }
 
-  async function refreshLiveReader() {
+  async function refreshLiveReader(finalize = false, generation = liveReaderGeneration) {
     if (!readerStateIsLive() || liveReaderRefreshBusy) return;
+    if (generation !== liveReaderGeneration) return;
+    if (!finalize) {
+      const now = Date.now();
+      const hardExpired = liveReaderStartedAt > 0
+        && now - liveReaderStartedAt >= LIVE_READER_HARD_TIMEOUT_MS;
+      const idleExpired = liveReaderLastProgressAt > 0
+        && now - liveReaderLastProgressAt >= LIVE_READER_IDLE_TIMEOUT_MS;
+      if (hardExpired || idleExpired) {
+        stopLiveReaderWatch();
+        state.reader.status = 'error';
+        state.reader.error = '导出内容长时间没有完成，已停止等待。为避免展示不完整文章，请到任务中心查看任务状态。';
+        render();
+        return;
+      }
+    }
     liveReaderRefreshBusy = true;
     try {
       const result = await root.electronAPI.listMarkdownTree(state.reader.directory);
       if (!result?.success) return;
+      if (generation !== liveReaderGeneration) return;
       const entries = Array.isArray(result.entries) ? result.entries : [];
       const files = entries.filter((entry) => entry?.kind === 'file' && entry.path);
       const treeSignature = entries.map((entry) => `${entry.kind}:${entry.path}:${entry.size || 0}:${entry.modifiedAt || 0}`).join('|');
       const treeChanged = treeSignature !== liveReaderTreeSignature;
-      const current = state.reader.path
-        ? files.find((entry) => entry.path === state.reader.path)
+      const currentPath = state.reader.pendingPath || state.reader.path;
+      const current = currentPath
+        ? files.find((entry) => entry.path === currentPath)
         : files[0];
       state.reader.tree = entries;
       state.reader.treeTruncated = Boolean(result.truncated);
       let contentChanged = false;
+      if (treeChanged) liveReaderLastProgressAt = Date.now();
       if (current) {
         const currentMeta = `${current.path}:${current.size || 0}:${current.modifiedAt || 0}`;
-        if (currentMeta !== liveReaderCurrentMeta || !state.reader.content) {
+        if (currentMeta !== liveReaderCurrentMeta || !state.reader.pendingContent) {
           const file = await root.electronAPI.readMarkdownFile(current.path);
+          if (generation !== liveReaderGeneration) return;
           if (file?.success) {
-            state.reader.path = file.path || current.path;
-            state.reader.title = file.title || fileName(current.path);
-            state.reader.content = String(file.content || '');
-            state.reader.status = 'ready';
-            state.reader.screen = 'document';
+            state.reader.pendingPath = file.path || current.path;
+            state.reader.pendingTitle = file.title || fileName(current.path);
+            state.reader.pendingContent = String(file.content || '');
+            state.reader.pendingMeta = currentMeta;
             liveReaderCurrentMeta = currentMeta;
+            liveReaderLastProgressAt = Date.now();
             contentChanged = true;
           }
         }
       } else if (!files.length) {
-        state.reader.status = 'ready';
-        state.reader.screen = 'document';
+        state.reader.pendingPath = '';
+        state.reader.pendingTitle = '';
+        state.reader.pendingContent = '';
+        state.reader.pendingMeta = '';
       }
       liveReaderTreeSignature = treeSignature;
-      if (treeChanged || contentChanged) render();
+      if (finalize) {
+        state.reader.path = state.reader.pendingPath || state.reader.path;
+        state.reader.title = state.reader.pendingTitle || state.reader.title;
+        state.reader.content = state.reader.pendingContent || '';
+        state.reader.status = 'ready';
+        state.reader.screen = 'document';
+        state.reader.error = '';
+      } else {
+        state.reader.status = 'loading';
+        state.reader.screen = 'document';
+      }
+      if (treeChanged || contentChanged || finalize) render();
     } catch (_) {
       // The reader remains usable while the export directory is being written.
     } finally {
@@ -1190,14 +1256,23 @@
     }
   }
 
-  function stopLiveExport() {
+  async function stopLiveExport() {
+    const shouldFinalize = readerStateIsLive();
     stopLiveReaderWatch();
     if (state.liveExport.mode === 'running') {
       state.liveExport.mode = 'completed';
       state.liveExport.statusText = '导出任务已结束';
     }
     syncLiveExportButton();
-    if (readerStateIsLive()) render();
+    if (shouldFinalize) {
+      const deadline = Date.now() + 5000;
+      while (liveReaderRefreshBusy && Date.now() < deadline) {
+        await new Promise((resolve) => root.setTimeout(resolve, 50));
+      }
+      await refreshLiveReader(true, liveReaderGeneration);
+      if (state.reader.status === 'loading') state.reader.status = 'ready';
+      render();
+    }
   }
 
   async function saveFile(host = dock) {
@@ -1397,6 +1472,7 @@
       }
       const treeFile = event.target.closest('[data-md-file-path]');
       if (treeFile) {
+        if (readerStateIsLive() && state.liveExport.mode === 'running') return;
         loadFile(treeFile.dataset.mdFilePath).catch((error) => {
           state.reader.status = 'error';
           state.reader.error = error?.message || String(error);

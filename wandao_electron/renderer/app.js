@@ -21,6 +21,7 @@ const GITHUB_REPO_URL = 'https://github.com/tllovesxs/wandao';
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/tllovesxs/wandao/main/';
 const GITHUB_BLOB_BASE = 'https://github.com/tllovesxs/wandao/blob/main/';
 const NOTICE_CENTER_MANIFEST_URL = `${GITHUB_RAW_BASE}docs/tutorial-announcements.json`;
+const NOTICE_IMAGE_WATCHDOG_MS = 120000;
 const FLUXION_REGISTER_URL = 'https://fluxionai.space/register?source=github&campaign=wandao';
 const FLUXION_EXPORT_SUCCESS_MESSAGE = '完成导出啦！送你一个 3 美元兑换码，用于 AI 辅助学习。';
 const FLUXION_REDEEM_MESSAGE = '兑换码：WANNENGDAO — 登录后在工作台「兑换」输入，即可获得 $3 API 额度。';
@@ -4313,7 +4314,10 @@ async function requestNoticeImage(imageUrl) {
     return { success: false, errorMessage: '公告图片地址不在允许的 GitHub 文档范围内' };
   }
   try {
-    const result = await window.electronAPI.fetchRemoteImage(safeUrl);
+    const loadImage = typeof window.electronAPI.cacheMarkdownImage === 'function'
+      ? window.electronAPI.cacheMarkdownImage(safeUrl)
+      : window.electronAPI.fetchRemoteImage(safeUrl);
+    const result = await loadImage;
     if (!result?.success || !result.dataUrl) {
       throw new Error(result?.error || '公告图片读取失败');
     }
@@ -4321,6 +4325,25 @@ async function requestNoticeImage(imageUrl) {
   } catch (error) {
     return { success: false, errorMessage: error?.message || String(error) };
   }
+}
+
+function setMarkdownImageLoadingState(content, loading, message = '正在加载图片…') {
+  if (!content) return;
+  content.classList.toggle('is-images-loading', Boolean(loading));
+  content.setAttribute('aria-busy', loading ? 'true' : 'false');
+  let indicator = content.querySelector('.markdown-image-loading-indicator');
+  if (!loading) {
+    indicator?.remove();
+    return;
+  }
+  if (!indicator) {
+    indicator = document.createElement('div');
+    indicator.className = 'markdown-image-loading-indicator';
+    indicator.setAttribute('role', 'status');
+    indicator.setAttribute('aria-live', 'polite');
+    content.prepend(indicator);
+  }
+  indicator.textContent = message;
 }
 
 function replaceWithNoticeImageFallback(image, imageUrl, errorMessage) {
@@ -4377,20 +4400,56 @@ async function hydrateNoticeImages(container) {
     image,
     imageUrl: image.dataset.noticeImage || ''
   }));
+  const content = container?.querySelector?.('.notice-doc-content');
+  const total = pending.length;
+  if (!total) {
+    setMarkdownImageLoadingState(content, false);
+    return;
+  }
+  let completed = 0;
+  let timedOut = false;
+  const updateProgress = () => {
+    if (timedOut) return;
+    setMarkdownImageLoadingState(content, true, `正在加载教程图片 ${completed}/${total}…`);
+  };
+  updateProgress();
   const loadNext = async () => {
-    while (pending.length) {
+    while (pending.length && !timedOut) {
       const { image, imageUrl } = pending.shift();
       const outcome = await requestNoticeImage(imageUrl);
+      if (!image.isConnected || timedOut) {
+        if (timedOut && image.isConnected) {
+          replaceWithNoticeImageFallback(image, imageUrl, '教程图片加载超时');
+        }
+        completed += 1;
+        updateProgress();
+        continue;
+      }
       if (outcome.success) {
         image.src = outcome.result.dataUrl;
         image.removeAttribute('data-notice-image');
       } else if (image.isConnected) {
         replaceWithNoticeImageFallback(image, imageUrl, outcome.errorMessage);
       }
+      completed += 1;
+      updateProgress();
     }
   };
   const workerCount = Math.min(3, pending.length);
-  await Promise.all(Array.from({ length: workerCount }, () => loadNext()));
+  const loading = Promise.all(Array.from({ length: workerCount }, () => loadNext()));
+  await Promise.race([
+    loading,
+    new Promise((resolve) => setTimeout(resolve, NOTICE_IMAGE_WATCHDOG_MS))
+  ]);
+  if (pending.length) {
+    timedOut = true;
+    pending.splice(0).forEach(({ image, imageUrl }) => {
+      if (image.isConnected) replaceWithNoticeImageFallback(image, imageUrl, '教程图片加载超时');
+      completed += 1;
+    });
+    updateProgress();
+  }
+  setMarkdownImageLoadingState(content, false);
 }
 
 function renderNoticeDocBody(selected) {
@@ -4492,8 +4551,17 @@ function renderNoticeCenterPage() {
     </section>
   `;
   bindNoticeCenterActions(contentArea);
+  const noticeDocContent = contentArea.querySelector('.notice-doc-content');
+  if (noticeDocContent?.querySelector('img[data-notice-image]')) {
+    setMarkdownImageLoadingState(noticeDocContent, true, '正在准备教程图片…');
+  }
   mountMarkdownPreviews(contentArea).then(() => {
-    hydrateNoticeImages(contentArea);
+    hydrateNoticeImages(contentArea).catch(() => {
+      setMarkdownImageLoadingState(contentArea.querySelector('.notice-doc-content'), false);
+    });
+    bindRenderedMarkdownLinks(contentArea);
+  }).catch(() => {
+    setMarkdownImageLoadingState(contentArea.querySelector('.notice-doc-content'), false);
     bindRenderedMarkdownLinks(contentArea);
   });
   if (noticeCenterState.status === 'idle') {
@@ -5293,24 +5361,67 @@ async function hydrateGuideImages(container, providerId) {
     grouped.get(imagePath).push(image);
   });
   const pending = Array.from(grouped, ([imagePath, targets]) => ({ imagePath, targets }));
+  const content = container?.matches?.('.guide-content')
+    ? container
+    : container?.querySelector?.('.guide-content');
+  const total = pending.length;
+  if (!total) {
+    setMarkdownImageLoadingState(content, false);
+    return;
+  }
+  let completed = 0;
+  let timedOut = false;
+  const updateProgress = () => {
+    if (timedOut) return;
+    setMarkdownImageLoadingState(content, true, `正在加载教程图片 ${completed}/${total}…`);
+  };
+  updateProgress();
 
   const loadNext = async () => {
-    while (pending.length) {
+    while (pending.length && !timedOut) {
       const { imagePath, targets } = pending.shift();
       const outcome = await requestGuideImage(providerId, imagePath);
+      if (timedOut) {
+        targets.forEach((image) => {
+          if (image.isConnected) replaceWithGuideImageFallback(image, providerId, imagePath, { success: false, errorMessage: '教程图片加载超时' });
+        });
+        completed += 1;
+        continue;
+      }
       if (outcome.success) {
         targets.forEach((image) => {
+          if (!image.isConnected) return;
           image.src = outcome.result.dataUrl;
           image.removeAttribute('data-guide-image');
         });
-        continue;
+      } else {
+        targets.forEach((image) => {
+          if (image.isConnected) replaceWithGuideImageFallback(image, providerId, imagePath, outcome);
+        });
       }
-      targets.forEach((image) => replaceWithGuideImageFallback(image, providerId, imagePath, outcome));
+      completed += 1;
+      updateProgress();
     }
   };
 
   const workerCount = Math.min(3, pending.length);
-  await Promise.all(Array.from({ length: workerCount }, () => loadNext()));
+  const loading = Promise.all(Array.from({ length: workerCount }, () => loadNext()));
+  await Promise.race([
+    loading,
+    new Promise((resolve) => setTimeout(resolve, NOTICE_IMAGE_WATCHDOG_MS))
+  ]);
+  if (pending.length) {
+    timedOut = true;
+    pending.splice(0).forEach(({ imagePath, targets }) => {
+      const outcome = { success: false, errorMessage: '教程图片加载超时' };
+      targets.forEach((image) => {
+        if (image.isConnected) replaceWithGuideImageFallback(image, providerId, imagePath, outcome);
+      });
+      completed += 1;
+    });
+    updateProgress();
+  }
+  setMarkdownImageLoadingState(content, false);
 }
 
 function bindCollapsibleGuideImages(container, providerId) {
@@ -5381,8 +5492,17 @@ function renderGuideProvider(provider) {
       </section>
     </div>
   `;
+  const guideContent = contentArea.querySelector('.guide-content');
+  if (guideContent?.querySelector('img[data-guide-image]')) {
+    setMarkdownImageLoadingState(guideContent, true, '正在准备教程图片…');
+  }
   mountMarkdownPreviews(contentArea).then(() => {
-    hydrateGuideImages(contentArea, provider.id);
+    hydrateGuideImages(contentArea, provider.id).catch(() => {
+      setMarkdownImageLoadingState(guideContent, false);
+    });
+    bindRenderedMarkdownLinks(contentArea);
+  }).catch(() => {
+    setMarkdownImageLoadingState(guideContent, false);
     bindRenderedMarkdownLinks(contentArea);
   });
   contentArea.querySelectorAll('[data-open-url]').forEach((button) => {

@@ -42,9 +42,12 @@ test('provider guide rendering hydrates image placeholders after inserting Markd
 
 test('notice center hydrates safe GitHub images through Tauri instead of remote img URLs', () => {
   assert.match(appSource, /async function requestNoticeImage\(imageUrl\)/);
+  assert.match(appSource, /window\.electronAPI\.cacheMarkdownImage\(safeUrl\)/);
   assert.match(appSource, /window\.electronAPI\.fetchRemoteImage\(safeUrl\)/);
   assert.match(appSource, /async function hydrateNoticeImages\(container\)/);
   assert.match(appSource, /hydrateNoticeImages\(contentArea\)/);
+  assert.match(appSource, /NOTICE_IMAGE_WATCHDOG_MS = 120000/);
+  assert.match(appSource, /markdown-image-loading-indicator/);
   assert.match(appSource, /resolveImageSource: \(imageSource\) => resolveNoticeImageSource\(imageSource, selected\)/);
   assert.match(appSource, /remoteImageAttribute: 'data-notice-image'/);
 });

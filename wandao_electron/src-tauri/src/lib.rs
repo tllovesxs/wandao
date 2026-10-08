@@ -72,6 +72,7 @@ pub fn run() {
             commands::read_file,
             commands::read_markdown_file,
             commands::read_markdown_asset,
+            commands::cache_markdown_image,
             commands::list_markdown_tree,
             commands::directory_exists,
             commands::write_markdown_file,

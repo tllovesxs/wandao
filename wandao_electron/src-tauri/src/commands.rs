@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     env, fs,
+    net::IpAddr,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -417,6 +418,76 @@ pub async fn read_markdown_asset(
         }))
     })();
     Ok(result.unwrap_or_else(|error| json!({"success": false, "error": error})))
+}
+
+#[tauri::command]
+pub async fn cache_markdown_image(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<Value, String> {
+    let parsed = match url::Url::parse(url.trim()) {
+        Ok(url) if is_allowed_markdown_image_target(&url) => url,
+        _ => {
+            return Ok(json!({
+                "success": false,
+                "error": "图片地址不安全，只允许通过 HTTPS 读取公开图片。"
+            }));
+        }
+    };
+    let cache_root = state.paths.user_data.join("markdown-image-cache");
+    let cache_key = sha256_hex(parsed.as_str());
+    let cache_file = cache_root.join(format!("{cache_key}.bin"));
+    let metadata_file = cache_root.join(format!("{cache_key}.json"));
+    let mime_from_url = mime_guess::from_path(parsed.path())
+        .first_raw()
+        .filter(|value| value.starts_with("image/"))
+        .unwrap_or("image/png")
+        .to_string();
+
+    let (bytes, mime) = if cache_file.is_file() && metadata_file.is_file() {
+        let metadata = read_json(&metadata_file).unwrap_or_else(|_| json!({}));
+        let mime = metadata
+            .get("mime")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("image/"))
+            .unwrap_or(&mime_from_url)
+            .to_string();
+        let bytes = fs::read(&cache_file).map_err(|error| error.to_string())?;
+        if bytes.len() > MAX_REMOTE_IMAGE_BYTES {
+            return Ok(json!({"success": false, "error": "缓存图片超过大小限制。"}));
+        }
+        (bytes, mime)
+    } else {
+        let bytes = fetch_limited(
+            parsed.as_str(),
+            MAX_REMOTE_IMAGE_BYTES,
+            "Wandao-Markdown-Images",
+            RedirectUrlPolicy::MarkdownImage,
+        )
+        .await?;
+        if bytes.is_empty() {
+            return Ok(json!({"success": false, "error": "图片响应为空。"}));
+        }
+        fs::create_dir_all(&cache_root).map_err(|error| error.to_string())?;
+        write_private_atomic(&cache_file, &bytes)?;
+        write_private_atomic(
+            &metadata_file,
+            serde_json::to_string_pretty(&json!({
+                "url": parsed.as_str(),
+                "mime": mime_from_url,
+                "bytes": bytes.len(),
+            }))
+            .map_err(|error| error.to_string())?
+            .as_bytes(),
+        )?;
+        (bytes, mime_from_url)
+    };
+
+    Ok(json!({
+        "success": true,
+        "cached": true,
+        "dataUrl": format!("data:{mime};base64,{}", BASE64.encode(bytes)),
+    }))
 }
 
 #[tauri::command]
@@ -1696,6 +1767,41 @@ fn is_allowed_external_url(value: &str) -> bool {
     url::Url::parse(value).is_ok_and(|url| url.scheme() == "https")
 }
 
+fn is_allowed_markdown_image_target(url: &url::Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "localhost.localdomain"
+    ) {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+            return false;
+        }
+        match ip {
+            IpAddr::V4(value)
+                if value.is_private()
+                    || value.is_broadcast()
+                    || value.is_documentation()
+                    || value.is_link_local() =>
+            {
+                return false;
+            }
+            IpAddr::V6(value) if value.is_unique_local() || value.is_unicast_link_local() => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
 fn is_allowed_remote_text_url(value: &str) -> bool {
     url::Url::parse(value).is_ok_and(|url| is_allowed_remote_text_target(&url))
 }
@@ -1731,6 +1837,7 @@ fn is_allowed_remote_image_target(url: &url::Url) -> bool {
 #[derive(Clone, Copy)]
 enum RedirectUrlPolicy {
     SecureTransport { allow_local_http: bool },
+    MarkdownImage,
     RemoteText,
     RemoteDocsImage,
     RemoteGuideImage,
@@ -1745,6 +1852,7 @@ impl RedirectUrlPolicy {
                         && url.scheme() == "http"
                         && matches!(url.host_str(), Some("127.0.0.1" | "localhost")))
             }
+            Self::MarkdownImage => is_allowed_markdown_image_target(url),
             Self::RemoteText => is_allowed_remote_text_target(url),
             Self::RemoteDocsImage => is_allowed_remote_image_target(url),
             Self::RemoteGuideImage => is_allowed_remote_guide_image_url("feishu-import", url),

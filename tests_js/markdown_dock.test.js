@@ -14,4 +14,6 @@ test('Markdown reader reuses local image data URLs across re-renders', () => {
   assert.match(source, /cacheMarkdownAsset\(markdownPath, assetPath, result\.dataUrl\)/);
   assert.match(source, /MAX_MARKDOWN_ASSET_CACHE_ENTRIES = 48/);
   assert.match(source, /clearMarkdownAssetCache\(reader\.path\)/);
+  assert.match(source, /cacheMarkdownImage\(value\)/);
+  assert.match(source, /resolveMarkdownImage\(markdownPath, source\)/);
 });

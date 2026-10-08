@@ -265,6 +265,26 @@
       .forEach((key) => markdownAssetCache.delete(key));
   }
 
+  async function resolveMarkdownImage(markdownPath, source) {
+    const value = String(source || '').trim();
+    if (/^data:image\//i.test(value)) return value;
+    if (/^https?:\/\//i.test(value)) {
+      if (typeof root.electronAPI.cacheMarkdownImage !== 'function') {
+        throw new Error('当前版本不支持持久化远程图片');
+      }
+      const result = await root.electronAPI.cacheMarkdownImage(value);
+      if (!result?.success || !result.dataUrl) throw new Error(result?.error || '远程图片缓存失败');
+      return result.dataUrl;
+    }
+    const assetPath = decodeURIComponent(value);
+    const cached = readCachedMarkdownAsset(markdownPath, assetPath);
+    if (cached) return cached;
+    const result = await root.electronAPI.readMarkdownAsset(markdownPath, assetPath);
+    if (!result?.success || !result.dataUrl) throw new Error(result?.error || '图片读取失败');
+    cacheMarkdownAsset(markdownPath, assetPath, result.dataUrl);
+    return result.dataUrl;
+  }
+
   function renderDocument(source, options = {}) {
     if (!root.WandaoVditor?.placeholder) {
       throw new Error('Vditor 渲染器尚未加载。');
@@ -687,7 +707,6 @@
         image.dataset.wandaoMarkdownSource || image.getAttribute('src') || ''
       ).trim();
       if (!currentSource
-        || /^https?:\/\//i.test(currentSource)
         || /^data:/i.test(currentSource)
         || image.dataset.wandaoImageLoading === 'true'
         || image.dataset.wandaoImageLoaded === 'true') return;
@@ -696,16 +715,7 @@
       image.dataset.wandaoImageLoading = 'true';
       delete image.dataset.wandaoImageError;
       try {
-        const assetPath = decodeURIComponent(currentSource);
-        const cached = readCachedMarkdownAsset(markdownPath, assetPath);
-        if (cached) {
-          image.src = cached;
-        } else {
-          const result = await root.electronAPI.readMarkdownAsset(markdownPath, assetPath);
-          if (!result?.success || !result.dataUrl) throw new Error(result?.error || '图片读取失败');
-          cacheMarkdownAsset(markdownPath, assetPath, result.dataUrl);
-          image.src = result.dataUrl;
-        }
+        image.src = await resolveMarkdownImage(markdownPath, currentSource);
         image.dataset.wandaoImageLoaded = 'true';
         delete image.dataset.wandaoImageError;
       } catch (error) {
@@ -861,21 +871,12 @@
         image.removeAttribute('data-md-image-src');
         return;
       }
-      if (!source || /^https?:\/\//i.test(source) || /^data:/i.test(source)) {
-        replaceImageFallback(image, source ? '远程图片暂未加载' : '图片没有路径');
+      if (!source) {
+        replaceImageFallback(image, '图片没有路径');
         return;
       }
       try {
-        const assetPath = decodeURIComponent(source);
-        const cached = readCachedMarkdownAsset(markdownPath, assetPath);
-        if (cached) {
-          image.src = cached;
-        } else {
-          const result = await root.electronAPI.readMarkdownAsset(markdownPath, assetPath);
-          if (!result?.success || !result.dataUrl) throw new Error(result?.error || '图片读取失败');
-          cacheMarkdownAsset(markdownPath, assetPath, result.dataUrl);
-          image.src = result.dataUrl;
-        }
+        image.src = await resolveMarkdownImage(markdownPath, source);
         image.removeAttribute('data-md-image-src');
       } catch (error) {
         replaceImageFallback(image, error?.message || '图片读取失败');

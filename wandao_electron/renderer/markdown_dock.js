@@ -530,12 +530,14 @@
     } catch (error) {
       return `<div class="markdown-dock-empty"><h3>Markdown 渲染失败</h3><p>${escapeHtml(error?.message || String(error))}</p></div>`;
     }
+    const hasPendingImages = /data-md-image-src=/.test(rendered.html || '');
     return `
       <button class="markdown-reader-edit-toggle" data-md-edit-file type="button" aria-label="编辑本文" title="编辑本文">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16.5-.7 3.7 3.7-.7L18.8 7.7a2.1 2.1 0 0 0-3-3L4 16.5Z"/><path d="m14.5 6.5 3 3"/></svg>
       </button>
       <div class="markdown-reader-scroll" data-md-reader-scroll>
-        <article class="guide-content markdown-reader-content" data-md-reader-content>
+        <article class="guide-content markdown-reader-content${hasPendingImages ? ' is-images-loading' : ''}" data-md-reader-content>
+          ${hasPendingImages ? '<div class="markdown-image-loading-indicator" role="status" aria-live="polite">正在加载文档图片…</div>' : ''}
           ${rendered.html || '<p class="markdown-reader-no-content">这个文档没有可显示的内容。</p>'}
         </article>
       </div>
@@ -639,6 +641,7 @@
       } catch (error) {
         return `<div class="markdown-dock-empty"><span class="markdown-dock-eyebrow">实时预览</span><h3>预览渲染失败</h3><p>${escapeHtml(error?.message || String(error))}</p></div>`;
       }
+      const hasPendingImages = /data-md-image-src=/.test(rendered.html || '');
       return `
         <div class="markdown-reader-panel">
           <div class="markdown-reader-toolbar">
@@ -646,7 +649,10 @@
             <span class="markdown-preview-status">${preview.fileCount ? `已发现 ${preview.fileCount} 个文件` : '正在读取输出目录'}</span>
           </div>
           <div class="markdown-reader-scroll" data-md-preview-scroll>
-            <article class="guide-content markdown-reader-content">${rendered.html}</article>
+            <article class="guide-content markdown-reader-content${hasPendingImages ? ' is-images-loading' : ''}">
+              ${hasPendingImages ? '<div class="markdown-image-loading-indicator" role="status" aria-live="polite">正在加载文档图片…</div>' : ''}
+              ${rendered.html}
+            </article>
           </div>
         </div>
       `;
@@ -910,6 +916,12 @@
         replaceImageFallback(image, error?.message || '图片读取失败');
       }
     }));
+    const content = container.querySelector('.markdown-reader-content.is-images-loading');
+    if (content) {
+      content.classList.remove('is-images-loading');
+      content.setAttribute('aria-busy', 'false');
+      content.querySelector('.markdown-image-loading-indicator')?.remove();
+    }
   }
 
   async function hydrateReaderImages(container = dock) {

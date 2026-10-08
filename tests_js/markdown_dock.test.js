@@ -16,6 +16,8 @@ test('Markdown reader reuses local image data URLs across re-renders', () => {
   assert.match(source, /clearMarkdownAssetCache\(reader\.path\)/);
   assert.match(source, /cacheMarkdownImage\(value\)/);
   assert.match(source, /resolveMarkdownImage\(markdownPath, source\)/);
+  assert.match(source, /is-images-loading/);
+  assert.match(source, /正在加载文档图片/);
 });
 
 test('live Markdown reader waits for export completion before showing a document', () => {

@@ -30,6 +30,7 @@ from export_zsxq import (
     clear_rate_limit_streak,
     should_refresh_newest_group_topics,
     should_scan_newest_before_group_resume,
+    should_extend_exhausted_group_history,
     should_upgrade_completed_preview,
     pause_for_rate_limit,
     scan_exported_topic_ids,
@@ -328,6 +329,13 @@ class ZsxqGroupExportTests(unittest.TestCase):
                 resumed_from_task_id="prior-job",
             )
         )
+
+    def test_larger_requested_limit_reopens_an_exhausted_short_history(self) -> None:
+        cursor = {"exhausted": True, "fetched_count": 108}
+        self.assertTrue(should_extend_exhausted_group_history(cursor, 300))
+        self.assertTrue(should_extend_exhausted_group_history(cursor, 500))
+        self.assertFalse(should_extend_exhausted_group_history(cursor, 108))
+        self.assertFalse(should_extend_exhausted_group_history({"exhausted": False, "fetched_count": 108}, 300))
 
     def test_group_directory_pagination_has_extra_safe_delay_defaults(self) -> None:
         args = parse_args(["--entry-url", "https://wx.zsxq.com/group/123456789", "--output", "out"])

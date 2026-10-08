@@ -227,6 +227,25 @@ def should_scan_newest_before_group_resume(
     ) and restored_pending_items <= 0
 
 
+def should_extend_exhausted_group_history(cursor: dict[str, Any], requested_limit: int) -> bool:
+    """Continue an exhausted cursor when the new run explicitly asks for more history.
+
+    A previous run can legitimately finish a short API history page and mark
+    the cursor exhausted.  That marker must not prevent a later run with a
+    larger requested limit from checking whether older pages have become
+    available or were missed by a transient API boundary.
+    """
+
+    if not isinstance(cursor, dict) or not bool(cursor.get("exhausted")):
+        return False
+    try:
+        fetched = max(0, int(cursor.get("fetched_count") or 0))
+        limit = max(0, int(requested_limit or 0))
+    except (TypeError, ValueError):
+        return False
+    return limit > fetched
+
+
 def connect_browser(args: argparse.Namespace, entry_url: str) -> tuple[CDPClient, subprocess.Popen[Any] | None]:
     chrome_proc: subprocess.Popen[Any] | None = None
     page = page_for_zsxq(args.port) if chrome_debug_available(args.port) else None
@@ -4474,6 +4493,18 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 group_history_page_total = int(cursor.get("page") or 0)
                 group_history_fetched_total = int(cursor.get("fetched_count") or 0)
                 group_exhausted = bool(cursor.get("exhausted"))
+                if should_extend_exhausted_group_history(cursor, args.limit):
+                    group_exhausted = False
+                    emit(
+                        args,
+                        "checkpoint 已读取的历史内容少于本次目标数量，继续检查更早历史页面。",
+                        event="task.resumed",
+                        level="info",
+                        stats={
+                            "checkpointFetched": group_history_fetched_total,
+                            "requestedLimit": args.limit,
+                        },
+                    )
                 group_previous_latest_create_time = str(cursor.get("latest_create_time") or "")
                 group_previous_latest_topic_id = str(cursor.get("latest_topic_id") or "")
                 group_cursor_task_id = cursor_task_id

@@ -15,7 +15,7 @@ test('Tauri exposes and registers the restricted provider guide image command', 
   assert.match(commandsSource, /MAX_REMOTE_IMAGE_BYTES/);
   assert.match(commandsSource, /RedirectUrlPolicy::RemoteDocsImage/);
   assert.match(commandsSource, /is_allowed_remote_image_target/);
-  assert.match(commandsSource, /fetch_remote_guide_image\(&provider_id, remote_url, &spec\)\.await/);
+  assert.match(commandsSource, /cached_remote_guide_image\(&state, &provider_id, remote_url, &spec\)\.await/);
   assert.match(commandsSource, /RedirectUrlPolicy::RemoteGuideImage/);
   assert.match(commandsSource, /CONTENT_TYPE/);
   assert.match(commandsSource, /starts_with\(b"\\x89PNG\\r\\n\\x1a\\n"\)/);

@@ -970,7 +970,7 @@ pub async fn read_provider_guide_image(
             if let Some(remote_url) = remote_url {
                 match remote_guide_asset_spec(&root, relative_path.trim()) {
                     Ok(Some(spec)) => {
-                        fetch_remote_guide_image(&provider_id, remote_url, &spec).await
+                        cached_remote_guide_image(&state, &provider_id, remote_url, &spec).await
                     }
                     Ok(None) => Err("教程远程图片缺少完整性声明".to_string()),
                     Err(error) => Err(error),
@@ -2007,6 +2007,38 @@ async fn fetch_remote_guide_image(
         spec.mime,
         BASE64.encode(output)
     ))
+}
+
+async fn cached_remote_guide_image(
+    state: &AppState,
+    provider_id: &str,
+    url: url::Url,
+    spec: &GuideAssetSpec,
+) -> Result<String, String> {
+    let cache_root = state.paths.user_data.join("guide-image-cache");
+    let cache_file = cache_root.join(format!("{}.bin", spec.sha256));
+    if cache_file.is_file() {
+        if let Ok(bytes) = fs::read(&cache_file) {
+            if bytes.len() == spec.bytes && sha256_hex(&bytes) == spec.sha256 {
+                return Ok(format!(
+                    "data:{};base64,{}",
+                    spec.mime,
+                    BASE64.encode(bytes)
+                ));
+            }
+        }
+    }
+    let data_url = fetch_remote_guide_image(provider_id, url, spec).await?;
+    let encoded = data_url
+        .split_once(",")
+        .map(|(_, value)| value)
+        .ok_or_else(|| "教程图片缓存数据格式无效".to_string())?;
+    let bytes = BASE64
+        .decode(encoded)
+        .map_err(|error| format!("教程图片缓存数据无效：{error}"))?;
+    fs::create_dir_all(&cache_root).map_err(|error| error.to_string())?;
+    write_private_atomic(&cache_file, &bytes)?;
+    Ok(data_url)
 }
 
 async fn current_registry(

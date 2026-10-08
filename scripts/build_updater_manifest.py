@@ -43,7 +43,7 @@ def build_manifest(directory: Path, tag: str) -> dict[str, object]:
     windows_payload = target_payload(windows, tag)
     return {
         "version": tag.removeprefix("v").removeprefix("V"),
-        "notes": "包含知识星球增量恢复修复、目录读取看门狗续期、飞书导入配置预检和长文导出稳定性优化。",
+        "notes": "包含飞书导入配置预检、Markdown 空目录提示、Vditor 阅读编辑体验和长文导出稳定性优化。",
         "pub_date": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "platforms": {
             "windows-x86_64": windows_payload,

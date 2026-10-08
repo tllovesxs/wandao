@@ -77,6 +77,8 @@
   let liveReaderTreeSignature = '';
   let liveReaderCurrentMeta = '';
   const locationValidation = new Map();
+  const markdownAssetCache = new Map();
+  const MAX_MARKDOWN_ASSET_CACHE_ENTRIES = 48;
   const readerTreeViewState = {
     scrollTop: 0,
     scrollLeft: 0,
@@ -232,6 +234,35 @@
     const normalizedDirectory = String(directory || '').replace(/\\/g, '/').replace(/\/+$/, '').toLocaleLowerCase();
     return Boolean(normalizedPath && normalizedDirectory
       && (normalizedPath === normalizedDirectory || normalizedPath.startsWith(`${normalizedDirectory}/`)));
+  }
+
+  function markdownAssetCacheKey(markdownPath, assetPath) {
+    return `${String(markdownPath || '')}\u0000${String(assetPath || '')}`;
+  }
+
+  function readCachedMarkdownAsset(markdownPath, assetPath) {
+    const key = markdownAssetCacheKey(markdownPath, assetPath);
+    const cached = markdownAssetCache.get(key);
+    if (!cached) return '';
+    markdownAssetCache.delete(key);
+    markdownAssetCache.set(key, cached);
+    return cached;
+  }
+
+  function cacheMarkdownAsset(markdownPath, assetPath, dataUrl) {
+    const key = markdownAssetCacheKey(markdownPath, assetPath);
+    markdownAssetCache.delete(key);
+    markdownAssetCache.set(key, dataUrl);
+    while (markdownAssetCache.size > MAX_MARKDOWN_ASSET_CACHE_ENTRIES) {
+      markdownAssetCache.delete(markdownAssetCache.keys().next().value);
+    }
+  }
+
+  function clearMarkdownAssetCache(markdownPath) {
+    const prefix = `${String(markdownPath || '')}\u0000`;
+    Array.from(markdownAssetCache.keys())
+      .filter((key) => key.startsWith(prefix))
+      .forEach((key) => markdownAssetCache.delete(key));
   }
 
   function renderDocument(source, options = {}) {
@@ -665,12 +696,16 @@
       image.dataset.wandaoImageLoading = 'true';
       delete image.dataset.wandaoImageError;
       try {
-        const result = await root.electronAPI.readMarkdownAsset(
-          markdownPath,
-          decodeURIComponent(currentSource)
-        );
-        if (!result?.success || !result.dataUrl) throw new Error(result?.error || '图片读取失败');
-        image.src = result.dataUrl;
+        const assetPath = decodeURIComponent(currentSource);
+        const cached = readCachedMarkdownAsset(markdownPath, assetPath);
+        if (cached) {
+          image.src = cached;
+        } else {
+          const result = await root.electronAPI.readMarkdownAsset(markdownPath, assetPath);
+          if (!result?.success || !result.dataUrl) throw new Error(result?.error || '图片读取失败');
+          cacheMarkdownAsset(markdownPath, assetPath, result.dataUrl);
+          image.src = result.dataUrl;
+        }
         image.dataset.wandaoImageLoaded = 'true';
         delete image.dataset.wandaoImageError;
       } catch (error) {
@@ -831,9 +866,16 @@
         return;
       }
       try {
-        const result = await root.electronAPI.readMarkdownAsset(markdownPath, decodeURIComponent(source));
-        if (!result?.success || !result.dataUrl) throw new Error(result?.error || '图片读取失败');
-        image.src = result.dataUrl;
+        const assetPath = decodeURIComponent(source);
+        const cached = readCachedMarkdownAsset(markdownPath, assetPath);
+        if (cached) {
+          image.src = cached;
+        } else {
+          const result = await root.electronAPI.readMarkdownAsset(markdownPath, assetPath);
+          if (!result?.success || !result.dataUrl) throw new Error(result?.error || '图片读取失败');
+          cacheMarkdownAsset(markdownPath, assetPath, result.dataUrl);
+          image.src = result.dataUrl;
+        }
         image.removeAttribute('data-md-image-src');
       } catch (error) {
         replaceImageFallback(image, error?.message || '图片读取失败');
@@ -1176,6 +1218,7 @@
     try {
       const result = await root.electronAPI.writeMarkdownFile(reader.path, content);
       if (!result?.success) throw new Error(result?.error || 'Markdown 文件保存失败');
+      clearMarkdownAssetCache(reader.path);
       state.reader.content = content;
       state.reader.editing = false;
       state.reader.saveStatus = 'idle';

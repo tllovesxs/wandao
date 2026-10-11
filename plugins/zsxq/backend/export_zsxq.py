@@ -55,7 +55,6 @@ from wandao_core.browser import (
     ExportStopped,
     check_stopped,
     chrome_debug_available,
-    console_heartbeat_watchdog,
     default_data_dir,
     default_state_path,
     emit,
@@ -68,6 +67,27 @@ from wandao_core.browser import (
     stop_requested,
     wait_for_debug_port,
 )
+
+try:
+    from wandao_core.browser import console_heartbeat_watchdog
+except ImportError:
+    # Plugins can be updated before the desktop core. Keep the long-running
+    # export usable on older installations and let the core's fixed timeout
+    # handle the evaluation when heartbeat support is unavailable.
+    _CDP_WATCHDOG_SUPPORTED = False
+
+    def console_heartbeat_watchdog(
+        prefix: str,
+        on_heartbeat: Callable[[dict[str, Any], int], None] | None = None,
+    ) -> Callable[[dict[str, Any]], bool]:
+        del prefix, on_heartbeat
+
+        def observe(_message: dict[str, Any]) -> bool:
+            return False
+
+        return observe
+else:
+    _CDP_WATCHDOG_SUPPORTED = True
 from wandao_core.report import finalize_report
 from wandao_core.checkpoint import CheckpointLeaseLostError, WandaoCheckpoint
 from wandao_core.output_layout import add_output_layout_args, resolve_output_directory
@@ -389,6 +409,26 @@ def zsxq_toc_watchdog(args: argparse.Namespace | None = None) -> Callable[[dict[
         )
 
     return console_heartbeat_watchdog(ZSXQ_TOC_WATCHDOG_PREFIX, report)
+
+
+def evaluate_with_watchdog(
+    cdp: CDPClient,
+    expression: str,
+    *,
+    timeout: int,
+    max_timeout: int,
+    watchdog: Callable[[dict[str, Any]], bool],
+) -> Any:
+    """Use heartbeat support when available, while retaining old-core compatibility."""
+
+    if _CDP_WATCHDOG_SUPPORTED:
+        return cdp.evaluate(
+            expression,
+            timeout=timeout,
+            max_timeout=max_timeout,
+            watchdog=watchdog,
+        )
+    return cdp.evaluate(expression, timeout=max_timeout)
 
 
 def wait_with_stop(args: argparse.Namespace | None, seconds: float) -> None:
@@ -2299,7 +2339,8 @@ def collect_toc(
         timeout=35,
         args=args,
     )
-    toc = cdp.evaluate(
+    toc = evaluate_with_watchdog(
+        cdp,
         f"({ZSXQ_TOC_JS})()",
         timeout=ZSXQ_TOC_WATCHDOG_IDLE_SECONDS,
         max_timeout=ZSXQ_TOC_WATCHDOG_MAX_SECONDS,

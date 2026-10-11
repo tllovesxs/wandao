@@ -344,7 +344,9 @@ def clean_title(raw: str) -> str:
     return title or raw.strip() or "未命名"
 
 
-def title_from_markdown(path: Path, text: str) -> str:
+def title_from_markdown(path: Path, text: str, *, use_filename_as_title: bool = False) -> str:
+    if use_filename_as_title:
+        return sanitize_filename(path.stem, fallback="未命名")
     for line in text.splitlines():
         match = re.match(r"^#\s+(.+?)\s*$", line)
         if match:
@@ -560,7 +562,11 @@ def scan_local_resources(markdown: str, md_path: Path, source_root: Path | None 
     return resources, warnings
 
 
-def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
+def scan_markdown_docs(
+    source_dir: Path,
+    *,
+    use_filename_as_title: bool = False,
+) -> list[dict[str, Any]]:
     try:
         source_dir = resolve_source_root(source_dir)
     except ValueError as exc:
@@ -580,7 +586,7 @@ def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
             {
                 "path": str(path),
                 "relativePath": relative,
-                "title": title_from_markdown(path, body),
+                "title": title_from_markdown(path, body, use_filename_as_title=use_filename_as_title),
                 "slug": slug_for_relative_path(relative),
                 "body": body,
                 "level": max(0, len(rel_parts) - 1),
@@ -1004,7 +1010,10 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
     report_path = source_dir / "00-语雀导入报告.json"
     plan_report_path = source_dir / "00-语雀导入计划.json"
     cookies = load_auth_cookies_or_fail(args, host)
-    docs = scan_markdown_docs(source_dir)
+    docs = scan_markdown_docs(
+        source_dir,
+        use_filename_as_title=bool(getattr(args, "use_filename_as_title", False)),
+    )
     remote_image_policy = str(getattr(args, "remote_image_policy", "link") or "link").strip().lower()
     if remote_image_policy not in REMOTE_IMAGE_POLICIES:
         raise ExportError(f"未知远程图片处理策略：{remote_image_policy}")
@@ -1559,6 +1568,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--api-import-one", action="store_true", help="Import one Markdown file")
     parser.add_argument("--api-import-all", action="store_true", help="Import all Markdown files")
     parser.add_argument("--doc-path", help="Markdown file used by --api-import-one")
+    parser.add_argument(
+        "--use-filename-as-title",
+        action="store_true",
+        help="Use each Markdown filename without .md as the Yuque document title",
+    )
     parser.add_argument("--max-import", type=int, default=0, help="Limit import count")
     parser.add_argument("--yes", action="store_true", help="Confirm write operations")
     parser.add_argument("--update-existing", action="store_true", default=True, help="Update documents with the same generated slug")

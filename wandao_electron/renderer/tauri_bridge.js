@@ -21,6 +21,7 @@
     'read_file',
     'read_markdown_file',
     'read_markdown_asset',
+    'cache_markdown_image',
     'list_markdown_tree',
     'directory_exists',
     'write_markdown_file',
@@ -168,6 +169,7 @@
         markdownPath,
         assetPath
       }),
+      cacheMarkdownImage: (url) => invokeCommand('cache_markdown_image', { url }),
       listMarkdownTree: (directoryPath) => invokeCommand('list_markdown_tree', { directoryPath }),
       directoryExists: (directoryPath) => invokeCommand('directory_exists', { directoryPath }),
       writeMarkdownFile: (filePath, content) => invokeCommand('write_markdown_file', { filePath, content }),

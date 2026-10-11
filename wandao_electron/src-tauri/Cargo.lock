@@ -5186,7 +5186,7 @@ dependencies = [
 
 [[package]]
 name = "wandao"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "aes",
  "aes-gcm",

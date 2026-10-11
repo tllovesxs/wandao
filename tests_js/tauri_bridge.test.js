@@ -43,11 +43,11 @@ test('Tauri bridge exposes all Electron-compatible commands', () => {
     }
   });
   try {
-    assert.equal(loaded.bridge.COMMAND_NAMES.length, 39);
+    assert.equal(loaded.bridge.COMMAND_NAMES.length, 40);
     for (const command of loaded.bridge.COMMAND_NAMES) {
       assert.match(command, /^[a-z][a-z0-9_]*$/);
     }
-    assert.equal(Object.keys(loaded.window.electronAPI).length, 46);
+    assert.equal(Object.keys(loaded.window.electronAPI).length, 47);
   } finally {
     loaded.restore();
   }

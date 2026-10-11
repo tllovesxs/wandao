@@ -50,7 +50,6 @@ from typing import Any, Callable
 
 from wandao_core.browser import (
     CDPClient,
-    console_heartbeat_watchdog,
     DEFAULT_PORT,
     ExportError,
     ExportStopped,
@@ -69,6 +68,26 @@ from wandao_core.browser import (
     throttle_request,
     wait_for_debug_port,
 )
+
+try:
+    from wandao_core.browser import console_heartbeat_watchdog
+except ImportError:
+    # Plugins can be updated before the desktop core. Keep long-running
+    # exports usable on older installations without heartbeat support.
+    _CDP_WATCHDOG_SUPPORTED = False
+
+    def console_heartbeat_watchdog(
+        prefix: str,
+        on_heartbeat: Callable[[dict[str, Any], int], None] | None = None,
+    ) -> Callable[[dict[str, Any]], bool]:
+        del prefix, on_heartbeat
+
+        def observe(_message: dict[str, Any]) -> bool:
+            return False
+
+        return observe
+else:
+    _CDP_WATCHDOG_SUPPORTED = True
 from wandao_core.checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_core.output_layout import add_output_layout_args, resolve_output_directory
 from wandao_cli import extend_arg_list_from_file
@@ -1433,7 +1452,8 @@ def load_wiki_tree(
     throttle_request(args)
     wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=wiki_url)
     try:
-        value = cdp.evaluate(
+        value = evaluate_with_watchdog(
+            cdp,
             f"({FEISHU_TREE_LOADER_JS})({js_string(start_token)})",
             timeout=FEISHU_TREE_WATCHDOG_IDLE_SECONDS,
             max_timeout=FEISHU_TREE_WATCHDOG_MAX_SECONDS,
@@ -1460,7 +1480,8 @@ def load_drive_folder_tree(
     throttle_request(args)
     wait_for_wiki_ready(cdp, timeout=35, args=args, expected_url=folder_url)
     try:
-        value = cdp.evaluate(
+        value = evaluate_with_watchdog(
+            cdp,
             f"({FEISHU_DRIVE_FOLDER_LOADER_JS})({js_string(start_token)})",
             timeout=FEISHU_TREE_WATCHDOG_IDLE_SECONDS,
             max_timeout=FEISHU_TREE_WATCHDOG_MAX_SECONDS,
@@ -2661,6 +2682,26 @@ def feishu_tree_watchdog(
     return console_heartbeat_watchdog(FEISHU_TREE_WATCHDOG_PREFIX, report)
 
 
+def evaluate_with_watchdog(
+    cdp: CDPClient,
+    expression: str,
+    *,
+    timeout: int,
+    max_timeout: int,
+    watchdog: Callable[[dict[str, Any]], bool],
+) -> Any:
+    """Use heartbeat support when available, while retaining old-core compatibility."""
+
+    if _CDP_WATCHDOG_SUPPORTED:
+        return cdp.evaluate(
+            expression,
+            timeout=timeout,
+            max_timeout=max_timeout,
+            watchdog=watchdog,
+        )
+    return cdp.evaluate(expression, timeout=max_timeout)
+
+
 def extract_doc_markdown_current(
     cdp: CDPClient,
     node: dict[str, Any],
@@ -2706,7 +2747,8 @@ def extract_doc_markdown_current(
             value = evaluate_markdown_file(True)
     else:
         wait_for_doc_ready(cdp, timeout=35, args=args, node=node)
-        value = cdp.evaluate(
+        value = evaluate_with_watchdog(
+            cdp,
             f"({FEISHU_CONVERTER_JS})({js_string(node.get('title') or '未命名')})",
             timeout=FEISHU_DOCUMENT_WATCHDOG_IDLE_SECONDS,
             max_timeout=FEISHU_DOCUMENT_WATCHDOG_MAX_SECONDS,

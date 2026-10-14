@@ -50,6 +50,7 @@ from typing import Any, Callable
 
 from wandao_core.browser import (
     CDPClient,
+    CDPConnectionError,
     DEFAULT_PORT,
     ExportError,
     ExportStopped,
@@ -63,9 +64,11 @@ from wandao_core.browser import (
     js_string,
     pad,
     prepare_cookie_for_set,
+    register_browser_launch,
     sanitize_filename,
     stop_requested,
     throttle_request,
+    terminate_registered_browser,
     wait_for_debug_port,
 )
 
@@ -191,18 +194,24 @@ def start_chrome(port: int, profile_dir: Path, url: str, browser_path: str | Non
             "or set WANDAO_BROWSER to the browser executable path."
         )
     profile_dir.mkdir(parents=True, exist_ok=True)
-    return subprocess.Popen(
+    creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    proc = subprocess.Popen(
         [
             chrome,
             f"--remote-debugging-port={port}",
             f"--user-data-dir={profile_dir}",
+            "--enable-automation",
             "--no-first-run",
             "--disable-popup-blocking",
             url,
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        creationflags=creation_flags,
+        start_new_session=os.name != "nt",
     )
+    register_browser_launch(port, exe=chrome, profile_dir=profile_dir, proc=proc, url=url)
+    return proc
 
 
 def open_tab(port: int, url: str) -> None:
@@ -1204,7 +1213,12 @@ FEISHU_TREE_LOADER_JS = r"""
 async (startToken) => {
   const watchdogPrefix = "__WANDAO_FEISHU_TREE_WATCHDOG__";
   const heartbeat = (phase, nodes = 0) => {
-    try { console.info(watchdogPrefix + JSON.stringify({phase, nodes})); } catch (err) {}
+    try {
+      const message = watchdogPrefix + JSON.stringify({phase, nodes});
+      const binding = globalThis && globalThis.__wandaoHeartbeat;
+      if (typeof binding === "function") { binding(message); return; }
+      console.info(message);
+    } catch (err) {}
   };
   const heartbeatTimer = setInterval(() => heartbeat("等待目录接口"), 5000);
   heartbeat("开始读取目录");
@@ -1324,7 +1338,12 @@ FEISHU_DRIVE_FOLDER_LOADER_JS = r"""
 async (startToken) => {
   const watchdogPrefix = "__WANDAO_FEISHU_TREE_WATCHDOG__";
   const heartbeat = (phase, nodes = 0) => {
-    try { console.info(watchdogPrefix + JSON.stringify({phase, nodes})); } catch (err) {}
+    try {
+      const message = watchdogPrefix + JSON.stringify({phase, nodes});
+      const binding = globalThis && globalThis.__wandaoHeartbeat;
+      if (typeof binding === "function") { binding(message); return; }
+      console.info(message);
+    } catch (err) {}
   };
   const heartbeatTimer = setInterval(() => heartbeat("等待云空间接口"), 5000);
   heartbeat("开始读取云空间目录");
@@ -1611,13 +1630,16 @@ async (fallbackTitle) => {
   const ZERO = /[\u200b\u200c\u200d\ufeff]/g;
   const watchdogPulse = (phase, payload = {}) => {
     try {
-      const consoleApi = globalThis && globalThis.console;
-      if (!consoleApi || typeof consoleApi.debug !== "function") return;
-      consoleApi.debug("__WANDAO_FEISHU_WATCHDOG__" + JSON.stringify({
+      const message = "__WANDAO_FEISHU_WATCHDOG__" + JSON.stringify({
         phase,
         ...payload,
         timestamp: Date.now(),
-      }));
+      });
+      const binding = globalThis && globalThis.__wandaoHeartbeat;
+      if (typeof binding === "function") { binding(message); return; }
+      const consoleApi = globalThis && globalThis.console;
+      if (!consoleApi || typeof consoleApi.debug !== "function") return;
+      consoleApi.debug(message);
     } catch (_) {}
   };
   function clean(value) {
@@ -3153,7 +3175,7 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
         finally:
             cdp.close()
             if chrome_proc and args.close_started_chrome:
-                chrome_proc.terminate()
+                terminate_registered_browser(args.port)
 
     if kind != "wiki":
         cdp, chrome_proc = connect_entry_browser(args, entry_url, host)
@@ -3186,7 +3208,7 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
         finally:
             cdp.close()
             if chrome_proc and args.close_started_chrome:
-                chrome_proc.terminate()
+                terminate_registered_browser(args.port)
 
     wiki_url = entry_url
     cdp, chrome_proc = connect_wiki_browser(args, wiki_url, host, start_token)
@@ -3209,7 +3231,7 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         cdp.close()
         if chrome_proc and args.close_started_chrome:
-            chrome_proc.terminate()
+            terminate_registered_browser(args.port)
 
 
 def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
@@ -3323,6 +3345,8 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
         failures: list[dict[str, str]] = []
         image_failures: list[dict[str, Any]] = []
         stopped = False
+        connection_aborted = False
+        abort_reason = ""
 
         emit(
             args,
@@ -3477,6 +3501,32 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                 stopped = True
                 emit(args, "收到停止请求，当前文档未写入，正在结束。")
                 break
+            except CDPConnectionError as exc:
+                connection_aborted = True
+                abort_reason = f"浏览器连接中断，已中止后续文档：{exc}"
+                if checkpoint:
+                    checkpoint.fail_item(item_key, abort_reason)
+                failures.append({
+                    "title": doc.get("title") or "",
+                    "documentUrl": document_url,
+                    "wiki_token": token,
+                    "error": abort_reason,
+                })
+                emit(
+                    args,
+                    abort_reason,
+                    event="document.export.failed",
+                    level="error",
+                    doc={"id": token, "title": doc.get("title") or "", "url": document_url, "index": index, "path": str(md_path)},
+                    error={
+                        "type": "CDPConnectionError",
+                        "code": "CDP_CONNECTION_LOST",
+                        "category": "browser",
+                        "message": str(exc),
+                        "retryable": True,
+                    },
+                )
+                break
             except Exception as exc:
                 if checkpoint:
                     checkpoint.fail_item(item_key, str(exc))
@@ -3526,6 +3576,8 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
             "exportedDocs": exported,
             "skippedDocs": skipped,
             "stopped": stopped,
+            "aborted": connection_aborted,
+            "abortReason": abort_reason,
             "imageSuccess": image_success,
             "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
             "resourceFailureCount": sum(len(item["failures"]) for item in image_failures),
@@ -3553,9 +3605,29 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                 checkpoint.complete_task(report)
         emit(
             args,
-            "飞书导出完成" if not stopped else "飞书导出已停止",
-            event="task.completed" if not stopped else "task.stopped",
-            level="success" if not stopped and not failures and not image_failures else "warn",
+            (
+                "飞书导出已停止"
+                if stopped
+                else abort_reason
+                if connection_aborted
+                else "飞书导出完成"
+            ),
+            event=(
+                "task.stopped"
+                if stopped
+                else "task.failed"
+                if connection_aborted
+                else "task.completed"
+            ),
+            level=(
+                "warn"
+                if stopped
+                else "error"
+                if connection_aborted
+                else "success"
+                if not failures and not image_failures
+                else "warn"
+            ),
             reportFile=str(report_path),
             stats={
                 "exportedDocs": exported,
@@ -3569,7 +3641,7 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         cdp.close()
         if chrome_proc and args.close_started_chrome:
-            chrome_proc.terminate()
+            terminate_registered_browser(args.port)
         if checkpoint:
             checkpoint.close()
 
@@ -3605,7 +3677,7 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
     finally:
         cdp.close()
         if chrome_proc and args.close_started_chrome:
-            chrome_proc.terminate()
+            terminate_registered_browser(args.port)
 
 
 def run_gui() -> int:

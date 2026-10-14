@@ -26,6 +26,14 @@ _BEARER = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 
 _RULES: tuple[tuple[str, str, str, str, bool, re.Pattern[str]], ...] = (
     (
+        "CDP_CONNECTION_LOST",
+        "browser",
+        "浏览器连接中断，任务已停止",
+        "请重新运行任务；已完成文档会保留，剩余文档可从断点继续。",
+        True,
+        re.compile(r"CDPConnectionError|CDP.*(?:连接已断开|连接中断|connection (?:lost|closed|reset))", re.IGNORECASE),
+    ),
+    (
         "TIMEOUT",
         "network",
         "网络请求超时",

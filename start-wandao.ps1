@@ -5,6 +5,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+foreach ($argument in $args) {
+  switch ($argument) {
+    "--install-only" { $InstallOnly = $true }
+    "--force-install" { $ForceInstall = $true }
+    default { throw "Unknown argument: $argument" }
+  }
+}
+
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppDir = Join-Path $RootDir "wandao_electron"
 $RuntimeDir = Join-Path $RootDir ".dev-runtime"

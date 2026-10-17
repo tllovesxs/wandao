@@ -63,6 +63,11 @@ class TauriLauncherContractTests(unittest.TestCase):
         self.assertIn('set "WANDAO_EXIT_CODE=%ERRORLEVEL%"', wrapper)
         self.assertIn("exit /b %WANDAO_EXIT_CODE%", wrapper)
 
+    def test_powershell_accepts_cross_platform_flags_and_rejects_unknown_arguments(self) -> None:
+        self.assertIn('"--install-only" { $InstallOnly = $true }', self.powershell)
+        self.assertIn('"--force-install" { $ForceInstall = $true }', self.powershell)
+        self.assertIn('default { throw "Unknown argument: $argument" }', self.powershell)
+
 
 if __name__ == "__main__":
     unittest.main()

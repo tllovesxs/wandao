@@ -13,6 +13,7 @@
 ## 下载与安装
 
 - Windows：下载并运行本版本的 `.exe` 安装包。
+- macOS Intel：下载本版本带 `macOS-x64` 的 `.zip`，解压后将 `Wandao.app` 拖入“应用程序”。
 - macOS Apple Silicon：下载本版本的 `.zip`，解压后将 `Wandao.app` 拖入“应用程序”。
 
 当前正式 Release 的 Windows 和 macOS 安装包均未做商业代码签名或 Apple 公证。Windows 可能显示未知发布者，macOS Gatekeeper 可能阻止首次打开；发布说明必须明确这一限制，不得宣称安装包已经签名，也不得指导用户执行 `xattr -cr` 绕过系统校验。

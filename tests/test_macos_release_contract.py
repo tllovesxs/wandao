@@ -21,7 +21,7 @@ class MacosReleaseContractTests(unittest.TestCase):
         self.assertEqual(package["version"], tauri["version"])
         self.assertEqual(package["version"], cargo_version.group(1))
 
-    def test_apple_silicon_release_keeps_app_unsigned_and_enables_updater(self) -> None:
+    def test_macos_releases_keep_both_architectures_unsigned_and_enable_updater(self) -> None:
         package = json.loads((REPO_ROOT / "wandao_electron/package.json").read_text(encoding="utf-8"))
         tauri = json.loads(
             (REPO_ROOT / "wandao_electron/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
@@ -36,6 +36,13 @@ class MacosReleaseContractTests(unittest.TestCase):
         self.assertIn("tauri.release.conf.json", release_build)
         self.assertIn("--target aarch64-apple-darwin", unsigned_build)
         self.assertIn("--bundles app", unsigned_build)
+        x64_unsigned = package["scripts"]["build:mac:x64:unsigned"]
+        x64_release = package["scripts"]["build:mac:x64:release"]
+        self.assertIn("--no-sign", x64_unsigned)
+        self.assertIn("--ci", x64_release)
+        self.assertIn("tauri.release.conf.json", x64_release)
+        self.assertIn("--target x86_64-apple-darwin", x64_unsigned)
+        self.assertIn("--bundles app", x64_unsigned)
 
     def test_tag_release_signs_updater_artifacts_without_commercial_code_signing(self) -> None:
         package = json.loads((REPO_ROOT / "wandao_electron/package.json").read_text(encoding="utf-8"))
@@ -46,6 +53,8 @@ class MacosReleaseContractTests(unittest.TestCase):
         self.assertIn("tauri.release.conf.json", package["scripts"]["build:win:release"])
         self.assertIn("--ci", package["scripts"]["build:mac:arm64:release"])
         self.assertIn("tauri.release.conf.json", package["scripts"]["build:mac:arm64:release"])
+        self.assertIn("--ci", package["scripts"]["build:mac:x64:release"])
+        self.assertIn("tauri.release.conf.json", package["scripts"]["build:mac:x64:release"])
         self.assertIn("Build signed updater package", workflow)
         self.assertIn("run: ${{ matrix.release_command }}", workflow)
         self.assertIn("secrets.TAURI_SIGNING_PRIVATE_KEY", workflow)
@@ -76,16 +85,18 @@ class MacosReleaseContractTests(unittest.TestCase):
             if line.lstrip().startswith("if:"):
                 self.assertNotIn("secrets.", line)
 
-    def test_workflow_checks_real_arm64_bundle_and_publishes_metadata(self) -> None:
+    def test_workflow_checks_both_macos_bundles_and_publishes_metadata(self) -> None:
         workflow = (REPO_ROOT / ".github/workflows/build-desktop.yml").read_text(encoding="utf-8")
 
         self.assertIn("os: macos-15", workflow)
+        self.assertIn("os: macos-15-intel", workflow)
         self.assertNotIn("macos-14", workflow)
         self.assertIn("rust_target: aarch64-apple-darwin", workflow)
-        self.assertIn("target/aarch64-apple-darwin/release/bundle/macos", workflow)
+        self.assertIn("rust_target: x86_64-apple-darwin", workflow)
+        self.assertIn("target/${{ matrix.rust_target }}/release/bundle/macos", workflow)
         self.assertIn("CFBundleExecutable", workflow)
         self.assertIn("LSMinimumSystemVersion", workflow)
-        self.assertIn("grep -q 'arm64'", workflow)
+        self.assertIn("grep -q '${{ matrix.bundle_arch }}'", workflow)
         self.assertIn("assets plugins providers python python-runtime", workflow)
         self.assertIn('--resources "$app_path" --executable "$app_path"', workflow)
         self.assertIn("fail_on_unmatched_files: true", workflow)
@@ -100,7 +111,9 @@ class MacosReleaseContractTests(unittest.TestCase):
         for current_doc in (readme, usage):
             self.assertNotIn("xattr -cr", current_doc)
             self.assertIn("macOS Apple Silicon", current_doc)
+            self.assertIn("macOS Intel", current_doc)
             self.assertIn("arm64", current_doc)
+            self.assertIn("x86_64", current_doc)
             self.assertIn("macOS 11+", current_doc)
         for maintainer_doc in (readme, usage, desktop_readme):
             self.assertIn("unsigned", maintainer_doc)

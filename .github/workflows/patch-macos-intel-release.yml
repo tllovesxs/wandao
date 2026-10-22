@@ -1,0 +1,131 @@
+name: Patch Intel macOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to supplement with the Intel Mac package
+        required: true
+        default: v1.5.3
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-upload:
+    name: Build and upload Intel macOS package
+    runs-on: macos-15-intel
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: wandao_electron/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wandao_electron/src-tauri
+
+      - name: Verify Intel runner and release version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          test "$(uname -m)" = "x86_64"
+          version="$(node -p "require('./wandao_electron/package.json').version")"
+          test "$RELEASE_TAG" = "v${version}"
+
+      - name: Install Tauri CLI
+        working-directory: wandao_electron
+        run: npm ci
+
+      - name: Build signed Intel updater package
+        working-directory: wandao_electron
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run build:mac:x64:release
+
+      - name: Smoke test Intel application
+        shell: bash
+        run: |
+          app_path="$(find wandao_electron/src-tauri/target/x86_64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+          bundle_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
+          minimum_system="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app_path/Contents/Info.plist")"
+          test "$minimum_system" = "11.0"
+          file "$app_path/Contents/MacOS/$bundle_executable" | grep -q 'x86_64'
+          for resource in assets plugins providers python python-runtime; do
+            test -d "$app_path/Contents/Resources/$resource"
+          done
+          python scripts/package_smoke.py --resources "$app_path" --executable "$app_path"
+
+      - name: Prepare and upload Intel assets to the existing release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          version="$(node -p "require('./wandao_electron/package.json').version")"
+          bundle_dir="wandao_electron/src-tauri/target/x86_64-apple-darwin/release/bundle/macos"
+          app_path="$(find "$bundle_dir" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+
+          mkdir -p release-output release-existing
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "release-output/Wandao-${version}-macOS-x64.zip"
+          updater="$(find "$bundle_dir" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+          test -n "$updater"
+          cp "$updater" "release-output/Wandao-${version}-macOS-x64.app.tar.gz"
+          test -f "$updater.sig"
+          cp "$updater.sig" "release-output/Wandao-${version}-macOS-x64.app.tar.gz.sig"
+
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "Wandao-${version}-win-x64-setup.exe" \
+            --pattern "Wandao-${version}-win-x64-setup.exe.sig" \
+            --pattern "Wandao-${version}-macOS-arm64.app.tar.gz" \
+            --pattern "Wandao-${version}-macOS-arm64.app.tar.gz.sig" \
+            --pattern "SHA256SUMS" \
+            --dir release-existing
+          cp release-existing/SHA256SUMS release-output/SHA256SUMS
+          grep -v "Wandao-${version}-macOS-x64" release-output/SHA256SUMS > release-output/SHA256SUMS.tmp
+          mv release-output/SHA256SUMS.tmp release-output/SHA256SUMS
+          for asset in release-output/Wandao-${version}-macOS-x64.zip release-output/Wandao-${version}-macOS-x64.app.tar.gz release-output/Wandao-${version}-macOS-x64.app.tar.gz.sig; do
+            printf "%s  %s\n" "$(shasum -a 256 "$asset" | awk '{print $1}')" "$(basename "$asset")" >> release-output/SHA256SUMS
+          done
+
+          mkdir -p release-artifacts
+          cp release-existing/Wandao-${version}-win-x64-setup.exe release-artifacts/
+          cp release-existing/Wandao-${version}-win-x64-setup.exe.sig release-artifacts/
+          cp release-existing/Wandao-${version}-macOS-arm64.app.tar.gz release-artifacts/
+          cp release-existing/Wandao-${version}-macOS-arm64.app.tar.gz.sig release-artifacts/
+          cp release-output/Wandao-${version}-macOS-x64.app.tar.gz release-artifacts/
+          cp release-output/Wandao-${version}-macOS-x64.app.tar.gz.sig release-artifacts/
+          python scripts/build_updater_manifest.py --directory release-artifacts --tag "$RELEASE_TAG" --output release-output/latest.json
+
+          gh release upload "$RELEASE_TAG" \
+            "release-output/Wandao-${version}-macOS-x64.zip" \
+            "release-output/Wandao-${version}-macOS-x64.app.tar.gz" \
+            "release-output/Wandao-${version}-macOS-x64.app.tar.gz.sig" \
+            release-output/latest.json \
+            release-output/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber

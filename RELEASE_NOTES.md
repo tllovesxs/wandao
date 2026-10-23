@@ -11,9 +11,16 @@
 - 自动恢复失败时立即中止任务并保存断点，避免剩余文档连续失败；由用户启动的浏览器不会被自动结束。
 - 飞书插件升级至 v1.0.24，需要万能导 1.5.3 或更高版本。
 
+### macOS 架构支持
+
+- 新增 `Wandao-1.5.3-macOS-x64.zip`，支持 Intel 芯片 Mac（macOS 11+）。
+- 保留 `Wandao-1.5.3-macOS-arm64.zip`，支持 Apple Silicon Mac（macOS 11+）。
+- 程序内更新清单同时提供 `darwin-x86_64` 与 `darwin-aarch64` 更新资产。
+
 ### 下载与安装
 
 - **Windows x64**：下载并运行 `Wandao-1.5.3-win-x64-setup.exe`。
+- **macOS Intel**：下载 `Wandao-1.5.3-macOS-x64.zip`，解压后将 `Wandao.app` 拖入“应用程序”。
 - **macOS Apple Silicon**：下载 `Wandao-1.5.3-macOS-arm64.zip`，解压后将 `Wandao.app` 拖入“应用程序”。
 - Windows 系统显示名称为“万能导”；更新标识、可执行文件名和现有用户数据目录保持不变，可直接覆盖升级。
 

@@ -5,7 +5,8 @@
 普通用户优先下载 Releases 页面里的发行版：
 
 - Windows x64：下载 `.exe` 安装包。
-- macOS Apple Silicon（arm64，macOS 11+）：下载 `.zip` 压缩包，解压后运行应用。
+- macOS Intel（x86_64，macOS 11+）：下载带 `macOS-x64` 的 `.zip` 压缩包，解压后运行应用。
+- macOS Apple Silicon（arm64，macOS 11+）：下载带 `macOS-arm64` 的 `.zip` 压缩包，解压后运行应用。
 
 当前正式 Release 中的 macOS `.zip` 未做 Developer ID 签名、Apple 公证或 stapling。请只从本项目 GitHub Releases 下载并移入“应用程序”；Gatekeeper 阻止时，可在“系统设置 → 隐私与安全性”确认来源后选择仍要打开，不要通过清除隔离属性绕过系统校验。
 

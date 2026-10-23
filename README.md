@@ -21,7 +21,7 @@
   <a href="https://github.com/tllovesxs/wandao/network/members"><img src="https://img.shields.io/github/forks/tllovesxs/wandao?label=Forks&color=4f86c6" alt="GitHub Forks"></a>
   <a href="https://github.com/tllovesxs/wandao/issues?q=is%3Aissue"><img src="https://img.shields.io/github/issues-search?query=repo%3Atllovesxs%2Fwandao%20is%3Aissue&label=Issues&color=8a63d2" alt="全部 GitHub Issues"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0 License"></a>
-  <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20macOS%20arm64-lightgrey" alt="Windows x64 与 macOS Apple Silicon">
+  <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20macOS%20x64%20%2B%20arm64-lightgrey" alt="Windows x64、macOS Intel 与 Apple Silicon">
 </p>
 
 <p align="center">
@@ -47,6 +47,8 @@
 </p>
 
 万能导是一个多平台知识库 Markdown 导入导出工具，目前支持飞书、语雀、阿里云 Thoughts、印象笔记、有道云笔记、为知笔记、OneNote、知识星球、ima 知识库、钉钉文档、WPS 文档、息流、Obsidian、Notion、知乎、CSDN、微信公众号和本地 Markdown 等内容来源与目标平台。
+
+桌面版提供 Windows x64、macOS Intel（x86_64）和 macOS Apple Silicon（arm64）发行包，macOS 版本支持 macOS 11 及更高版本。
 
 你可以把自己有权限访问的项目资料、团队知识库和课程文档导出为本地 Markdown，也可以把整理好的本地 Markdown 导入到支持的平台。万能导重点处理文档格式、图片、附件和目录层级，适合知识备份、平台迁移、学习资料整理，以及将“教学文档 + 源码项目”交给 AI 一起阅读。
 

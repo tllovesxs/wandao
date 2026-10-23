@@ -304,6 +304,18 @@ jobs:
             release_command: npm run build:mac:arm64:release
             artifact: wandao-macOS-arm64
             rust_target: aarch64-apple-darwin
+            host_arch: arm64
+            bundle_arch: arm64
+            bundle_label: arm64
+          - name: macOS Intel
+            os: macos-15-intel
+            unsigned_command: npm run build:mac:x64:unsigned
+            release_command: npm run build:mac:x64:release
+            artifact: wandao-macOS-x64
+            rust_target: x86_64-apple-darwin
+            host_arch: x86_64
+            bundle_arch: x86_64
+            bundle_label: x64
 
     steps:
       - name: Checkout
@@ -350,10 +362,10 @@ jobs:
             exit 1
           fi
 
-      - name: Verify Apple Silicon build host
+      - name: Verify macOS build host
         if: runner.os == 'macOS'
         shell: bash
-        run: test "$(uname -m)" = "arm64"
+        run: test "$(uname -m)" = "${{ matrix.host_arch }}"
 
       - name: Build unsigned desktop package
         if: github.ref_type != 'tag'
@@ -385,12 +397,13 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          app_path="$(find wandao_electron/src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          bundle_dir="wandao_electron/src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos"
+          app_path="$(find "$bundle_dir" -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$app_path"
           bundle_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
           minimum_system="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app_path/Contents/Info.plist")"
           test "$minimum_system" = "11.0"
-          file "$app_path/Contents/MacOS/$bundle_executable" | grep -q 'arm64'
+          file "$app_path/Contents/MacOS/$bundle_executable" | grep -q '${{ matrix.bundle_arch }}'
           for resource in assets plugins providers python python-runtime; do
             test -d "$app_path/Contents/Resources/$resource"
           done
@@ -418,19 +431,20 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-output
-          app_path="$(find wandao_electron/src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          bundle_dir="wandao_electron/src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos"
+          app_path="$(find "$bundle_dir" -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$app_path"
           version="$(node -p "require('./wandao_electron/package.json').version")"
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            output="release-output/Wandao-${version}-macOS-arm64-UNSIGNED-SMOKE.zip"
+            output="release-output/Wandao-${version}-macOS-${{ matrix.bundle_label }}-UNSIGNED-SMOKE.zip"
           else
-            output="release-output/Wandao-${version}-macOS-arm64.zip"
+            output="release-output/Wandao-${version}-macOS-${{ matrix.bundle_label }}.zip"
           fi
           ditto -c -k --sequesterRsrc --keepParent "$app_path" "$output"
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            updater="$(find wandao_electron/src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+            updater="$(find "$bundle_dir" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
             test -n "$updater"
-            updater_output="release-output/Wandao-${version}-macOS-arm64.app.tar.gz"
+            updater_output="release-output/Wandao-${version}-macOS-${{ matrix.bundle_label }}.app.tar.gz"
             cp "$updater" "$updater_output"
             test -f "$updater.sig"
             cp "$updater.sig" "$updater_output.sig"

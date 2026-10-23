@@ -39,7 +39,8 @@ def target_payload(path: Path, tag: str) -> dict[str, str]:
 
 def build_manifest(directory: Path, tag: str) -> dict[str, object]:
     windows = find_signed_artifact(directory, (".exe", ".zip"), ("setup", ".nsis.", ".msi."))
-    macos = find_signed_artifact(directory, (".app.tar.gz",), ("wandao",))
+    macos_arm64 = find_signed_artifact(directory, (".app.tar.gz",), ("macos-arm64",))
+    macos_x64 = find_signed_artifact(directory, (".app.tar.gz",), ("macos-x64",))
     windows_payload = target_payload(windows, tag)
     return {
         "version": tag.removeprefix("v").removeprefix("V"),
@@ -48,7 +49,8 @@ def build_manifest(directory: Path, tag: str) -> dict[str, object]:
         "platforms": {
             "windows-x86_64": windows_payload,
             "windows-x86_64-nsis": windows_payload,
-            "darwin-aarch64": target_payload(macos, tag),
+            "darwin-aarch64": target_payload(macos_arm64, tag),
+            "darwin-x86_64": target_payload(macos_x64, tag),
         },
     }
 

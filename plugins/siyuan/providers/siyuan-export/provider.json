@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "id": "siyuan-export",
+  "platform": "siyuan",
+  "name": "思源笔记",
+  "title": "思源笔记 Markdown 导出",
+  "navLabel": "思源笔记导出",
+  "description": "连接本机运行中的思源笔记，选择笔记本或指定目录，导出 Markdown 和资源。",
+  "type": "automation",
+  "group": "export",
+  "trustLevel": "official",
+  "status": "experimental",
+  "defaults": { "output": "exports/siyuan" },
+  "guide": "README.md",
+  "homepage": "https://b3log.org/siyuan/",
+  "tags": ["思源笔记", "导出", "Markdown", "目录", "图片", "附件"],
+  "capabilities": {
+    "export": true,
+    "import": false,
+    "guide": true,
+    "login": false,
+    "scanToc": true,
+    "images": true,
+    "attachments": true,
+    "tree": true,
+    "batch": true,
+    "retryFailures": false
+  },
+  "toc": {
+    "itemsPath": "nodes",
+    "idKey": "nodeId",
+    "exportIdKey": "exportId",
+    "titleKey": "title",
+    "parentIdKey": "parentNodeId",
+    "selectableKey": "selectable",
+    "selectionArg": "--node-id",
+    "note": "读取笔记本目录后可勾选任意文档；勾选父文档会包含其子目录和文档，导出时保留层级。"
+  },
+  "fields": [
+    {
+      "name": "server_url",
+      "label": "思源服务地址",
+      "type": "password",
+      "arg": "--server-url",
+      "required": true,
+      "default": "http://127.0.0.1:6806",
+      "history": "url",
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "notebook_id",
+      "label": "笔记本 ID（可选）",
+      "type": "text",
+      "arg": "--notebook-id",
+      "required": false,
+      "placeholder": "留空扫描全部笔记本",
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "api_token",
+      "label": "思源 API Token",
+      "type": "text",
+      "arg": "--api-token",
+      "required": true,
+      "secret": true,
+      "actions": ["scan", "export"]
+    },
+    {
+      "name": "output",
+      "label": "导出根目录",
+      "type": "directory",
+      "arg": "--output",
+      "required": true,
+      "default": "exports/siyuan",
+      "history": "path",
+      "actions": ["export"]
+    }
+  ],
+  "actions": [
+    {
+      "id": "scan",
+      "kind": "scan",
+      "label": "读取目录",
+      "script": "../../backend/export_siyuan.py",
+      "args": ["--scan-toc"],
+      "includeSelection": false,
+      "secondary": true
+    },
+    {
+      "id": "export",
+      "kind": "export",
+      "label": "开始导出",
+      "script": "../../backend/export_siyuan.py",
+      "args": ["--export", "--progress-every", "1"],
+      "progressTitle": "思源笔记导出",
+      "progressDetail": "正在导出所选目录中的文档和资源..."
+    }
+  ]
+}

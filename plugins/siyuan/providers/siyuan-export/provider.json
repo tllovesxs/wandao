@@ -40,7 +40,7 @@
     {
       "name": "server_url",
       "label": "思源服务地址",
-      "type": "password",
+      "type": "text",
       "arg": "--server-url",
       "required": true,
       "default": "http://127.0.0.1:6806",
@@ -59,7 +59,7 @@
     {
       "name": "api_token",
       "label": "思源 API Token",
-      "type": "text",
+      "type": "password",
       "arg": "--api-token",
       "required": true,
       "secret": true,
@@ -91,7 +91,7 @@
       "kind": "export",
       "label": "开始导出",
       "script": "../../backend/export_siyuan.py",
-      "args": ["--progress-every", "1"],
+      "args": ["--export", "--progress-every", "1"],
       "progressTitle": "思源笔记导出",
       "progressDetail": "正在导出所选目录中的文档和资源..."
     }

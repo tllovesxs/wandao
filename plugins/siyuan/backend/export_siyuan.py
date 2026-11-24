@@ -12,6 +12,7 @@ if str(_REPO_ROOT) not in _sys.path:
 import argparse
 import json
 import mimetypes
+import os
 import re
 import sys
 import time
@@ -353,7 +354,7 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--server-url", default=DEFAULT_SERVER_URL)
-    result.add_argument("--api-token", required=True)
+    result.add_argument("--api-token", default=os.environ.get("SIYUAN_API_TOKEN", ""))
     result.add_argument("--notebook-id", default="")
     result.add_argument("--output", default="exports/siyuan")
     result.add_argument("--node-id", action="append", default=[])

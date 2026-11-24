@@ -91,7 +91,7 @@
       "kind": "export",
       "label": "开始导出",
       "script": "../../backend/export_siyuan.py",
-      "args": ["--export", "--progress-every", "1"],
+      "args": ["--progress-every", "1"],
       "progressTitle": "思源笔记导出",
       "progressDetail": "正在导出所选目录中的文档和资源..."
     }

@@ -1583,6 +1583,7 @@ fn extract_sensitive_arguments(args: Vec<String>) -> (Vec<String>, BTreeMap<Stri
     let sensitive = [
         ("--app-secret", "FEISHU_APP_SECRET"),
         ("--api-key", "IMA_API_KEY"),
+        ("--api-token", "SIYUAN_API_TOKEN"),
     ];
     let mut output = Vec::new();
     let mut environment = BTreeMap::new();

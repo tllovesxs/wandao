@@ -121,6 +121,9 @@ class SiyuanAPI:
             raise SiyuanError("思源未返回可识别的笔记本列表。")
         return [item for item in items if isinstance(item, dict) and item.get("id")]
 
+    def notebook(self, notebook_id: str) -> dict[str, Any] | None:
+        return next((item for item in self.notebooks() if str(item["id"]) == notebook_id), None)
+
     def document_tree(self, notebook_id: str) -> list[dict[str, Any]]:
         data = self.post_json("/api/filetree/listDocTree", {"notebook": notebook_id, "path": "/"})
         tree = data.get("tree", []) if isinstance(data, dict) else []
@@ -129,7 +132,7 @@ class SiyuanAPI:
         return tree
 
     def document_info(self, document_id: str) -> dict[str, Any]:
-        data = self.post_json("/api/block/getBlockInfo", {"id": document_id})
+        data = self.post_json("/api/block/getDocInfo", {"id": document_id})
         return data if isinstance(data, dict) else {}
 
     def markdown(self, document_id: str) -> str:
@@ -171,7 +174,7 @@ def collect_documents(api: SiyuanAPI, notebook_id: str, tree: list[dict[str, Any
             if not isinstance(node, dict) or not node.get("id"):
                 continue
             document_id = str(node["id"])
-            title = node_title(api, document_id)
+            title = str(node.get("name") or node_title(api, document_id))
             document = Document(notebook_id, document_id, title, path + (title,), parent_id)
             documents.append(document)
             children = node.get("children")

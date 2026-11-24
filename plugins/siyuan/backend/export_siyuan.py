@@ -126,11 +126,27 @@ class SiyuanAPI:
         return next((item for item in self.notebooks() if str(item["id"]) == notebook_id), None)
 
     def document_tree(self, notebook_id: str) -> list[dict[str, Any]]:
-        data = self.post_json("/api/filetree/listDocTree", {"notebook": notebook_id, "path": "/"})
-        tree = data.get("tree", []) if isinstance(data, dict) else []
-        if not isinstance(tree, list):
-            raise SiyuanError("思源返回了无法识别的文档目录。")
-        return tree
+        def list_children(path: str) -> list[dict[str, Any]]:
+            data = self.post_json("/api/filetree/listDocsByPath", {
+                "notebook": notebook_id, "path": path,
+                "maxListCount": 0, "showHidden": True,
+            })
+            files = data.get("files") if isinstance(data, dict) else None
+            if not isinstance(files, list):
+                raise SiyuanError("思源返回了无法识别的文档目录。")
+            nodes = []
+            for item in files:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                node = dict(item)
+                if node.get("name"):
+                    node["name"] = str(node["name"]).removesuffix(".sy")
+                if item.get("subFileCount", 0):
+                    node["children"] = list_children(item["path"])
+                nodes.append(node)
+            return nodes
+
+        return list_children("/")
 
     def document_info(self, document_id: str) -> dict[str, Any]:
         data = self.post_json("/api/block/getDocInfo", {"id": document_id})

@@ -4859,6 +4859,9 @@ function renderPluginCard(plugin) {
     : (plugin.updateAvailable
       ? `<button class="btn-primary" data-plugin-action="install" data-plugin-id="${escapeHtml(plugin.id)}" type="button" ${compatible ? operationAttributes : 'disabled aria-disabled="true"'}>更新</button>`
       : `<button class="btn-secondary" data-plugin-action="toggle" data-plugin-id="${escapeHtml(plugin.id)}" data-enabled="${plugin.enabled ? 'false' : 'true'}" type="button" ${operationAttributes}>${plugin.enabled ? '停用' : '启用'}</button>`);
+  const openPlatform = plugin.bundled
+    ? `<button class="btn-secondary" data-plugin-action="open" data-plugin-id="${escapeHtml(plugin.id)}" type="button">打开平台</button>`
+    : '';
   return `
     <article class="plugin-card ${plugin.installed ? 'installed' : ''}">
       <div class="plugin-card-heading">
@@ -4876,6 +4879,7 @@ function renderPluginCard(plugin) {
       ${pluginProgressHtml(plugin.id)}
       <div class="plugin-card-actions">
         ${primary}
+        ${openPlatform}
         ${plugin.installed && (plugin.previousVersions || []).length ? `<button class="btn-text" data-plugin-action="rollback" data-plugin-id="${escapeHtml(plugin.id)}" type="button" ${operationAttributes}>回滚</button>` : ''}
         ${plugin.installed ? `<button class="btn-text danger-text" data-plugin-action="uninstall" data-plugin-id="${escapeHtml(plugin.id)}" type="button" ${operationAttributes}>卸载</button>` : ''}
       </div>
@@ -5017,6 +5021,17 @@ async function runPlatformPluginUpdate(groupKey, button) {
 }
 
 async function runPluginCenterAction(action, pluginId, button) {
+  if (action === 'open') {
+    const group = platformGroups().find((item) => (
+      item.providers.some((provider) => provider.pluginId === pluginId)
+    )) || findPlatformGroup(pluginId);
+    if (!group) {
+      notifyUser(`没有找到“${pluginId}”对应的平台操作。`, 'warn');
+      return;
+    }
+    switchTool(`platform:${group.key}`);
+    return;
+  }
   if (pluginOperationBlocked(pluginId)) {
     notifyUser(pluginOperationBlockedTitle(pluginId), 'warn');
     return;

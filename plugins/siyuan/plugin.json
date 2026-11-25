@@ -1,0 +1,15 @@
+{
+  "$schema": "../plugin.schema.json",
+  "schemaVersion": 1,
+  "id": "siyuan",
+  "name": "思源笔记",
+  "description": "将思源笔记指定笔记本或目录下的文档导出为 Markdown，并保存引用的资源。",
+  "version": "0.1.0",
+  "publisher": "Wandao Official",
+  "homepage": "https://b3log.org/siyuan/",
+  "license": "AGPL-3.0-only",
+  "core": { "minVersion": "1.4.4" },
+  "platforms": ["win32", "darwin", "linux"],
+  "entrypoints": { "providers": ["providers/siyuan-export/provider.json"] },
+  "permissions": ["filesystem:write", "network", "process"]
+}
